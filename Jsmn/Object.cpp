@@ -309,6 +309,52 @@ Object Object::parse_json(char const* txt) {
 	return js;
 }
 
+bool Object::operator==(Object const& other) const {
+	if (this == &other) {
+		return true;
+	}
+
+	// Compare types first
+	if (is_null() != other.is_null() || is_boolean() != other.is_boolean() ||
+	    is_string() != other.is_string() || is_object() != other.is_object() ||
+	    is_array() != other.is_array() || is_number() != other.is_number()) {
+		return false;
+	}
+
+	// Compare values based on type
+	if (is_null()) {
+		return true; // Both are null
+	} else if (is_boolean()) {
+		return static_cast<bool>(*this) == static_cast<bool>(other);
+	} else if (is_string()) {
+		return static_cast<std::string>(*this) == static_cast<std::string>(other);
+	} else if (is_number()) {
+		return static_cast<double>(*this) == static_cast<double>(other);
+	} else if (is_object()) {
+		if (size() != other.size()) {
+			return false;
+		}
+		for (const auto& key : keys()) {
+			if (!other.has(key) || (*this)[key] != other[key]) {
+				return false;
+			}
+		}
+		return true;
+	} else if (is_array()) {
+		if (size() != other.size()) {
+			return false;
+		}
+		for (std::size_t i = 0; i < size(); ++i) {
+			if ((*this)[i] != other[i]) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	return false; // Fallback, should not reach here
+}
+
 /* Implements indented printing.  */
 namespace {
 

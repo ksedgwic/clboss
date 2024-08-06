@@ -71,6 +71,11 @@ public:
 	Object operator[](std::size_t) const; /* Return null if out-of-range.  */
 	/* TODO: Iterator.  */
 
+	bool operator==(Object const& other) const;
+	bool operator!=(Object const& other) const {
+		return !(*this == other);
+	}
+
 	/* Formal factory.  */
 	friend class ParserExposedBuffer;
 	/* Iterator type.  */
