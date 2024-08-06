@@ -31,6 +31,9 @@ public:
 
 	explicit
 	EarningsTracker(S::Bus& bus, std::function<double()> get_now_ = &Ev::now);
+
+	// exposed for unit testing, otherwise internal
+	static double bucket_time(double input_time);
 };
 
 }}

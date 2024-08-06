@@ -12,6 +12,8 @@
 #include"S/Bus.hpp"
 #include"Sqlite3.hpp"
 #include"Util/make_unique.hpp"
+
+#include<cmath>
 #include<map>
 
 namespace Boss { namespace Mod {
@@ -294,7 +296,13 @@ public:
 EarningsTracker::EarningsTracker(EarningsTracker&&) =default;
 EarningsTracker::~EarningsTracker() =default;
 
-		EarningsTracker::EarningsTracker(S::Bus& bus, std::function<double()> get_now_ )
+EarningsTracker::EarningsTracker(S::Bus& bus, std::function<double()> get_now_ )
 	: pimpl(Util::make_unique<Impl>(bus, get_now_)) { }
+
+double EarningsTracker::bucket_time(double input_time) {
+	constexpr double seconds_per_day = 24 * 60 * 60;
+	double bucket_start = std::floor(input_time / seconds_per_day) * seconds_per_day;
+	return bucket_start;
+}
 
 }}

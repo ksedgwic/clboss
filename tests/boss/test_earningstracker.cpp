@@ -33,6 +33,12 @@ double mock_get_now() {
 }
 
 int main() {
+	// check the UTC quantitization boundaries
+	assert(Boss::Mod::EarningsTracker::bucket_time(1722902400 - 1)		== 1722816000);
+	assert(Boss::Mod::EarningsTracker::bucket_time(1722902400)		== 1722902400);
+	assert(Boss::Mod::EarningsTracker::bucket_time(1722902400 + 86400 - 1)  == 1722902400);
+	assert(Boss::Mod::EarningsTracker::bucket_time(1722902400 + 86400)      == 1722988800);
+
 	auto bus = S::Bus();
 
 	/* Module under test */
