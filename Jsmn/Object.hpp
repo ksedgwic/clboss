@@ -42,6 +42,8 @@ public:
 	Object& operator=(Object const&) =default;
 	Object& operator=(Object&&) =default;
 
+	static Object parse_json(char const* txt);
+
 	/* Type queries on the object.  */
 	bool is_null() const;
 	bool is_boolean() const;

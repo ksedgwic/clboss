@@ -302,6 +302,13 @@ Detail::Iterator Object::end() const {
 	return pimpl->end();
 }
 
+Object Object::parse_json(char const* txt) {
+	auto is = std::istringstream(std::string(txt));
+	auto js = Jsmn::Object();
+	is >> js;
+	return js;
+}
+
 /* Implements indented printing.  */
 namespace {
 

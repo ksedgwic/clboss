@@ -52,13 +52,6 @@ auto const listpeers_result = R"JSON(
 }
 )JSON";
 
-Jsmn::Object parse_json(char const* txt) {
-	auto is = std::istringstream(std::string(txt));
-	auto js = Jsmn::Object();
-	is >> js;
-	return js;
-}
-
 }
 
 int main() {
@@ -103,14 +96,14 @@ int main() {
 
 		/* Give the peers.  */
 		return bus.raise(Boss::Msg::ListpeersResult{
-				Boss::Mod::convert_legacy_listpeers(parse_json(listpeers_result)["peers"]), true
+				Boss::Mod::convert_legacy_listpeers(Jsmn::Object::parse_json(listpeers_result)["peers"]), true
 		});
 	}).then([&]() {
 
 		/* Should ignore non-forward_event.  */
 		forwardfee = nullptr;
 		return bus.raise(Boss::Msg::Notification{
-			"not-forward_event", parse_json("{}")
+			"not-forward_event", Jsmn::Object::parse_json("{}")
 		});
 	}).then([&]() {
 		return Ev::yield(42);
@@ -121,7 +114,7 @@ int main() {
 		forwardfee = nullptr;
 		return bus.raise(Boss::Msg::Notification{
 			"forward_event",
-			parse_json(R"JSON(
+			Jsmn::Object::parse_json(R"JSON(
 {
   "forward_event": {
     "payment_hash": "f5a6a059a25d1e329d9b094aeeec8c2191ca037d3f5b0662e21ae850debe8ea2",

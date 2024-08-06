@@ -169,13 +169,6 @@ public:
 			    ) : bus(bus_) { start(); }
 };
 
-Jsmn::Object parse_json(char const* txt) {
-	auto is = std::istringstream(txt);
-	auto rv = Jsmn::Object();
-	is >> rv;
-	return rv;
-}
-
 class DummyRpc {
 private:
 	S::Bus& bus;
@@ -183,7 +176,7 @@ private:
 	Ev::Io<void> respond(void* requester, char const* res) {
 		return bus.raise(Boss::Msg::ResponseRpcCommand{
 			requester, true,
-			parse_json(res),
+			Jsmn::Object::parse_json(res),
 			""
 		});
 	}
@@ -341,7 +334,7 @@ int main() {
 		assert(deferrer);
 
 		/* Raise the ListpeersResult.  */
-		auto res = parse_json(listpeers_result);
+		auto res = Jsmn::Object::parse_json(listpeers_result);
 		auto peers = res["peers"];
 		return bus.raise(Boss::Msg::ListpeersResult{
 				std::move(Boss::Mod::convert_legacy_listpeers(peers)), true
