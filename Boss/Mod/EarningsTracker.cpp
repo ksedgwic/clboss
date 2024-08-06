@@ -19,6 +19,7 @@ namespace Boss { namespace Mod {
 class EarningsTracker::Impl {
 private:
 	S::Bus& bus;
+	std::function<double()> get_now;
 	Sqlite3::Db db;
 
 	/* Information of a pending MoveFunds.  */
@@ -287,13 +288,13 @@ public:
 	Impl(Impl const&) =delete;
 
 	explicit
-	Impl(S::Bus& bus_) : bus(bus_) { start(); }
+	Impl(S::Bus& bus_, std::function<double()> get_now_) : bus(bus_), get_now(std::move(get_now_)) { start(); }
 };
 
 EarningsTracker::EarningsTracker(EarningsTracker&&) =default;
 EarningsTracker::~EarningsTracker() =default;
 
-EarningsTracker::EarningsTracker(S::Bus& bus)
-	: pimpl(Util::make_unique<Impl>(bus)) { }
+		EarningsTracker::EarningsTracker(S::Bus& bus, std::function<double()> get_now_ )
+	: pimpl(Util::make_unique<Impl>(bus, get_now_)) { }
 
 }}

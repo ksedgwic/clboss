@@ -1,6 +1,8 @@
 #ifndef BOSS_MOD_EARNINGSTRACKER_HPP
 #define BOSS_MOD_EARNINGSTRACKER_HPP
 
+#include"Ev/now.hpp"
+#include<functional>
 #include<memory>
 
 namespace S { class Bus; }
@@ -28,7 +30,7 @@ public:
 	~EarningsTracker();
 
 	explicit
-	EarningsTracker(S::Bus& bus);
+	EarningsTracker(S::Bus& bus, std::function<double()> get_now_ = &Ev::now);
 };
 
 }}

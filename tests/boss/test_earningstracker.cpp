@@ -27,11 +27,16 @@ auto const B = Ln::NodeId("02000000000000000000000000000000000000000000000000000
 auto const C = Ln::NodeId("020000000000000000000000000000000000000000000000000000000000000003");
 }
 
+double mock_now = 0.0;
+double mock_get_now() {
+	return mock_now;
+}
+
 int main() {
 	auto bus = S::Bus();
 
 	/* Module under test */
-	Boss::Mod::EarningsTracker mut(bus);
+	Boss::Mod::EarningsTracker mut(bus, &mock_get_now);
 
 	auto db = Sqlite3::Db(":memory:");
 
@@ -51,6 +56,7 @@ int main() {
 	auto code = Ev::lift().then([&]() {
 		return bus.raise(Boss::Msg::DbResource{ db });
 	}).then([&]() {
+		mock_now = 1000.0;
 		return bus.raise(
 			Boss::Msg::ForwardFee{
 				A,			// in_id
@@ -59,6 +65,7 @@ int main() {
 				1.0			// resolution_time
 			});
 	}).then([&]() {
+		mock_now = 2000.0;
 		return bus.raise(Boss::Msg::SolicitStatus{});
 	}).then([&]() {
 		// std::cerr << lastStatus.value.output() << std::endl;
@@ -89,6 +96,7 @@ int main() {
                         )JSON"));
 		return Ev::lift();
 	}).then([&]() {
+		mock_now = 3000.0;
 		return bus.raise(
 			Boss::Msg::ForwardFee{
 				A,			// in_id
@@ -127,6 +135,7 @@ int main() {
                         )JSON"));
 		return Ev::lift();
 	}).then([&]() {
+		mock_now = 4000.0;
 		return bus.raise(
 			Boss::Msg::RequestMoveFunds{
 				NULL,			// requester (match ResponseMoveFunds)
@@ -136,6 +145,7 @@ int main() {
 				Ln::Amount::sat(3)	// fee_budget
 			});
 	}).then([&]() {
+		mock_now = 5000.0;
 		return bus.raise(
 			Boss::Msg::ResponseMoveFunds{
 				NULL,			// requester (match RequestMoveFunds)
