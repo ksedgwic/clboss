@@ -65,28 +65,79 @@ private:
 
 	Ev::Io<void> init() {
 		return db.transact().then([](Sqlite3::Tx tx) {
+			// If we already have a bucket schema we're done
+			if (have_bucket_table(tx)) {
+				tx.commit();
+				return Ev::lift();
+			}
+
+			// Create the bucket table w/ a temp name
 			tx.query_execute(R"QRY(
-			CREATE TABLE IF NOT EXISTS "EarningsTracker"
-			     ( node TEXT PRIMARY KEY
+			CREATE TABLE IF NOT EXISTS EarningsTracker_New
+			     ( node TEXT NOT NULL
+			     , time_bucket REAL NOT NULL
 			     , in_earnings INTEGER NOT NULL
 			     , in_expenditures INTEGER NOT NULL
 			     , out_earnings INTEGER NOT NULL
 			     , out_expenditures INTEGER NOT NULL
+			     , PRIMARY KEY (node, time_bucket)
 			     );
+			)QRY");
+
+			// If we have a legacy table migrate the data and lose the old table
+			if (have_legacy_table(tx)) {
+				tx.query_execute(R"QRY(
+				INSERT INTO EarningsTracker_New
+				    ( node, time_bucket, in_earnings, in_expenditures
+				    , out_earnings, out_expenditures)
+				SELECT node, 0, in_earnings, in_expenditures
+				    , out_earnings, out_expenditures FROM EarningsTracker;
+				DROP TABLE EarningsTracker;
+			        )QRY");
+			}
+
+			// Move the new table to the official name and add the indexes
+			tx.query_execute(R"QRY(
+			ALTER TABLE EarningsTracker_New RENAME TO EarningsTracker;
+			CREATE INDEX IF NOT EXISTS
+			    idx_earnings_tracker_node_time ON EarningsTracker (node, time_bucket);
+			CREATE INDEX IF NOT EXISTS
+			    idx_earnings_tracker_time_node ON EarningsTracker (time_bucket, node);
 			)QRY");
 
 			tx.commit();
 			return Ev::lift();
 		});
 	}
+
+	static bool have_bucket_table(Sqlite3::Tx& tx) {
+		auto fetch = tx.query(R"QRY(
+			SELECT 1
+			FROM pragma_table_info('EarningsTracker')
+			WHERE name='time_bucket';
+			)QRY").execute();
+		return fetch.begin() != fetch.end();
+	}
+
+	static bool have_legacy_table(Sqlite3::Tx& tx) {
+		// Do we have a legacy table defined?
+		auto fetch = tx.query(R"QRY(
+			SELECT 1
+			FROM pragma_table_info('EarningsTracker')
+			WHERE name='node';
+			)QRY").execute();
+		return fetch.begin() != fetch.end();
+	}
+
 	/* Ensure the given node has an entry.  */
-	void ensure(Sqlite3::Tx& tx, Ln::NodeId const& node) {
+	void ensure(Sqlite3::Tx& tx, Ln::NodeId const& node, double bucket) {
 		tx.query(R"QRY(
 		INSERT OR IGNORE
 		  INTO "EarningsTracker"
-		VALUES(:node, 0, 0, 0, 0);
+		VALUES(:node, :bucket, 0, 0, 0, 0);
 		)QRY")
 			.bind(":node", std::string(node))
+			.bind(":bucket", bucket)
 			.execute()
 			;
 	}
@@ -96,16 +147,19 @@ private:
 				) {
 		return db.transact().then([this, in, out, fee
 					  ](Sqlite3::Tx tx) {
-			ensure(tx, in);
-			ensure(tx, out);
+			auto bucket = bucket_time(get_now());
+			ensure(tx, in, bucket);
+			ensure(tx, out, bucket);
 
 			tx.query(R"QRY(
 			UPDATE "EarningsTracker"
 			   SET in_earnings = in_earnings + :fee
 			 WHERE node = :node
+			   AND time_bucket = :bucket
 			     ;
 			)QRY")
 				.bind(":node", std::string(in))
+				.bind(":bucket", bucket)
 				.bind(":fee", fee.to_msat())
 				.execute()
 				;
@@ -113,9 +167,11 @@ private:
 			UPDATE "EarningsTracker"
 			   SET out_earnings = out_earnings + :fee
 			 WHERE node = :node
+			   AND time_bucket = :bucket
 			     ;
 			)QRY")
 				.bind(":node", std::string(out))
+				.bind(":bucket", bucket)
 				.bind(":fee", fee.to_msat())
 				.execute()
 				;
@@ -143,8 +199,9 @@ private:
 				return Ev::lift();
 			auto& pending = it->second;
 
-			ensure(tx, pending.source);
-			ensure(tx, pending.destination);
+			auto bucket = bucket_time(get_now());
+			ensure(tx, pending.source, bucket);
+			ensure(tx, pending.destination, bucket);
 
 			/* Source gets in-expenditures since it gets more
 			 * incoming capacity (for more earnings for the
@@ -153,9 +210,11 @@ private:
 			UPDATE "EarningsTracker"
 			   SET in_expenditures = in_expenditures + :fee
 			 WHERE node = :node
+			   AND time_bucket = :bucket
 			     ;
 			)QRY")
 				.bind(":node", std::string(pending.source))
+				.bind(":bucket", bucket)
 				.bind(":fee", fee.to_msat())
 				.execute()
 				;
@@ -166,11 +225,13 @@ private:
 			UPDATE "EarningsTracker"
 			   SET out_expenditures = out_expenditures + :fee
 			 WHERE node = :node
+			   AND time_bucket = :bucket
 			     ;
 			)QRY")
 				.bind( ":node"
 				     , std::string(pending.destination)
 				     )
+				.bind(":bucket", bucket)
 				.bind(":fee", fee.to_msat())
 				.execute()
 				;
@@ -195,11 +256,12 @@ private:
 			auto out_expenditures = Ln::Amount::sat(0);
 
 			auto fetch = tx.query(R"QRY(
-			SELECT in_earnings, in_expenditures
-			     , out_earnings, out_expenditures
+			SELECT SUM(in_earnings),
+			       SUM(in_expenditures),
+			       SUM(out_earnings),
+			       SUM(out_expenditures)
 			  FROM "EarningsTracker"
-			 WHERE node = :node
-			     ;
+			 WHERE node = :node;
 			)QRY")
 				.bind(":node", std::string(node))
 				.execute()
@@ -231,11 +293,13 @@ private:
 	Ev::Io<void> status() {
 		return db.transact().then([this](Sqlite3::Tx tx) {
 			auto fetch = tx.query(R"QRY(
-			SELECT node
-			     , in_earnings, in_expenditures
-			     , out_earnings, out_expenditures
-			  FROM "EarningsTracker"
-			     ;
+        		SELECT node,
+        		       SUM(in_earnings) AS total_in_earnings,
+        		       SUM(in_expenditures) AS total_in_expenditures,
+        		       SUM(out_earnings) AS total_out_earnings,
+        		       SUM(out_expenditures) AS total_out_expenditures
+        		  FROM "EarningsTracker"
+        		 GROUP BY node; 
 			)QRY").execute();
 
 			uint64_t total_in_earnings = 0;
