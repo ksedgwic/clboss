@@ -25,6 +25,12 @@ auto const help = std::string(R"JSON(
   , { "command": "clboss-unmanage nodeid tags"
     , "category": "plugin"
     }
+  , { "command": "clboss-recent-earnings [days]"
+    , "category": "plugin"
+    }
+  , { "command": "clboss-earnings-history [nodeid]"
+    , "category": "plugin"
+    }
   ]
 }
 )JSON");
@@ -73,6 +79,10 @@ int main() {
 		assert(commands["clboss-status"].usage == "");
 		assert(commands["clboss-ignore-onchain"].usage == "[hours]");
 		assert(commands["clboss-unmanage"].usage == "nodeid tags");
+		assert(commands.count("clboss-recent-earnings") != 0);
+		assert(commands["clboss-recent-earnings"].usage == "[days]");
+		assert(commands.count("clboss-earnings-history") != 0);
+		assert(commands["clboss-earnings-history"].usage == "[nodeid]");
 
 		return Ev::lift();
 	});

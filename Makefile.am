@@ -600,6 +600,8 @@ TESTS = \
 	tests/boss/test_needsconnectsolicitor \
 	tests/boss/test_onchainfeemonitor_samples_init \
 	tests/boss/test_peerjudge_agetracker \
+	tests/boss/test_recentearnings \
+	tests/boss/test_earningshistory \
 	tests/boss/test_peerjudge_algo \
 	tests/boss/test_peerjudge_datagatherer \
 	tests/boss/test_peerstatistician \

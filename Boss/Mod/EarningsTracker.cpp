@@ -1,6 +1,11 @@
 #include"Boss/Mod/EarningsTracker.hpp"
+#include"Boss/Msg/CommandFail.hpp"
+#include"Boss/Msg/CommandRequest.hpp"
+#include"Boss/Msg/CommandResponse.hpp"
 #include"Boss/Msg/DbResource.hpp"
 #include"Boss/Msg/ForwardFee.hpp"
+#include"Boss/Msg/ManifestCommand.hpp"
+#include"Boss/Msg/Manifestation.hpp"
 #include"Boss/Msg/ProvideStatus.hpp"
 #include"Boss/Msg/RequestEarningsInfo.hpp"
 #include"Boss/Msg/RequestMoveFunds.hpp"
@@ -15,6 +20,7 @@
 
 #include<cmath>
 #include<map>
+#include<iostream>
 
 namespace Boss { namespace Mod {
 
@@ -54,7 +60,92 @@ private:
 			     >([this](Msg::RequestEarningsInfo const& req) {
 			return Boss::concurrent(request_earnings_info(req));
 		});
-
+		bus.subscribe<Msg::Manifestation
+			     >([this](Msg::Manifestation const& _) {
+			return bus.raise(Msg::ManifestCommand{
+				"clboss-recent-earnings", "[days]",
+				"Show offchain_earnings_tracker data for the most recent {days} "
+				"(default 14 days).",
+				false
+			}) + bus.raise(Msg::ManifestCommand{
+				"clboss-earnings-history", "[nodeid]",
+				"Show earnings and expenditure history for {nodeid} "
+				"(default all nodes)",
+				false
+			});
+		});
+		bus.subscribe<Msg::CommandRequest>([this](Msg::CommandRequest const& req) {
+			auto id = req.id;
+			auto paramfail = [this, id]() {
+				return bus.raise(Msg::CommandFail{
+						id, -32602,
+						"Parameter failure",
+						Json::Out::empty_object()
+					});
+			};
+			if (req.command == "clboss-recent-earnings") {
+				auto days = double(14.0);
+				auto days_j = Jsmn::Object();
+				auto params = req.params;
+				if (params.is_object()) {
+					if (params.size() > 1)
+						return paramfail();
+					if (params.size() == 1) {
+						if (!params.has("days"))
+							return paramfail();
+						days_j = params["days"];
+					}
+				} else if (params.is_array()) {
+					if (params.size() > 1)
+						return paramfail();
+					if (params.size() == 1)
+						days_j = params[0];
+				}
+				if (!days_j.is_null()) {
+					if (!days_j.is_number())
+						return paramfail();
+					days = (double) days_j;
+				}
+				return db.transact().then([this, id, days](Sqlite3::Tx tx) {
+					auto report = recent_earnings_report(tx, days);
+					tx.commit();
+					return bus.raise(Msg::CommandResponse{
+							id, report
+						});
+				});
+			} else if (req.command == "clboss-earnings-history") {
+				auto nodeid = std::string("");
+				auto nodeid_j = Jsmn::Object();
+				auto params = req.params;
+				if (params.is_object()) {
+					if (params.size() > 1)
+						return paramfail();
+					if (params.size() == 1) {
+						if (!params.has("nodeid"))
+							return paramfail();
+						nodeid_j = params["nodeid"];
+					}
+				} else if (params.is_array()) {
+					if (params.size() > 1)
+						return paramfail();
+					if (params.size() == 1)
+						nodeid_j = params[0];
+				}
+				if (!nodeid_j.is_null()) {
+					if (!nodeid_j.is_string())
+						return paramfail();
+					nodeid = (std::string) nodeid_j;
+				}
+				return db.transact().then([this, id, nodeid](Sqlite3::Tx tx) {
+					auto report = earnings_history_report(tx, nodeid);
+					tx.commit();
+					return bus.raise(Msg::CommandResponse{
+							id, report
+						});
+				});
+			}
+			return Ev::lift();
+		});
 		bus.subscribe<Msg::SolicitStatus
 			     >([this](Msg::SolicitStatus const& _) {
 			if (!db)
@@ -346,6 +437,129 @@ private:
 				std::move(out)
 			});
 		});
+	}
+
+	Json::Out recent_earnings_report(Sqlite3::Tx& tx, double days) {
+		auto cutoff = bucket_time(get_now()) - (days * 24 * 60 * 60);
+		auto fetch = tx.query(R"QRY(
+        		SELECT node,
+        		       SUM(in_earnings) AS total_in_earnings,
+        		       SUM(in_expenditures) AS total_in_expenditures,
+        		       SUM(out_earnings) AS total_out_earnings,
+        		       SUM(out_expenditures) AS total_out_expenditures
+        		  FROM "EarningsTracker"
+                         WHERE time_bucket >= :cutoff
+        		 GROUP BY node; 
+			)QRY")
+			.bind(":cutoff", cutoff)
+			.execute()
+			;
+		auto out = Json::Out();
+		auto top = out.start_object();
+		auto recent = top.start_object("recent");
+		uint64_t total_in_earnings = 0;
+		uint64_t total_in_expenditures = 0;
+		uint64_t total_out_earnings = 0;
+		uint64_t total_out_expenditures = 0;
+		for (auto& r : fetch) {
+			auto in_earnings = r.get<std::uint64_t>(1);
+			auto in_expenditures = r.get<std::uint64_t>(2);
+			auto out_earnings = r.get<std::uint64_t>(3);
+			auto out_expenditures = r.get<std::uint64_t>(4);
+			auto sub = recent.start_object(r.get<std::string>(0));
+			sub
+				.field("in_earnings", in_earnings)
+				.field("in_expenditures", in_expenditures)
+				.field("out_earnings", out_earnings)
+				.field("out_expenditures", out_expenditures)
+				;
+			sub.end_object();
+			total_in_earnings += in_earnings;
+			total_in_expenditures += in_expenditures;
+			total_out_earnings += out_earnings;
+			total_out_expenditures += out_expenditures;
+		}
+		recent.end_object();
+		auto total = top.start_object("total");
+		total
+			.field("in_earnings", total_in_earnings)
+			.field("in_expenditures", total_in_expenditures)
+			.field("out_earnings", total_out_earnings)
+			.field("out_expenditures", total_out_expenditures)
+			;
+		total.end_object();
+		top.end_object();
+		return out;
+	}
+
+	Json::Out earnings_history_report(Sqlite3::Tx& tx, std::string nodeid) {
+		std::string sql;
+		if (nodeid.empty()) {
+		        sql = R"QRY(
+		            SELECT time_bucket,
+		                   SUM(in_earnings) AS total_in_earnings,
+		                   SUM(in_expenditures) AS total_in_expenditures,
+		                   SUM(out_earnings) AS total_out_earnings,
+		                   SUM(out_expenditures) AS total_out_expenditures
+		              FROM "EarningsTracker"
+		             GROUP BY time_bucket
+		             ORDER BY time_bucket;
+		        )QRY";
+		} else {
+		        sql = R"QRY(
+		            SELECT time_bucket,
+		                   in_earnings,
+		                   in_expenditures,
+		                   out_earnings,
+		                   out_expenditures
+		              FROM "EarningsTracker"
+		             WHERE node = :nodeid
+		             ORDER BY time_bucket;
+		        )QRY";
+		}
+		auto query = tx.query(sql.c_str());
+		if (!nodeid.empty()) {
+			query.bind(":nodeid", nodeid);
+		}
+		auto fetch = query.execute();
+
+		auto out = Json::Out();
+		auto top = out.start_object();
+		auto history = top.start_array("history");
+		uint64_t total_in_earnings = 0;
+		uint64_t total_in_expenditures = 0;
+		uint64_t total_out_earnings = 0;
+		uint64_t total_out_expenditures = 0;
+		for (auto& r : fetch) {
+			auto in_earnings = r.get<std::uint64_t>(1);
+			auto in_expenditures = r.get<std::uint64_t>(2);
+			auto out_earnings = r.get<std::uint64_t>(3);
+			auto out_expenditures = r.get<std::uint64_t>(4);
+			auto sub = history.start_object();
+			sub
+				.field("bucket_time", static_cast<std::uint64_t>(r.get<double>(0)))
+				.field("in_earnings", in_earnings)
+				.field("in_expenditures", in_expenditures)
+				.field("out_earnings", out_earnings)
+				.field("out_expenditures", out_expenditures)
+				;
+			sub.end_object();
+			total_in_earnings += in_earnings;
+			total_in_expenditures += in_expenditures;
+			total_out_earnings += out_earnings;
+			total_out_expenditures += out_expenditures;
+		}
+		history.end_array();
+		auto total = top.start_object("total");
+		total
+			.field("in_earnings", total_in_earnings)
+			.field("in_expenditures", total_in_expenditures)
+			.field("out_earnings", total_out_earnings)
+			.field("out_expenditures", total_out_expenditures)
+			;
+		total.end_object();
+		top.end_object();
+		return out;
 	}
 
 public:

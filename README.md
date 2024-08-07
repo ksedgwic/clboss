@@ -432,3 +432,52 @@ Specify the value in satoshis without adding any unit
 suffix, e.g.
 
     lightningd --clboss-min-channel=1000000
+
+### `clboss-recent-earnings`, `clboss-earnings-history`
+
+As of CLBOSS version [TBD] earnings and expenditures are tracked on a
+daily basis. 
+
+The `clboss-recent-earnings` command returns an equivalent data
+structure to the `offchain_earnings_tracker` collection in
+`clboss-status` but only shows recent earnings and expenditures.  The
+`clboss-recent-earnings` command takes an optional `days` argument
+which defaults to a fortnight (14 days).
+
+The `clboss-earnings-history` command returns a daily breakdown of
+earnings and expenditures.  The `clboss-earnings-history` command
+takes an optional `nodeid` argument which limits the history to a
+particular node.  Without the argument the daily history accumulated
+across all nodes.  In the history output the time bucket with value 0
+holds any legacy earnings and expenditures which were collected by
+legacy nodes before daily tracking.
+
+### `clboss-recent-earnings`, `clboss-earnings-history` Commands
+
+As of CLBOSS version [TBD], earnings and expenditures are tracked on a daily basis.
+The following commands have been added to observe the new data:
+
+- **`clboss-recent-earnings`**:
+  - **Purpose**: Returns a data structure equivalent to the
+    `offchain_earnings_tracker` collection in `clboss-status`, but
+    only includes recent earnings and expenditures.
+  - **Arguments**:
+    - `days` (optional): Specifies the number of days to include in
+      the report. Defaults to a fortnight (14 days) if not provided.
+
+- **`clboss-earnings-history`**:
+  - **Purpose**: Provides a daily breakdown of earnings and expenditures.
+  - **Arguments**:
+    - `nodeid` (optional): Limits the history to a particular node if
+      provided. Without this argument, the history is accumulated
+      across all nodes.
+  - **Output**: 
+    - The history consists of an array of records showing the earnings
+      and expenditures for each day.
+    - The history includes an initial record with a time value of 0,
+      which contains any legacy earnings and expenditures collected by
+      CLBOSS before daily tracking was implemented.
+
+These commands enhance the tracking of financial metrics, allowing for
+detailed and recent analysis of earnings and expenditures on a daily
+basis.
