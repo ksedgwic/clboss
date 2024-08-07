@@ -2,6 +2,7 @@
 #define UTIL_EITHER_HPP
 
 #include<cstdint>
+#include<iostream>
 #include<utility>
 
 namespace Util {
@@ -225,6 +226,19 @@ bool operator<=(Util::Either<L,R> const& a, Util::Either<L,R> const& b) {
 	return !(b < a);
 }
 
+template<typename L, typename R>
+std::ostream& operator<<(std::ostream& os, const Either<L, R>& either) {
+    either.cmatch(
+        [&](const L& l) {
+            os << "Left(" << l << ")";
+        },
+        [&](const R& r) {
+            os << "Right(" << r << ")";
+        }
+    );
+    return os;
 }
+
+} // namespace Util
 
 #endif /* !defined(UTIL_EITHER_HPP) */
