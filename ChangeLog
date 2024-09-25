@@ -4,15 +4,76 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.14.0] - 2024-09-25: "Hand at the Grindstone"
 
 ### Added
 
-- Added `Util::BacktraceException` which captures backtraces where an
-  exception is thrown and then formats them for debugging when they
-  are displayed with `what()`.  The backtraces are more useful if the
-  following configuration is used: `./configure CXXFLAGS="-g -Og"` but
-  this results in larger, less optimized binaries.
+- **EarningsTracker Upgrade**: Upgraded `EarningsTracker` to a time
+  bucket schema, allowing storage and access to earnings and
+  expenditure data over specific time ranges. This prepares for future
+  enhancements in balancing strategies based on time-based data. Note
+  that this update includes automatic database schema changes;
+  downgrading to previous versions will require manual database
+  migration.
+
+- **Exception Backtraces**: Added `Util::BacktraceException` which
+  captures backtraces where an exception is thrown and then formats
+  them for debugging when they are displayed with `what()`.  The
+  backtraces are more useful if the following configuration is used:
+  `./configure CXXFLAGS="-g -Og"` but this results in larger, less
+  optimized binaries.
+
+- **New Scripts in Contrib**:
+  - `clboss-routing-stats`: A script that summarizes routing
+    performance of channels, displaying PeerID, SCID, and Alias. It
+    sorts channels by net fees (income - expenses), success per day,
+    and age.
+  - `clboss-earnings-history` and `clboss-recent-earnings`: Scripts to
+    display historical and recent earnings.
+
+  - Added `contrib/README.md` to provide information about the scripts
+    and tools available in the `contrib` directory.
+  - Introduced a Poetry project to manage Python dependencies in `contrib`.
+
+- **Testing and Debugging Enhancements**:
+  - Added `get_now()` and `mock_get_now()` functions to
+    `EarningsTracker` and its tests to support time-based
+    functionalities.
+  - Implemented `Either::operator<<` and `Jsmn::Object::operator==` to
+    facilitate debugging and writing test cases.
+  - Factored `parse_json` into a `Jsmn::Object` static method to
+    simplify test case generation using literal JSON.
+
+### Changed
+
+- **Build System**:
+  - Updated `configure` to use the C++17 standard, fixing compilation
+    issues on platforms like Raspiblitz.
+  - Improved `commit_hash.h` dependencies and generation to ensure
+    correct regeneration when the development tree is modified.
+
+- **Contrib Script Enhancements**:
+  - Generalized network parameter handling in `clboss-routing-stats`
+    to support multiple networks.
+  - Updated `clboss-routing-stats` to utilize an alias cache for
+    better performance.
+
+### Fixed
+
+- **Testing**:
+  - Increased the timeout for `jsmn/test_performance` tests to prevent
+    premature failures during testing.
+
+- **Logging Improvements**:
+  - Inserted exception `what()` values into logging messages to
+    enhance debugging output and provide more detailed error
+    information.
+
+- **Miscellaneous**:
+  - Resolved issues with the regeneration of `commit_hash.h` when the
+    development tree is altered by Git operations.
+
+### Added
 
 ## [0.13.3] - 2024-08-09: "Blinded by the Light"
 
