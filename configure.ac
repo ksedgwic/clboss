@@ -50,6 +50,13 @@ AX_LIB_CURL(,[:],[
 	AC_MSG_ERROR([Need libcurl.])
 ])
 
+# Check for libunwind
+PKG_CHECK_MODULES([LIBUNWIND], [libunwind], [
+  AC_DEFINE([HAVE_LIBUNWIND], [1], [Define if libunwind is available])
+], [
+  AC_MSG_ERROR([libunwind is required but not found])
+])
+
 # Checks for header files.
 
 # Checks for typedefs, structures, and compiler characteristics.

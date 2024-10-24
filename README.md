@@ -44,6 +44,7 @@ Debian-derived systems:
 * `libev-dev`
 * `libcurl4-gnutls-dev`
 * `libsqlite3-dev`
+* `libunwind-dev`
 
 RPM-dervied :
 * `groupinstall "Development Tools"`
@@ -51,6 +52,7 @@ RPM-dervied :
 * `libev-devel`
 * `libcurl-devel`
 * `libsqlite3x-devel`
+* `libunwind-devel`
 
 Alpine:
 * `build-base`
@@ -58,6 +60,7 @@ Alpine:
 * `libev-dev`
 * `curl-dev`
 * `sqlite-dev`
+* `libunwind-dev`
 
 Equivalent packages have a good probability of existing in
 non-Debian-derived distributions as well.
@@ -132,6 +135,7 @@ release:
     pkg install libev
     pkg install pkgconf
     pkg install sqlite3
+    pkg install libunwind
 
 In addition, you have to use `gmake` for building, not the
 system `make`, as the included `libsecp256k1` requires

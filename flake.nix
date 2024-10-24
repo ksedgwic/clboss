@@ -23,6 +23,7 @@
             libev
             libevdev
             curl
+            libunwind
             sqlite
             bind
             autoconf

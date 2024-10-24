@@ -9,6 +9,9 @@
 #include <vector>
 #include <string.h>
 
+#define UNW_LOCAL_ONLY
+#include <libunwind.h>
+
 namespace Util {
 
 /** class Util::BacktraceException<E>
@@ -47,23 +50,40 @@ private:
 	static constexpr size_t MAX_FRAMES = 100;
 	mutable bool formatted_ = false;
 	mutable std::string full_message_;
-	mutable void* backtrace_addresses_[MAX_FRAMES];
+	mutable std::vector<unw_word_t> backtrace_addresses_;
 	mutable size_t stack_depth;
 
 	void capture_backtrace() {
-		memset(backtrace_addresses_, 0, sizeof(backtrace_addresses_));
-		stack_depth = backtrace(backtrace_addresses_, sizeof(backtrace_addresses_) / sizeof(void*));
+		unw_cursor_t cursor;
+		unw_context_t context;
+		unw_getcontext(&context);
+		unw_init_local(&cursor, &context);
+
+		while (unw_step(&cursor) > 0 && backtrace_addresses_.size() < MAX_FRAMES) {
+			unw_word_t ip;
+			unw_get_reg(&cursor, UNW_REG_IP, &ip);
+			backtrace_addresses_.push_back(ip);
+		}
+
+		stack_depth = backtrace_addresses_.size();
 	}
 
 	std::string format_backtrace() const {
-		char** symbols = backtrace_symbols(backtrace_addresses_, stack_depth);
+		// Create an array of pointers compatible with `backtrace_symbols`.
+		std::vector<void*> pointers(backtrace_addresses_.size());
+		for (size_t i = 0; i < backtrace_addresses_.size(); ++i) {
+			pointers[i] = reinterpret_cast<void*>(backtrace_addresses_[i]);
+		}
+
+		// Use `backtrace_symbols` with the adapted pointers.
+		char** symbols = backtrace_symbols(pointers.data(), stack_depth);
 		std::ostringstream oss;
 		for (size_t i = 0; i < stack_depth; ++i) {
 			oss << '#' << std::left << std::setfill(' ') << std::setw(2) << i << ' ';
-			auto line = addr2line(backtrace_addresses_[i]);
+			auto line = addr2line(pointers[i]);
 			if (line.find("??") != std::string::npos) {
 				// If addr2line doesn't find a good
-				// answer use basic information
+				// answer, use basic information
 				// instead.
 				oss << symbols[i] << std::endl;
 			} else {
