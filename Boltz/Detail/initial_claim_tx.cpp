@@ -5,9 +5,10 @@
 #include"Boltz/Detail/initial_claim_tx.hpp"
 #include"Ln/Amount.hpp"
 #include"Ln/Preimage.hpp"
+#include"Secp256k1/Musig.hpp"
 #include"Secp256k1/PrivKey.hpp"
+#include"Secp256k1/PubKey.hpp"
 #include"Secp256k1/Signature.hpp"
-#include"Secp256k1/SignerIF.hpp"
 #include<sstream>
 
 namespace {
@@ -23,9 +24,11 @@ auto const dust_limit = Ln::Amount::sat(547);
 
 }
 
+using namespace Secp256k1;
+
 namespace Boltz { namespace Detail {
 
-void
+Sha256::Hash
 initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 		, Ln::Amount& claim_tx_fees /* written by function */
 
@@ -41,9 +44,6 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 		, Ln::Amount lockup_amount
 
 		/* Witness details.  */
-		, Secp256k1::SignerIF& signer
-		, Secp256k1::PrivKey const& tweak
-		, Ln::Preimage const& preimage
 		, std::vector<std::uint8_t> const& witnessScript
 
 		/* Output address.  */
@@ -54,7 +54,7 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 	claim_tx.outputs.resize(1);
 	/* Set nLockTime and nSequence.  */
 	claim_tx.nLockTime = blockheight + 1;
-	claim_tx.inputs[0].nSequence = 0xFFFFFFFF; /* Final!  Not RBF!  */
+	claim_tx.inputs[0].nSequence = 0xFFFFFFFF; /* Final!  Not RBF!  */ // TODO except we are now in a post Full-RBF world after Bitcoin 28.0...
 
 	/* Set up input.  */
 	claim_tx.inputs[0].prevTxid = lockup_txid;
@@ -69,9 +69,10 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 	);
 
 	/* Measure weight.  */
+	//TODO value of sig varint and size of signature itself must be schnorr/musig based
 	auto nonwitness_weight = get_nonwitness_weight(claim_tx);
 	auto witness_weight = 1 /* varint of signature */
-			    + 73 /* DER-encoded ECDSA signature.  */
+			    + 64 /* schnorr signature.  */
 			    + 1 /* varint of preimage */
 			    + 32 /* preimage */
 			    + 1 /* varint of witnessScript */
@@ -110,23 +111,39 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 	 * for now.
 	 * That took several hours of spinning....
 	 */
-	auto scriptCode = std::vector<std::uint8_t>(witnessScript.size() + 1);
-	scriptCode[0] = std::uint8_t(witnessScript.size());
+	auto scriptPubkey = std::vector<std::uint8_t>(witnessScript.size() + 1);
+	scriptPubkey[0] = std::uint8_t(witnessScript.size());
 	std::copy( witnessScript.begin(), witnessScript.end()
-		 , scriptCode.begin() + 1
+		 , scriptPubkey.begin() + 1
 		 );
-	auto sighash = Bitcoin::sighash( claim_tx
-				       , Bitcoin::SIGHASH_ALL
-				       , 0
-				       , lockup_amount
-				       , scriptCode
-				       );
-	auto signature = signer.get_signature_tweak(tweak, sighash);
 
-	/* Load up the witnesses.  */
+	return Bitcoin::p2tr_sighash
+		( claim_tx
+		, Bitcoin::SIGHASH_DEFAULT
+		, 0
+		, std::vector<Ln::Amount>{lockup_amount}
+		, std::vector<std::vector<std::uint8_t>>{scriptPubkey}
+		, Bitcoin::KEYPATH
+		);
+}
+
+void
+affix_aggregated_signature( Bitcoin::Tx& claim_tx
+		/* Witness details.  */
+		, Ln::Preimage const& preimage
+		, std::vector<std::uint8_t> const& witnessScript
+		, std::vector<std::uint8_t> const& aggregatesig
+		) {
+	auto scriptPubkey = std::vector<std::uint8_t>(witnessScript.size() + 1);
+	scriptPubkey[0] = std::uint8_t(witnessScript.size());
+	std::copy( witnessScript.begin(), witnessScript.end()
+		 , scriptPubkey.begin() + 1
+		 );
+
+	/* Load up the witnesses.  */ // TODO structured the same in bip341 ?
 	auto& witnesses = claim_tx.inputs[0].witness.witnesses;
-	witnesses[0] = signature.der_encode();
-	witnesses[0].push_back(std::uint8_t(Bitcoin::SIGHASH_ALL));
+	witnesses[0] = aggregatesig;
+	witnesses[0].push_back(std::uint8_t(Bitcoin::SIGHASH_DEFAULT));
 	witnesses[1].resize(32);
 	preimage.to_buffer(&witnesses[1][0]);
 	witnesses[2] = witnessScript;
