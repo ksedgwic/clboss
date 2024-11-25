@@ -94,19 +94,14 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 				       , std::string swapId
 				       ) {
 	auto p_swapId = std::make_shared<std::string>(std::move(swapId));
-	auto parms = Json::Out()
-		.start_object()
-			.field("id", *p_swapId)
-		.end_object();
-	return conn->api( "/swapstatus"
-			, Util::make_unique<Json::Out>(std::move(parms))
+	return conn->api( "/swap/" + *p_swapId, nullptr
 			).then([this, p_swapId](Jsmn::Object sres) {
 			/* Save, then log.  */
 			auto tmp_sres = std::make_shared<Jsmn::Object>(
 				std::move(sres)
 			);
 			auto os = std::ostringstream();
-			os << "/swapstatus \"" << *p_swapId << "\" => "
+			os << "/swap \"" << *p_swapId << "\" => "
 			   << *tmp_sres
 			    ;
 			return logd(os.str()).then([tmp_sres]() {
@@ -167,6 +162,7 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 				return Ev::lift(kont);
 			}
 
+			// TODO TODO check this status exists in v2 API
 			if (status == "transaction.confirmed") {
 				auto txhex = std::string(
 					sres["transaction"]["hex"]
@@ -228,6 +224,8 @@ ServiceImpl::swap_onchain( std::shared_ptr<std::string> swapId
 			, db
 			, env
 			, label
+			, *conn
+			, random
 			, *swapId
 			, blockheight
 			, std::move(*tx)
@@ -398,5 +396,6 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 		});
 	});
 }
+
 
 }}

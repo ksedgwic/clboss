@@ -73,21 +73,20 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 
 		auto params = Json::Out()
 			.start_object()
-				.field("type", "reversesubmarine")
-				.field("pairId", "BTC/BTC")
-				.field("orderSide", "buy")
-				.field( "invoiceAmount"
-				      , offchainAmount.to_sat()
-				      )
+				.field("from", "BTC")
+				.field("to", "BTC")
 				.field( "preimageHash"
 				      , std::string(preimageHash)
 				      )
 				.field( "claimPublicKey"
 				      , std::string(tweakPubKey)
 				      )
+				.field( "invoiceAmount"
+				      , offchainAmount.to_sat()
+				      )
 			.end_object()
 			;
-		return conn.api( "/createswap"
+		return conn.api( "/v2/swap/reverse"
 			       , Util::make_unique<Json::Out>(
 					std::move(params)
 				 )
@@ -95,13 +94,17 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 	}).then([this](Jsmn::Object res) {
 		/* Parse result.  */
 		auto tmp_swapId = std::string();
-		auto tmp_s_redeemScript = std::string();
+		auto tmp_s_claimScript = std::string();
+		auto tmp_s_refundScript = std::string();
+		auto tmp_refundPubkey = std::string();
 		auto tmp_invoice = std::string();
 		auto tmp_timeoutBlockheight = std::uint32_t();
 		auto tmp_onchainAmount = std::uint64_t();
 		try {
 			tmp_swapId = (std::string) res["id"];
-			tmp_s_redeemScript = (std::string) res["redeemScript"];
+			tmp_s_claimScript = (std::string) res["swapTree"]["claimLeaf"]["output"];
+			tmp_s_refundScript = (std::string) res["swapTree"]["refundLeaf"]["output"];
+			tmp_refundPubkey = (std::string) res["refundPublicKey"];
 			tmp_invoice = (std::string) res["invoice"];
 			tmp_timeoutBlockheight = (std::uint32_t) (double) res["timeoutBlockHeight"];
 			tmp_onchainAmount = (std::uint64_t) (double) res["onchainAmount"];
@@ -115,36 +118,56 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 				return Ev::lift();
 			});
 		}
-		/* Validate redeemScript is hex.   */
-		if (!Util::Str::ishex(tmp_s_redeemScript)) {
-			return loge( std::string("invalid redeemScript: ")
-				   + tmp_s_redeemScript
+		/* Validate claimScript is hex.   */
+		if (!Util::Str::ishex(tmp_s_claimScript)) {
+			return loge( std::string("invalid claimScript: ")
+				   + tmp_s_claimScript
 				   ).then([]() {
 				throw Fail();
 				return Ev::lift();
 			});
 		}
-		auto tmp_redeemScript = Util::Str::hexread(tmp_s_redeemScript);
+		auto tmp_claimScript = Util::Str::hexread(tmp_s_claimScript);
 
-		/* Validate redeemScript is correct.  */
+		/* Validate refundScript is hex.   */
+		if (!Util::Str::ishex(tmp_s_refundScript)) {
+			return loge( std::string("invalid refundScript: ")
+				   + tmp_s_refundScript
+				   ).then([]() {
+				throw Fail();
+				return Ev::lift();
+			});
+		}
+		auto tmp_refundScript = Util::Str::hexread(tmp_s_refundScript);
+
+		/* Validate the two taptree leaf scripts are correct.  */
 		auto script_hash160 = Ripemd160::Hash();
-		auto script_mypubkey = Secp256k1::PubKey();
-		auto script_locktime = std::uint32_t();
-		auto script_theirpubkey = Secp256k1::PubKey();
-		auto ok = match_lockscript( script_hash160
-					  , script_mypubkey
-					  , script_locktime
-					  , script_theirpubkey
-					  , tmp_redeemScript
-					  );
-		ok = ok
-		  && (script_hash160 == preimageHash160)
-		  && (script_mypubkey == tweakPubKey)
-		  && (script_locktime == tmp_timeoutBlockheight)
-		   ;
+		auto claim_pubkey = Secp256k1::XonlyPubKey();
+		auto ok = match_claimscript( script_hash160
+								   , claim_pubkey
+								   , tmp_claimScript
+								   );
+		ok = ok && (script_hash160 == preimageHash160);
+
 		if (!ok) {
-			return loge( std::string("invalid redeemScript: ")
-				   + tmp_s_redeemScript
+			return loge( std::string("invalid claimScript: ")
+				   + tmp_s_claimScript
+				   ).then([]() {
+				throw Fail();
+				return Ev::lift();
+			});
+		}
+		auto script_locktime = std::uint32_t();
+		auto refund_pubkey = Secp256k1::XonlyPubKey();
+		ok = match_refundscript( script_locktime
+							   , refund_pubkey
+							   , tmp_refundScript
+							   );
+		ok = ok && (script_locktime == tmp_timeoutBlockheight);
+
+		if (!ok) {
+			return loge( std::string("invalid refundScript: ")
+				   + tmp_s_refundScript
 				   ).then([]() {
 				throw Fail();
 				return Ev::lift();
@@ -186,7 +209,9 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 
 		/* Validation is okay!  Save the data into the object.  */
 		swapId = Util::make_unique<std::string>(std::move(tmp_swapId));
-		redeemScript = std::move(tmp_redeemScript);
+		claimScript = std::move(tmp_claimScript);
+		refundScript = std::move(tmp_refundScript);
+		refundPubkey = std::move(tmp_refundPubkey);
 		timeoutBlockheight = std::move(tmp_timeoutBlockheight);
 		onchainAmount = Ln::Amount::sat(tmp_onchainAmount);
 		invoice = std::move(tmp_invoice);
@@ -227,7 +252,9 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		     , preimage
 		     , destinationAddress
 		     , swapId
-		     , redeemScript
+		     , claimScript
+		     , refundScript
+			 , refundPubkey
 		     , timeoutBlockheight
 		     , onchainAmount
 		     , lockedUp
@@ -239,7 +266,9 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		     , :preimage
 		     , :destinationAddress
 		     , :swapId
-		     , :redeemScript
+		     , :claimScript
+		     , :refundScript
+			 , :refundPubkey
 		     , :timeoutBlockheight
 		     , :onchainAmount
 		     , :lockedUp
@@ -251,11 +280,17 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 			.bind(":preimage", std::string(preimage))
 			.bind(":destinationAddress", destinationAddress)
 			.bind(":swapId", *swapId)
-			.bind(":redeemScript"
-			     , Util::Str::hexdump( &redeemScript[0]
-						 , redeemScript.size()
+			.bind(":claimScript"
+			     , Util::Str::hexdump( &claimScript[0]
+						 , claimScript.size()
 						 )
 			     )
+			.bind(":refundScript"
+			     , Util::Str::hexdump( &refundScript[0]
+						 , refundScript.size()
+						 )
+			     )
+			.bind(":refundPubkey", refundPubkey)
 			.bind(":timeoutBlockheight", timeoutBlockheight)
 			.bind(":onchainAmount", onchainAmount.to_sat())
 			.bind(":lockedUp", 0)

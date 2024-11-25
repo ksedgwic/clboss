@@ -1,12 +1,21 @@
+#include"Boltz/ConnectionIF.hpp"
 #include"Boltz/Detail/ClaimTxHandler.hpp"
 #include"Boltz/Detail/compute_preimage.hpp"
 #include"Boltz/Detail/find_lockup_outnum.hpp"
 #include"Boltz/Detail/initial_claim_tx.hpp"
+#include"Boltz/Detail/swaptree.hpp"
 #include"Boltz/EnvIF.hpp"
+#include"Bitcoin/pubkey_to_scriptPubKey.hpp"
 #include"Ev/Io.hpp"
+#include"Jsmn/Object.hpp"
+#include"Json/Out.hpp"
 #include"Secp256k1/SignerIF.hpp"
+#include"Secp256k1/Signature.hpp"
+#include"Secp256k1/TapscriptTree.hpp"
 #include"Sqlite3.hpp"
 #include"Util/Str.hpp"
+#include"Util/make_unique.hpp"
+#include<string.h>
 #include<sstream>
 
 namespace {
@@ -16,6 +25,7 @@ struct End { };
 
 }
 
+using namespace Secp256k1;
 
 namespace Boltz { namespace Detail {
 
@@ -99,14 +109,18 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 		}
 		// TODO: Check for validity of destination address?
 
+		auto claimScript = std::vector<std::uint8_t>();
+		auto refundScript = std::vector<std::uint8_t>();
 		/* Perform the actual fetch of the data.  */
 		auto fetch = tx.query(R"QRY(
 		SELECT tweak -- 0
 		     , preimage -- 1
 		     , destinationAddress -- 2
-		     , redeemScript -- 3
-		     , timeoutBlockheight -- 4
-		     , onchainAmount -- 5
+		     , claimScript -- 3
+		     , refundScript -- 4
+		     , timeoutBlockheight -- 5
+		     , onchainAmount -- 6
+		     , refundPubKey -- 7
 		  FROM "BoltzServiceFactory_rsub"
 		 WHERE apiAccess = :apiAccess
 		   AND swapId = :swapId
@@ -119,13 +133,17 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 			tweak = Secp256k1::PrivKey(r.get<std::string>(0));
 			preimage = Ln::Preimage(r.get<std::string>(1));
 			destinationAddress = r.get<std::string>(2);
-			redeemScript = Util::Str::hexread(
+			claimScript = Util::Str::hexread(
 				r.get<std::string>(3)
 			);
-			timeoutBlockheight = r.get<std::uint32_t>(4);
-			onchainAmount = Ln::Amount::sat(
-				r.get<std::uint64_t>(5)
+			refundScript = Util::Str::hexread(
+				r.get<std::string>(4)
 			);
+			timeoutBlockheight = r.get<std::uint32_t>(5);
+			onchainAmount = Ln::Amount::sat(
+				r.get<std::uint64_t>(6)
+			);
+			refund_pubkey = Secp256k1::PubKey(r.get<std::string>(7));
 		}
 		tx.commit();
 
@@ -137,6 +155,38 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 			   << blockheight
 			    ;
 			return logd(os.str()).then([]() {
+				throw End();
+				return Ev::lift();
+			});
+		}
+
+		/* create aggregate pubkey
+		 * role ordered: boltz key #0, our key #1.  */
+		try {
+			musigsession = Boltz::MusigSession(tweak, refund_pubkey, signer);
+		} catch (Secp256k1::InvalidPubKey const& e) {
+			return loge(e.what()).then([]() {
+				throw End();
+				return Ev::lift();
+			});
+		} catch (Musig::InvalidArg const& e) {
+			return loge(e.what()).then([]() {
+				throw End();
+				return Ev::lift();
+			});
+		}
+
+		/* compute script hash (represented as an x-only pubkey) that constitutes
+		 * the redeem script for signing the cooperative (key) path of the swap. */
+		auto roothash = compute_root_hash(claimScript, refundScript);
+
+		try {
+			/* apply (add to generator point, muliply by the internal key) the
+			 * taptweak hash to the aggregate (internal) key.	*/
+			musigsession.apply_xonly_tweak(roothash);
+			redeemScript = Bitcoin::pk_to_scriptpk(musigsession.get_output_key());
+		} catch (Musig::InvalidArg const& e) {
+			return loge(e.what()).then([]() {
 				throw End();
 				return Ev::lift();
 			});
@@ -158,10 +208,19 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 		}
 		lockupOut = std::size_t(outnum);
 
+		auto const& lockupoutput = lockup_tx.outputs[lockupOut];
+
+		/* compare locally computed lockscript hash with what Boltz expects.  */
+		if (memcmp(redeemScript.data(), lockupoutput.scriptPubKey.data() +2, 32) != 0) {
+			auto msg = std::string("Unexpected lockscript received from Boltz");
+			return loge(msg).then([]() {
+				throw End();
+				return Ev::lift();
+			});
+		}
+
 		/* Check the onchain amount is correct.  */
-		if ( lockup_tx.outputs[lockupOut].amount
-		  != onchainAmount
-		   ) {
+		if (lockupoutput.amount != onchainAmount) {
 			auto msg = std::string("Service lockup tx ")
 				 + std::string(lockup_tx) + " "
 				 + "does not pay expected amount."
@@ -174,6 +233,7 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 
 		/* Now compute the real preimage from the signer key
 		 * and the in-database preimage.  */
+
 		real_preimage = Detail::compute_preimage(signer, preimage);
 
 		return Ev::lift();
@@ -183,22 +243,132 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 		return env.get_feerate();
 	}).then([this](std::uint32_t feerate) {
 		/* Generate the claim tx.  */
-		Detail::initial_claim_tx( claim_tx
-					, lockupClaimFees
+		auto sighash = Detail::initial_claim_tx( claim_tx
+						, lockupClaimFees
 
-					, feerate
-					, blockheight
-					, lockup_txid
-					, lockupOut
-					, onchainAmount
+						, feerate
+						, blockheight
+						, lockup_txid
+						, lockupOut
+						, onchainAmount
 
-					, signer
-					, tweak
-					, real_preimage
-					, redeemScript
+						, redeemScript
 
-					, destinationAddress
-					);
+						, destinationAddress
+						);
+
+		try {
+			musigsession.load_sighash(sighash);
+
+			/* Create our nonce pair for the musig session.  */
+			local_pubnonce = musigsession.generate_local_nonces(random);
+		} catch (Musig::InvalidArg const& e) {
+			return loge(e.what()).then([]() {
+				throw End();
+				return Ev::lift();
+			});
+		}
+
+		return Ev::lift();
+	}).then([this]() {
+		/* send preimage, public nonce and the unsigned claim tx to Boltz.  */
+		auto params = Json::Out()
+			.start_object()
+				.field( "preimage"
+				      , std::string(preimage)
+					  )
+				.field( "pubNonce"
+				      , local_pubnonce
+					  )
+				.field( "transaction"
+				      , std::string(claim_tx)
+				      )
+				.field( "index", 0)
+			.end_object()
+			;
+
+		return conn.api( "/v2/swap/reverse/" + swapId + "/claim"
+					   , Util::make_unique<Json::Out>(
+							std::move(params)
+					     )
+					   );
+	}).then([this](Jsmn::Object res) {
+		/* Parse result.  */
+		std::string boltzpubnonce;
+		std::string boltzpartialsig;
+
+		/* we receive from Boltz their partial sig and public nonce in reply.	*/
+		try {
+			boltzpubnonce = (std::string) res["pubNonce"];
+			boltzpartialsig = (std::string) res["partialSignature"];
+		} catch (Jsmn::TypeError const& e) {
+			auto os = std::ostringstream();
+			os << "Unexpected result from service: "
+			   << res
+			    ;
+			return loge(os.str()).then([]() {
+				throw End();
+				return Ev::lift();
+			});
+		}
+
+		/* Validate pubnonce from Boltz is hex.   */
+		if (!Util::Str::ishex(boltzpubnonce)) {
+			return loge( std::string("invalid pubnonce from boltz: ")
+				   + boltzpubnonce
+				   ).then([]() {
+				throw End();
+				return Ev::lift();
+			});
+		}
+
+		/* Validate partial sig from Boltz is hex.   */
+		if (!Util::Str::ishex(boltzpartialsig)) {
+			return loge( std::string("invalid partialsig from boltz: ")
+				   + boltzpartialsig
+				   ).then([]() {
+				throw End();
+				return Ev::lift();
+			});
+		}
+
+		std::uint8_t aggsig_buffer[64];
+		auto aggregatesig = Secp256k1::SchnorrSig();
+		try {
+			/* aggregate our public nonce with Boltz's, initiate session.  */
+			musigsession.load_pubnonce(boltzpubnonce);
+			musigsession.aggregate_pubnonces();
+
+			/* sign our partial signature and combine into a single sig.  */
+			musigsession.load_partial(boltzpartialsig);
+			musigsession.sign_partial();
+			musigsession.verify_part_sigs();
+			musigsession.aggregate_partials(aggsig_buffer);
+			aggregatesig = SchnorrSig::from_buffer(aggsig_buffer);
+			if (!aggregatesig.valid( musigsession.get_output_key()
+								   , musigsession.get_sighash() )) {
+				return loge( std::string("invalid aggsig for given sighash and output key")
+					   ).then([]() {
+					throw End();
+					return Ev::lift();
+				});
+			}
+		} catch (Musig::InvalidArg const& e) {
+			return loge(e.what()).then([]() {
+				throw End();
+				return Ev::lift();
+			});
+		} catch (Secp256k1::InvalidPrivKey const& e) {
+			return loge(e.what()).then([]() {
+				throw End();
+				return Ev::lift();
+			});
+		}
+		affix_aggregated_signature( claim_tx
+								  , real_preimage
+								  , redeemScript
+								  , aggregatesig.to_buffer()
+								  );
 		/* Log it.  */
 		auto msg = std::string("Broadcasting claim tx: ")
 			 + std::string(claim_tx)

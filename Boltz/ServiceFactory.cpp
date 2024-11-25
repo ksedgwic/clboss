@@ -40,6 +40,7 @@ private:
 			return do_initialize();
 		});
 	}
+	/** TODO migrate old db? new table? **/
 	Ev::Io<void> do_initialize() {
 		/* Perform actual initialization.  */
 		return db.transact().then([this](Sqlite3::Tx tx) {
@@ -68,7 +69,9 @@ private:
 			     -- from exchange, before paying invoice.
 			     -- id from exchange.
 			     , swapId TEXT NOT NULL
-			     , redeemScript TEXT NOT NULL
+			     , claimScript TEXT NOT NULL
+			     , refundScript TEXT NOT NULL
+			     , refundPubkey TEXT NOT NULL
 			     , timeoutBlockheight INTEGER NOT NULL
 			     -- in satoshi.
 			     , onchainAmount INTEGER NOT NULL

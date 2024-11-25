@@ -5,7 +5,7 @@
 
 namespace {
 
-/* Thrown by below if eof or unmatche.  */
+/* Thrown by below if eof or unmatched.  */
 struct Error { };
 
 /* Reads from the given sequence, throws
@@ -43,54 +43,73 @@ Reader<It> make_reader(It b, It e) {
 }
 
 namespace Boltz { namespace Detail {
-
-bool match_lockscript( Ripemd160::Hash& hash
-		     , Secp256k1::PubKey& pubkey_hash
-		     , std::uint32_t& locktime
-		     , Secp256k1::PubKey& pubkey_locktime
-		     , std::vector<std::uint8_t> const& script
-		     ) {
-	std::uint8_t buf[33];
-	auto r = make_reader(script.begin(), script.end());
 	/* Oh no, the try-if antipattern!
 	 * This still ends up more succinct than using `if`
 	 * over and over again, however.
 	 */
+bool match_claimscript( Ripemd160::Hash& hash
+			 , Secp256k1::XonlyPubKey& claim_pubkey
+		     , std::vector<std::uint8_t> const& script
+		     ) {
+	std::uint8_t buf[32];
+	auto r = make_reader(script.begin(), script.end());
+
 	try {
-		/* Template
+		/* claim script Template
 		82 OP_SIZE
 		01 20 push(32)
-		87 OP_EQUAL
-		63 OP_IF
-		  a9 OP_HASH160
-		  14 (20bytes) push(RIPEMD160(hash))
-		  88 OP_EQUALVERIFY
-		  21 (33bytes) push(pubkey_hash)
-		67 OP_ELSE
-		  75 OP_DROP
-		  03 (3 bytes little-endian) push(locktime)
-		  b1 OP_CHECKLOCKTIMEVERIFY
-		  75 OP_DROP
-		  21 (33 bytes) push(pubkey_locktime)
-		68 OP_ENDIF
+		88 OP_EQUALVERIFY
+		a9 OP_HASH160
+		14 (20bytes) push(RIPEMD160(hash))
+		88 OP_EQUALVERIFY
+		20 (32bytes) push(claim_pubkey)
 		ac OP_CHECKSIG
 		*/
 		r.expect(0x82);
 		r.expect(0x01); r.expect(0x20);
-		r.expect(0x87);
-		r.expect(0x63);
+		r.expect(0x88);
 		r.expect(0xa9);
 		r.expect(0x14);
 		for (auto i = std::size_t(0); i < 20; ++i)
 			buf[i] = r.get();
 		hash.from_buffer(buf);
 		r.expect(0x88);
-		r.expect(0x21);
-		for (auto i = std::size_t(0); i < 33; ++i)
+		r.expect(0x20);
+		for (auto i = std::size_t(0); i < 32; ++i)
 			buf[i] = r.get();
-		pubkey_hash = Secp256k1::PubKey::from_buffer(buf);
-		r.expect(0x67);
-		r.expect(0x75);
+		claim_pubkey = Secp256k1::XonlyPubKey::from_buffer(buf);
+		r.expect(0xac);
+
+		r.expect_end();
+		return true;
+	} catch (Error const&) {
+		/* Some problem.  */
+		return false;
+	} catch (Secp256k1::InvalidPubKey const&) {
+		/* Invalid pubkey.  */
+		return false;
+	}
+}
+
+bool match_refundscript( std::uint32_t& locktime
+			 , Secp256k1::XonlyPubKey& refund_pubkey
+		     , std::vector<std::uint8_t> const& script
+		     ) {
+	std::uint8_t buf[32];
+	auto r = make_reader(script.begin(), script.end());
+
+	try {
+		/* refund script Template
+		20 (32bytes) push(pubkey_hash)
+		ad OP_CHECKSIGVERIFY
+		03 (3 bytes little-endian) push(locktime)
+		b1 OP_CHECKLOCKTIMEVERIFY
+		*/
+		r.expect(0x20);
+		for (auto i = std::size_t(0); i < 32; ++i)
+			buf[i] = r.get();
+		refund_pubkey = Secp256k1::XonlyPubKey::from_buffer(buf);
+		r.expect(0xad);
 		/* Always 3 bytes?
 		 * 1->2 bytes would only work for very young blockchains.
 		 * 3 bytes would work for blockchains of at least 65,536
@@ -104,13 +123,6 @@ bool match_lockscript( Ripemd160::Hash& hash
 			 | (std::uint32_t(buf[2]) << 16)
 			 ;
 		r.expect(0xb1);
-		r.expect(0x75);
-		r.expect(0x21);
-		for (auto i = std::size_t(0); i < 33; ++i)
-			buf[i] = r.get();
-		pubkey_locktime = Secp256k1::PubKey::from_buffer(buf);
-		r.expect(0x68);
-		r.expect(0xac);
 
 		r.expect_end();
 		return true;
