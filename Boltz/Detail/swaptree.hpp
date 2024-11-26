@@ -1,6 +1,7 @@
 #ifndef BOLTZ_DETAIL_SWAP_TREE_HPP
 #define BOLTZ_DETAIL_SWAP_TREE_HPP
 
+#include<cstdint>
 #include<string>
 #include<vector>
 

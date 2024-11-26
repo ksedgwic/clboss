@@ -1,6 +1,7 @@
 #ifndef BITCOIN_PUBKEY_TO_SCRIPTPUBKEY_HPP
 #define BITCOIN_PUBKEY_TO_SCRIPTPUBKEY_HPP
 
+#include<cstdint>
 #include<string>
 #include<vector>
 

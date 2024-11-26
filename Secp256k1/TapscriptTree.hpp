@@ -1,6 +1,7 @@
 #ifndef SECP256K1_TAPTREE_HPP
 #define SECP256K1_TAPTREE_HPP
 
+#include<cstdint>
 #include<stdexcept>
 #include<vector>
 
