@@ -1,6 +1,7 @@
 #ifndef SECP256K1_TAGGED_HASHES_HPP
 #define SECP256K1_TAGGED_HASHES_HPP
 
+#include<cstdint>
 #include<string>
 
 namespace Tag {
