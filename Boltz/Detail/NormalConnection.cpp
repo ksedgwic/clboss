@@ -108,12 +108,24 @@ private:
 				);
 		curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1);
 
-		auto ret = curl_easy_perform(curl);
-		if (ret != 0) {
-			auto msg = std::string(curl_easy_strerror(ret))
+		try {
+			auto ret = curl_easy_perform(curl);
+			if (ret != 0) {
+				auto msg = std::string(api)
+					 + ": "
+					 + std::string(curl_easy_strerror(ret))
+					 + ": "
+					 + std::string(&errbuf[0])
+					 ;
+				throw Boltz::ApiError(msg);
+			}
+		} catch (Boltz::ApiError const&) {
+			throw;
+		} catch (std::exception const& e) {
+			auto msg = std::string("While accessing ")
+				 + api
 				 + ": "
-				 + std::string(&errbuf[0])
-				 ;
+				 + e.what();
 			throw Boltz::ApiError(msg);
 		}
 	}
