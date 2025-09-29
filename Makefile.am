@@ -406,6 +406,8 @@ libclboss_la_SOURCES = \
 	Ev/ThreadPool.hpp \
 	Ev/concurrent.cpp \
 	Ev/concurrent.hpp \
+	Ev/coroutine.cpp \
+	Ev/coroutine.hpp \
 	Ev/foreach.hpp \
 	Ev/map.hpp \
 	Ev/memoize.hpp \
