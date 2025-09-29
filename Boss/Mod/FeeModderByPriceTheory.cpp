@@ -9,6 +9,7 @@
 #include"Boss/log.hpp"
 #include"Boss/random_engine.hpp"
 #include"Ev/Io.hpp"
+#include"Ev/coroutine.hpp"
 #include"Ev/yield.hpp"
 #include"Ln/NodeId.hpp"
 #include"S/Bus.hpp"
@@ -211,36 +212,36 @@ private:
 	}
 
 	Ev::Io<Sqlite3::Tx> db_transact() {
-		if (!db)
-			return Ev::yield().then([this]() {
-				return db_transact();
-			});
-		return db.transact();
+		while (!db) {
+			co_await Ev::yield();
+		}
+		co_return (co_await db.transact());
 	}
 
-	Ev::Io<double> get_fee_mod(Ln::NodeId const& node) {
-		auto mult = std::make_shared<double>();
-		return db_transact().then([ this, node, mult
-					  ](Sqlite3::Tx tx) {
-			auto os = std::ostringstream();
+	Ev::Io<double> get_fee_mod(Ln::NodeId const& node_) {
+		/* Create our own copy of node, as it might
+		not survive across awaits.
+		*/
+		auto node = node_;
+		auto mult = double();
+		auto tx = co_await db_transact();
+		auto os = std::ostringstream();
 
-			auto price = get_price(tx, node, os);
-			tx.commit();
+		auto price = get_price(tx, node, os);
+		tx.commit();
 
-			*mult = price_to_multiplier(price);
+		mult = price_to_multiplier(price);
 
-			return Boss::log( bus, Debug
-					, "FeeModderByPriceTheory: %s: "
-					  "level = %" PRIi64 ", mult = %f"
-					  "%s"
-					, std::string(node).c_str()
-					, price
-					, *mult
-					, os.str().c_str()
-					);
-		}).then([mult]() {
-			return Ev::lift(*mult);
-		});
+		co_await Boss::log( bus, Debug
+				  , "FeeModderByPriceTheory: %s: "
+				    "level = %" PRIi64 ", mult = %f"
+				    "%s"
+				  , std::string(node).c_str()
+				  , price
+				  , mult
+				  , os.str().c_str()
+				  );
+		co_return mult;
 	}
 
 	std::int64_t get_price( Sqlite3::Tx& tx, Ln::NodeId const& node
