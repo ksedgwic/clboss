@@ -26,7 +26,8 @@ INSTALL
 Makefile
 TAGS
 autom4te*
-m4
+m4/*.m4
+!/m4/m4_ax_cxx_compile_stdcxx.m4
 !external/libsodium/m4
 !external/secp256k1/build-aux/m4
 stamp-*
