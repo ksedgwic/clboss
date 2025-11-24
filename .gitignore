@@ -33,6 +33,7 @@ auxdir
 .deps
 .dirstamp
 .libs
+.cache
 
 test_*
 !test_*.cpp
