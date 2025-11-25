@@ -683,6 +683,17 @@ create-tarball: create-tarball.in Makefile
 
 BUILT_SOURCES = commit_hash.h
 
+# Developer helper: regenerate compile_commands.json with bear.
+.PHONY: compile_commands.json bear-compile-commands
+compile_commands.json bear-compile-commands:
+	@if ! command -v bear >/dev/null 2>&1; then \
+		echo "bear not found; install it to generate compile_commands.json." >&2; \
+		exit 1; \
+	fi
+	rm -f compile_commands.json
+	$(MAKE) clean
+	bear --output compile_commands.json -- $(MAKE) all
+
 commit_hash.h: FORCE
 	@if git -C $(srcdir) rev-parse --is-inside-work-tree > /dev/null 2>&1; then \
 		CURRENT_HASH="$$(git -C $(srcdir) rev-parse HEAD)"; \
