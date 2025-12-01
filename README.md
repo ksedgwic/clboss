@@ -1,3 +1,9 @@
+> ⚠️ **Note about repository ownership**
+>
+> This repository was originally created and maintained by [ZmnSCPxj](https://github.com/ZmnSCPxj).
+> In 2025, the top-level CLBOSS repository was transferred to
+> [Ken Sedgwick](https://github.com/ksedgwic), who is the current maintainer.
+
 CLBOSS The Core Lightning Node Manager
 ===================================
 
@@ -31,6 +37,14 @@ You can read more information about CLBOSS here:
 https://zmnscpxj.github.io/clboss/index.html
 As of this release, this page is a work in progress, stay tuned
 for updates!
+
+## Project ownership and maintenance
+
+This repository was originally created and maintained by [ZmnSCPxj](https://github.com/ZmnSCPxj).
+In 2025, ownership of the top-level CLBOSS repository was transferred to
+[Ken Sedgwick](https://github.com/ksedgwic), who is the current maintainer.
+
+All history and prior contributions remain credited to their original authors.
 
 Dependencies
 ------------
