@@ -6,6 +6,8 @@
 #include"Boss/Msg/OnchainFee.hpp"
 #include"Boss/Msg/OnchainFunds.hpp"
 #include"Boss/Msg/RequestChannelCreation.hpp"
+#include"Boss/Msg/RequestGetAutoOpenFlag.hpp"
+#include"Boss/Msg/ResponseGetAutoOpenFlag.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/start.hpp"
 #include"Ev/yield.hpp"
@@ -35,6 +37,14 @@ int main() {
 		       ](Boss::Msg::NeedsOnchainFunds const& nof) {
 		needs_funds = Util::make_unique<Ln::Amount>(nof.needed);
 		return Ev::lift();
+	});
+	bus.subscribe< Boss::Msg::RequestGetAutoOpenFlag
+		     >([&bus](Boss::Msg::RequestGetAutoOpenFlag const& m) {
+			auto msg = Boss::Msg::ResponseGetAutoOpenFlag();
+			msg.requester = m.requester;
+			msg.state = true;
+			msg.comment = "test";
+			return bus.raise(msg);
 	});
 
 	auto yieldx2 = [](Ev::Io<void> act) {
