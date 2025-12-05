@@ -7,16 +7,8 @@
 namespace Boltz { namespace Detail {
 
 int find_lockup_outnum( Bitcoin::Tx const& tx
-		      , std::vector<std::uint8_t> const& redeemScript
+		      , std::vector<std::uint8_t> const& scriptPubKey
 		      ) {
-	auto hash = Sha256::fun(
-		&redeemScript[0], redeemScript.size()
-	);
-	auto scriptPubKey = std::vector<std::uint8_t>(34);
-	scriptPubKey[0] = 0x00;
-	scriptPubKey[1] = 0x20;
-	hash.to_buffer(&scriptPubKey[2]);
-
 	auto it = std::find_if( tx.outputs.begin(), tx.outputs.end()
 			      , [&scriptPubKey](Bitcoin::TxOut const& out) {
 		return out.scriptPubKey == scriptPubKey;

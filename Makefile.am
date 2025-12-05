@@ -24,6 +24,8 @@ libclboss_la_SOURCES = \
 	Bitcoin/WitnessField.hpp \
 	Bitcoin/addr_to_scriptPubKey.cpp \
 	Bitcoin/addr_to_scriptPubKey.hpp \
+	Bitcoin/pubkey_to_scriptPubKey.cpp \
+	Bitcoin/pubkey_to_scriptPubKey.hpp \
 	Bitcoin/hash160.cpp \
 	Bitcoin/hash160.hpp \
 	Bitcoin/le.cpp \
@@ -38,6 +40,7 @@ libclboss_la_SOURCES = \
 	Boltz/Detail/ClaimTxHandler.hpp \
 	Boltz/Detail/FallbackConnection.cpp \
 	Boltz/Detail/FallbackConnection.hpp \
+	Boltz/Detail/MusigImpl.hpp \
 	Boltz/Detail/NormalConnection.cpp \
 	Boltz/Detail/NormalConnection.hpp \
 	Boltz/Detail/NullConnection.cpp \
@@ -46,6 +49,7 @@ libclboss_la_SOURCES = \
 	Boltz/Detail/ServiceImpl.hpp \
 	Boltz/Detail/SwapSetupHandler.cpp \
 	Boltz/Detail/SwapSetupHandler.hpp \
+	Boltz/Detail/MusigImpl.hpp \
 	Boltz/Detail/compute_preimage.cpp \
 	Boltz/Detail/compute_preimage.hpp \
 	Boltz/Detail/create_connection.cpp \
@@ -56,6 +60,8 @@ libclboss_la_SOURCES = \
 	Boltz/Detail/initial_claim_tx.hpp \
 	Boltz/Detail/match_lockscript.cpp \
 	Boltz/Detail/match_lockscript.hpp \
+	Boltz/Detail/swaptree.cpp \
+	Boltz/Detail/swaptree.hpp \
 	Boltz/EnvIF.hpp \
 	Boltz/Service.hpp \
 	Boltz/ServiceFactory.cpp \
@@ -483,6 +489,8 @@ libclboss_la_SOURCES = \
 	Secp256k1/G.cpp \
 	Secp256k1/G.hpp \
 	Secp256k1/KeyPair.hpp \
+	Secp256k1/Musig.cpp \
+	Secp256k1/Musig.hpp \
 	Secp256k1/PrivKey.cpp \
 	Secp256k1/PrivKey.hpp \
 	Secp256k1/PubKey.cpp \
@@ -492,6 +500,10 @@ libclboss_la_SOURCES = \
 	Secp256k1/Signature.cpp \
 	Secp256k1/Signature.hpp \
 	Secp256k1/SignerIF.hpp \
+	Secp256k1/TapscriptTree.cpp \
+	Secp256k1/TapscriptTree.hpp \
+	Secp256k1/tagged_hashes.cpp \
+	Secp256k1/tagged_hashes.hpp \
 	Sha256/Hash.cpp \
 	Sha256/Hash.hpp \
 	Sha256/Hasher.cpp \
@@ -646,6 +658,8 @@ TESTS = \
 	tests/s/test_bus \
 	tests/sha256/test_hash \
 	tests/sha256/test_hasher \
+	tests/secp256k1/bip327 \
+	tests/secp256k1/bip341sighash \
 	tests/sqlite3/test_sqlite3 \
 	tests/stats/test_reservoir_sampler \
 	tests/stats/test_running_mean \

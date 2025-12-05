@@ -6,6 +6,7 @@
 #include"Net/IPAddr.hpp"
 #include"Net/IPAddrOrOnion.hpp"
 #include"Net/IPBinnerBySubnet.hpp"
+#include"Secp256k1/KeyPair.hpp"
 #include"Secp256k1/PubKey.hpp"
 #include"Secp256k1/Signature.hpp"
 #include"Secp256k1/SignerIF.hpp"
@@ -37,6 +38,11 @@ public:
 		auto hash = Sha256::Hash();
 		hash.from_buffer(salt);
 		return hash;
+	}
+	Secp256k1::KeyPair
+	get_keypair_tweak(Secp256k1::PrivKey const& tweak
+			) override {
+		throw std::logic_error("Not expected to use.");
 	}
 };
 auto dummy_signer = DummySigner();

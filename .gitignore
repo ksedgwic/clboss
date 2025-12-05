@@ -40,3 +40,4 @@ test_*
 !test_*.cpp
 !test_*.c
 /commit_hash.h
+*.swp

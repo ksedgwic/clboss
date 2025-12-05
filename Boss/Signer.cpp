@@ -3,6 +3,7 @@
 #include"Net/Fd.hpp"
 #include"Secp256k1/PrivKey.hpp"
 #include"Secp256k1/PubKey.hpp"
+#include"Secp256k1/KeyPair.hpp"
 #include"Secp256k1/Signature.hpp"
 #include"Secp256k1/SignerIF.hpp"
 #include"Sha256/Hash.hpp"
@@ -54,7 +55,13 @@ public:
 		basicsecure_clear(buf, sizeof(buf));
 		return std::move(hasher).finalize();
 	}
+	Secp256k1::KeyPair
+	get_keypair_tweak(Secp256k1::PrivKey const& tweak
+			) override {
+		return Secp256k1::KeyPair(tweak * sk);
+	}
 };
+
 
 void unlink_noerr(std::string const& filename) {
 	auto my_errno = errno;

@@ -10,6 +10,7 @@
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
 #include"Ln/Amount.hpp"
+#include"Secp256k1/KeyPair.hpp"
 #include"Secp256k1/PrivKey.hpp"
 #include"Secp256k1/PubKey.hpp"
 #include"Secp256k1/Signature.hpp"
@@ -117,6 +118,11 @@ public:
 		hasher.feed(buf, 32);
 		basicsecure_clear(buf, sizeof(buf));
 		return std::move(hasher).finalize();
+	}
+	Secp256k1::KeyPair
+	get_keypair_tweak(Secp256k1::PrivKey const& tweak
+			) override {
+		return Secp256k1::KeyPair(tweak * sk);
 	}
 };
 

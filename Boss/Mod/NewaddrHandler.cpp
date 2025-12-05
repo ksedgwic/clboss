@@ -32,10 +32,12 @@ void NewaddrHandler::start() {
 	});
 }
 Ev::Io<void> NewaddrHandler::newaddr(void* requester) {
-	return rpc->command( "newaddr"
+	/** BREAKING CHANGE:
+	 * "newaddr p2tr" NOT compatible with v23.05 and older */
+	return rpc->command( "newaddr p2tr"
 			   , Json::Out::empty_object()
 			   ).then([this, requester](Jsmn::Object res) {
-		auto addr = std::string(res["bech32"]);
+		auto addr = std::string(res["p2tr"]);
 		return bus.raise(Msg::ResponseNewaddr{
 			std::move(addr), requester
 		});

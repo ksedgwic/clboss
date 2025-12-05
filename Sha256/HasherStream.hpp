@@ -5,6 +5,7 @@
 #include<memory>
 
 namespace Sha256 { class Hash; }
+namespace Tag { enum tap : uint8_t; }
 
 namespace Sha256 {
 
@@ -43,6 +44,7 @@ public:
 
 	Hash finalize()&&;
 	Hash get_hash() const;
+	void tag(Tag::tap);
 };
 
 /* Base class ensures buffer is constructed before ostream is.  */
@@ -59,6 +61,10 @@ class HasherStream : private Detail::HasherStreamBase, public std::ostream {
 public:
 	HasherStream() : std::ostream(buf.get()) { }
 	/* HasherStream(HasherStream&&) =default; */
+
+	/* initialized with a bip340 tagged hash.  */
+	HasherStream(Tag::tap tag)
+		: std::ostream(buf.get()) { buf->tag(tag); }
 
 	Hash finalize()&& {
 		return std::move(*buf).finalize();
