@@ -182,6 +182,12 @@ autoreconf -i
 ./configure && make
 ```
 
+### Developer helpers
+
+To generate an IDE-friendly `compile_commands.json`, run `make
+compile_commands.json` (requires `bear`). The file is git-ignored;
+rerun the target whenever your build flags or sources change.
+
 ### Contributed Utilities
 
 There are a number of contributed utilities in the `contrib` directory.  See
