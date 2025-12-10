@@ -174,16 +174,7 @@ public:
 
 	/*---- Expected by compiler. ----*/
 	bool await_ready() const noexcept { return false; }
-	void await_suspend(std::coroutine_handle<Promise<a>> func) noexcept {
-		/* We are going to be suspended now, so arrange
-		to be cleaned up by the main loop.
-		We cannot cleanup *right here* though, which is
-		why we defer the cleanup when the main loop
-		regains control.
-		*/
-		auto promise = &func.promise();
-		schedule_for_cleaning((ToBeCleaned*) promise);
-	}
+	void await_suspend(std::coroutine_handle<Promise<a>> func) noexcept;
 	void await_resume() noexcept {
 		/* Should never be called; the entire *point*
 		of the final-suspend is that the coroutine is
@@ -201,13 +192,42 @@ protected:
 
 	std::exception_ptr error;
 	FailF fail;
+	bool attached;
+	bool finalized;
+	bool cleanup_scheduled;
 
 	virtual void clear_pass() =0;
+
+	void note_attached() noexcept {
+		attached = true;
+		try_schedule_cleanup();
+	}
+	void note_final_suspend() noexcept {
+		finalized = true;
+		try_schedule_cleanup();
+	}
+
+private:
+	void try_schedule_cleanup() noexcept {
+		if (cleanup_scheduled) {
+			return;
+		}
+		if (!(attached && finalized)) {
+			return;
+		}
+		cleanup_scheduled = true;
+		schedule_for_cleaning(this);
+	}
+
+	template<typename a> friend class FinalSuspendAwaiter;
 
 public:
 	PromiseBase() : ToBeCleaned()
 		      , error(nullptr)
 		      , fail(nullptr)
+		      , attached(false)
+		      , finalized(false)
+		      , cleanup_scheduled(false)
 		      { }
 
 	/*---- Expected by compiler.  ----*/
@@ -308,6 +328,7 @@ public:
 				 ]( PassF f_pass
 				  , FailF f_fail
 				  ) {
+			PromiseBase::note_attached();
 			if (pvalue) {
 				f_fail = nullptr;
 				std::move(f_pass)(std::move(*pvalue));
@@ -358,6 +379,7 @@ public:
 		return Ev::Io<void>([this]( PassF f_pass
 					  , FailF f_fail
 					  ) {
+			note_attached();
 			if (done) {
 				f_fail = nullptr;
 				std::move(f_pass)();
@@ -382,6 +404,12 @@ public:
 	}
 	/*---- Expected by compiler ends. ----*/
 };
+
+template<typename a>
+void FinalSuspendAwaiter<a>::await_suspend(std::coroutine_handle<Promise<a>> func) noexcept {
+	auto promise = &func.promise();
+	promise->note_final_suspend();
+}
 
 }
 
