@@ -1,7 +1,9 @@
 #include"Sha256/Hash.hpp"
 #include"Sha256/Hasher.hpp"
 #include"Sha256/HasherStream.hpp"
+#include"Secp256k1/tagged_hashes.hpp"
 #include"Util/make_unique.hpp"
+#include<string.h>
 
 namespace Sha256 { namespace Detail {
 
@@ -44,6 +46,21 @@ Hash HasherStreamBuf::get_hash() const {
 	tmp.feed(pbase(), pptr() - pbase());
 	/* Finalize the temporary.  */
 	return std::move(tmp).finalize();
+}
+void HasherStreamBuf::tag(Tag::tap tag) {
+	/* Load buffer with bip340 tagged hashes.  */
+	if ((uint8_t) tag > 3)
+		return; // TODO throw exception
+
+	auto *ptagtext = Tag::str(tag);
+	auto tmp = Hasher();
+	tmp.feed(ptagtext, strlen(ptagtext));
+	auto hashedtag = std::move(tmp).finalize();
+	uint8_t buffer[32];
+	hashedtag.to_buffer(buffer);
+	pimpl->hasher.feed(buffer, 32);
+	pimpl->hasher.feed(buffer, 32);
+
 }
 
 HasherStreamBase::HasherStreamBase()

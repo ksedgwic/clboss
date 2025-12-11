@@ -20,10 +20,10 @@ if(SECP256K1_ASM STREQUAL "arm32")
   target_link_libraries(secp256k1_asm INTERFACE secp256k1_asm_arm)
 endif()
 
-# Define our export symbol only for Win32 and only for shared libs.
-# This matches libtool's usage of DLL_EXPORT
 if(WIN32)
-  set_target_properties(secp256k1 PROPERTIES DEFINE_SYMBOL "DLL_EXPORT")
+  # Define our export symbol only for shared libs.
+  set_target_properties(secp256k1 PROPERTIES DEFINE_SYMBOL SECP256K1_DLL_EXPORT)
+  target_compile_definitions(secp256k1 INTERFACE $<$<NOT:$<BOOL:${BUILD_SHARED_LIBS}>>:SECP256K1_STATIC>)
 endif()
 
 # Object libs don't know if they're being built for a shared or static lib.
@@ -87,12 +87,12 @@ endif()
 if(SECP256K1_BUILD_TESTS)
   add_executable(noverify_tests tests.c)
   target_link_libraries(noverify_tests secp256k1_precomputed secp256k1_asm)
-  add_test(NAME noverify_tests COMMAND noverify_tests)
+  add_test(NAME secp256k1_noverify_tests COMMAND noverify_tests)
   if(NOT CMAKE_BUILD_TYPE STREQUAL "Coverage")
     add_executable(tests tests.c)
     target_compile_definitions(tests PRIVATE VERIFY)
     target_link_libraries(tests secp256k1_precomputed secp256k1_asm)
-    add_test(NAME tests COMMAND tests)
+    add_test(NAME secp256k1_tests COMMAND tests)
   endif()
 endif()
 
@@ -101,7 +101,7 @@ if(SECP256K1_BUILD_EXHAUSTIVE_TESTS)
   add_executable(exhaustive_tests tests_exhaustive.c)
   target_link_libraries(exhaustive_tests secp256k1_asm)
   target_compile_definitions(exhaustive_tests PRIVATE $<$<NOT:$<CONFIG:Coverage>>:VERIFY>)
-  add_test(NAME exhaustive_tests COMMAND exhaustive_tests)
+  add_test(NAME secp256k1_exhaustive_tests COMMAND exhaustive_tests)
 endif()
 
 if(SECP256K1_BUILD_CTIME_TESTS)
@@ -132,6 +132,12 @@ if(SECP256K1_INSTALL)
   if(SECP256K1_ENABLE_MODULE_SCHNORRSIG)
     list(APPEND ${PROJECT_NAME}_headers "${PROJECT_SOURCE_DIR}/include/secp256k1_schnorrsig.h")
   endif()
+  if(SECP256K1_ENABLE_MODULE_MUSIG)
+    list(APPEND ${PROJECT_NAME}_headers "${PROJECT_SOURCE_DIR}/include/secp256k1_musig.h")
+  endif()
+  if(SECP256K1_ENABLE_MODULE_ELLSWIFT)
+    list(APPEND ${PROJECT_NAME}_headers "${PROJECT_SOURCE_DIR}/include/secp256k1_ellswift.h")
+  endif()
   install(FILES ${${PROJECT_NAME}_headers}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
   )
@@ -158,5 +164,13 @@ if(SECP256K1_INSTALL)
       ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}-config.cmake
       ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}-config-version.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
-)
+  )
+
+  include(GeneratePkgConfigFile)
+  generate_pkg_config_file(${PROJECT_SOURCE_DIR}/libsecp256k1.pc.in)
+  install(
+    FILES
+      ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
+  )
 endif()

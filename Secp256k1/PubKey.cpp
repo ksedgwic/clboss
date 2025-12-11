@@ -2,6 +2,7 @@
 #include<basicsecure.h>
 #include<iomanip>
 #include<secp256k1.h>
+#include<secp256k1_extrakeys.h>
 #include<sstream>
 #include<string>
 #include<string.h>
@@ -90,6 +91,31 @@ public:
 		/* swap. */
 		key = tmp;
 	}
+	void tweakadd(const unsigned char tweak[32]) {
+		auto res = secp256k1_ec_pubkey_tweak_add( context.get()
+						      , &key
+						      , tweak
+						      );
+		/* FIXME: use a backtrace-prserving exception.  */
+		if (!res)
+			throw std::out_of_range(
+				"Secp256k1::PubKey::operator+=: "
+				"result of tweak-adding PubKey out-of-range"
+			);
+	}
+
+	void xonly_tweak( const unsigned char x_key[32]
+					, const unsigned char tweak[32]
+					) {
+		int ret = secp256k1_xonly_pubkey_tweak_add
+				( context.get()
+				, &key
+				, reinterpret_cast<const secp256k1_xonly_pubkey*>(x_key)
+				, tweak
+				);
+		if (!ret)
+			throw InvalidPubKey();
+	}
 
 	bool equal(Impl const& o) const {
 		std::uint8_t a[33];
@@ -149,8 +175,9 @@ public:
 	}
 };
 
+/* Get G (with prepended tie-breaker byte).  */
 PubKey::PubKey()
-	: pimpl(Util::make_unique<Impl>(*G.pimpl)) { }
+	: pimpl(Util::make_unique<Impl>(*G_tied.pimpl)) { }
 
 PubKey::PubKey(secp256k1_context_struct *ctx, std::uint8_t buffer[33])
 	: pimpl(Util::make_unique<Impl>(ctx, buffer)) {}
@@ -194,6 +221,7 @@ PubKey& PubKey::operator+=(PubKey const& o) {
 	pimpl->add(*o.pimpl);
 	return *this;
 }
+
 PubKey& PubKey::operator*=(PrivKey const& o) {
 	pimpl->mul(o);
 	return *this;
@@ -201,6 +229,14 @@ PubKey& PubKey::operator*=(PrivKey const& o) {
 
 bool PubKey::operator==(PubKey const& o) const {
 	return pimpl->equal(*o.pimpl);
+}
+
+PubKey PubKey::xonly_tweak( XonlyPubKey const& x_key
+						  , const unsigned char tweak[32] ) {
+	auto rv = PubKey();
+	rv.pimpl->xonly_tweak( reinterpret_cast<const unsigned char*>(x_key.get_key())
+						 , tweak );
+	return rv;
 }
 
 void PubKey::to_buffer(std::uint8_t buffer[33]) const {
@@ -213,3 +249,115 @@ std::ostream& operator<<(std::ostream& os, Secp256k1::PubKey const& pk) {
 	pk.pimpl->dump(os);
 	return os;
 }
+
+namespace Secp256k1 {
+
+class XonlyPubKey::Impl {
+public:
+	secp256k1_xonly_pubkey key;
+
+	Impl(std::uint8_t const buffer[32]) {
+		auto res = secp256k1_xonly_pubkey_parse( context.get()
+						    , &key
+						    , buffer
+						    );
+		if (!res)
+			throw InvalidPubKey();
+	}
+	Impl(secp256k1_context_struct *ctx, std::uint8_t buffer[32]) {
+		auto res = secp256k1_xonly_pubkey_parse( ctx
+						    , &key
+						    , buffer
+						    );
+		if (!res)
+			throw InvalidPubKey();
+	}
+
+	Impl() { }
+
+	bool equal(Impl const& o) const {
+		std::uint8_t a[32];
+		std::uint8_t b[32];
+
+		auto resa = secp256k1_xonly_pubkey_serialize( context.get()
+							 , a
+							 , &key
+							 );
+		assert(resa == 1);
+
+		auto resb = secp256k1_xonly_pubkey_serialize( context.get()
+							 , b
+							 , &o.key
+							 );
+		assert(resb == 1);
+
+		return basicsecure_eq(a, b, sizeof(a));
+	}
+};
+
+/* Get G (the 32 byte x coordinate).  */
+XonlyPubKey::XonlyPubKey()
+	: pimpl(Util::make_unique<Impl>(*G_xcoord.pimpl)) { }
+
+XonlyPubKey::XonlyPubKey(std::string const& s) {
+	auto buf = Util::Str::hexread(s);
+	if (buf.size() != 32)
+		throw InvalidPubKey();
+	pimpl = Util::make_unique<Impl>(&buf[0]);
+}
+XonlyPubKey::XonlyPubKey( secp256k1_context_struct *ctx
+						, std::uint8_t buffer[32])
+	: pimpl(Util::make_unique<Impl>(ctx, buffer)) {}
+XonlyPubKey::XonlyPubKey(std::uint8_t const buffer[32])
+	: pimpl(Util::make_unique<Impl>(buffer)) {}
+
+
+XonlyPubKey::XonlyPubKey(XonlyPubKey const& o)
+	: pimpl(Util::make_unique<Impl>(*o.pimpl)) { }
+
+XonlyPubKey::XonlyPubKey(XonlyPubKey&& o) {
+	auto mine = Util::make_unique<Impl>();
+	std::swap(pimpl, mine);
+	std::swap(pimpl, o.pimpl);
+}
+
+XonlyPubKey::~XonlyPubKey() { }
+
+void const* XonlyPubKey::get_key() const {
+	return &pimpl->key;
+}
+
+bool XonlyPubKey::operator==(XonlyPubKey const& o) const {
+	return pimpl->equal(*o.pimpl);
+}
+
+void
+XonlyPubKey::to_buffer(std::uint8_t buffer[32]) const {
+	auto res = secp256k1_xonly_pubkey_serialize
+		( context.get()
+		, reinterpret_cast<unsigned char*>(buffer)
+		, &(pimpl->key) );
+	assert(res == 1);
+}
+
+XonlyPubKey
+XonlyPubKey::from_ecdsa_pk(PubKey const& ecpk) {
+	return from_ecdsa_pk(reinterpret_cast<std::uint8_t const*>(ecpk.get_key()));
+}
+
+XonlyPubKey
+XonlyPubKey::from_ecdsa_pk(std::uint8_t const ecpk_buf[33]) {
+	auto rv = XonlyPubKey();
+	int parity;
+	auto res = secp256k1_xonly_pubkey_from_pubkey
+				( context.get()
+				, (secp256k1_xonly_pubkey*) &(rv.pimpl->key)
+				, &parity
+				, (const secp256k1_pubkey*) ecpk_buf
+				);
+	assert(res == 1);
+	return rv;
+}
+
+}
+

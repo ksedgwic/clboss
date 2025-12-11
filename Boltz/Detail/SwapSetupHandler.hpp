@@ -112,7 +112,9 @@ private:
 
 	/* Data from server.  */
 	std::unique_ptr<std::string> swapId;
-	std::vector<std::uint8_t> redeemScript;
+	std::string refundPubkey;
+	std::vector<std::uint8_t> claimScript;
+	std::vector<std::uint8_t> refundScript;
 	std::uint32_t timeoutBlockheight;
 	Ln::Amount onchainAmount;
 
