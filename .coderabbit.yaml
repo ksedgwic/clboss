@@ -31,12 +31,7 @@ reviews:
     - "!compile_commands.json"
     - "!config.h"
     - "!config.h.in"
-    - "!configure"
-    - "!Makefile"
-    - "!Makefile.in"
-    - "!aclocal.m4"
     - "!external/**"
-    - "!m4/**"
     - "!clboss-*.tar.gz"
 
   path_instructions:
