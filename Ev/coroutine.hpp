@@ -368,6 +368,11 @@ private:
 	bool done;
 	PassF pass;
 
+	/* From PromiseBase.  */
+	void clear_pass() override {
+		pass = nullptr;
+	}
+
 public:
 	Promise() : PromiseMid<void>()
 		  , done(false)
