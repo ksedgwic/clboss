@@ -43,7 +43,7 @@ void schedule_for_cleaning(ToBeCleaned* obj) noexcept {
 	ev_idle_start(EV_DEFAULT_ &cleaning_idle);
 }
 
-void do_cleaning_as_scheduled() {
+void do_cleaning_as_scheduled() noexcept {
 	while (cleaning_list) {
 		auto head = cleaning_list;
 		auto next = head->next;
