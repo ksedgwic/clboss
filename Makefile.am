@@ -629,6 +629,7 @@ TESTS = \
 	tests/ev/test_memoize \
 	tests/ev/test_plus \
 	tests/ev/test_coroutine_cleanup \
+	tests/ev/test_coroutine_unattached_leak \
 	tests/ev/test_runcmd \
 	tests/ev/test_semaphore \
 	tests/ev/test_throw_in_then \
