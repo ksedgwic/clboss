@@ -61,7 +61,7 @@ possible things that can cause something to be cleaned
 up is `std::bad_alloc`, a.k.a. out-of-memory.
 We thus cannot use something like a
 `std::vector<ToBeCleaned*>` to track the items to be
-ccleaned up later, as inserting a new item to that
+cleaned up later, as inserting a new item to that
 structure may cause allocation.
 With the singly-linked embedded list, the coroutine
 itself has the necessary space to maintain the list
