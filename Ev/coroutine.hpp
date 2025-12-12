@@ -37,7 +37,7 @@ class ToBeCleaned;
 /* Function that schedules an item to be cleaned up.  */
 void schedule_for_cleaning(ToBeCleaned*) noexcept;
 /* Function used internally by the cleanup procedure.  */
-void do_cleaning_as_scheduled();
+void do_cleaning_as_scheduled() noexcept;
 
 /* Base class for things that need cleaning up.
 
@@ -78,7 +78,7 @@ private:
 	ToBeCleaned* next;
 
 	friend void schedule_for_cleaning(ToBeCleaned*) noexcept;
-	friend void do_cleaning_as_scheduled();
+	friend void do_cleaning_as_scheduled() noexcept;
 
 public:
 	ToBeCleaned() : next(nullptr) { }
