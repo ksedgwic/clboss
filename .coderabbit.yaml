@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+early_access: false
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: true
+  review_status: true
+  collapse_walkthrough: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+
+  tools:
+    github-checks:
+      timeout_ms: 900000
+
+  # Keep review signal high by ignoring vendored/generated artifacts.
+  path_filters:
+    - "!**/.cache/**"
+    - "!**/.deps/**"
+    - "!**/.libs/**"
+    - "!**/autom4te.cache/**"
+    - "!**/*.o"
+    - "!**/*.lo"
+    - "!**/*.la"
+    - "!**/vgcore.*"
+    - "!compile_commands.json"
+    - "!config.h"
+    - "!config.h.in"
+    - "!external/**"
+    - "!clboss-*.tar.gz"
+
+  path_instructions:
+    - path: "**/*.cpp"
+      instructions: >
+        Prefer small, targeted changes; keep behavior stable unless the PR is explicitly a refactor.
+        Be conservative about concurrency and lifetime: check RAII, exception-safety, and ownership.
+        Avoid suggesting style changes that contradict `.clang-format` / `.editorconfig`.
+    - path: "**/*.hpp"
+      instructions: >
+        Prioritize API/lifetime clarity (ownership, threading expectations, exception guarantees).
+    - path: "Ev/**"
+      instructions: >
+        Pay special attention to coroutine semantics (final suspend, cancellation/cleanup ordering),
+        and ensure changes are safe under `make check` and under valgrind.
+    - path: "Boss/**"
+      instructions: >
+        Consider CLN RPC interactions and invariants: error handling paths, logging, and restart safety.
+        If behavior changes, suggest a focused test update/addition under `tests/`.
+    - path: "tests/**"
+      instructions: >
+        Keep tests deterministic; avoid timing-based flakes; prefer minimal repros for bugs/regressions.
+
+chat:
+  auto_reply: true
