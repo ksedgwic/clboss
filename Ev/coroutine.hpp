@@ -2,7 +2,10 @@
 #define EV_COROUTINE_HPP
 
 #include"Ev/Io.hpp"
-#include<coroutine>
+#include <coroutine>
+#include<exception>
+#include<functional>
+#include<memory>
 #include<utility>
 
 /** Contains support for using `Ev::Io` in C++20
