@@ -122,9 +122,11 @@ public:
 		overhead `run` adds.
 		*/
 		std::move(act).run([this, caller](a value) {
-			pvalue = std::make_unique<a>(
-				std::move(value)
-			);
+			try {
+				pvalue = std::make_unique<a>(std::move(value));
+			} catch (...) {
+				error = std::current_exception();
+			}
 			caller.resume();
 		}, [this, caller](std::exception_ptr e) {
 			error = e;
@@ -152,6 +154,11 @@ public:
 	void await_suspend(std::coroutine_handle<> caller) {
 		/* See TODO note above for the generic version.  */
 		std::move(act).run([this, caller]() {
+			try {
+				/* nothing */
+			} catch (...) {
+				error = std::current_exception();
+			}
 			caller.resume();
 		}, [this, caller](std::exception_ptr e) {
 			error = e;
