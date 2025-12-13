@@ -757,6 +757,7 @@ coverage-report:
 		'*/tests/*' \
 		'*/crypto/*' \
 		'*/src/*' \
+		'*/basicsecure.c' \
 		'/usr/*' \
 		'/nix/store/*' \
 		--ignore-errors unused \
@@ -766,6 +767,7 @@ coverage-report:
 		'*/tests/*' \
 		'*/crypto/*' \
 		'*/src/*' \
+		'*/basicsecure.c' \
 		'/usr/*' \
 		'/nix/store/*' \
 		--output-file coverage.info
