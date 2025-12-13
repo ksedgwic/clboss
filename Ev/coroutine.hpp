@@ -476,9 +476,10 @@ void FinalSuspendAwaiter<a>::await_suspend(std::coroutine_handle<Promise<a>> fun
 /* Tell the compiler that `Ev::Io<a>` has coroutine
 support now.
 */
+namespace std {
 template<typename a, typename... As>
-struct std::coroutine_traits<Ev::Io<a>, As...> {
+struct coroutine_traits<Ev::Io<a>, As...> {
 	using promise_type = Ev::coroutine::Promise<a>;
 };
-
+} // namespace std
 #endif /* !defined(EV_COROUTINE_HPP) */
