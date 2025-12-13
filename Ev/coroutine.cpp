@@ -9,7 +9,7 @@ fully intended to be used only in the main thread.
 */
 auto cleaning_list = (Ev::coroutine::ToBeCleaned*)(nullptr);
 
-/* To avoid allocating in schdule_for_cleaning, also
+/* To avoid allocating in schedule_for_cleaning, also
 statically-allocate the idler object.
 */
 auto cleaning_idle = ev_idle();

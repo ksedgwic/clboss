@@ -159,12 +159,7 @@ public:
 		   { }
 	void await_suspend(std::coroutine_handle<> caller) {
 		/* See TODO note above for the generic version.  */
-		std::move(act).run([this, caller]() {
-			try {
-				/* nothing */
-			} catch (...) {
-				error = std::current_exception();
-			}
+		std::move(act).run([caller]() {
 			caller.resume();
 		}, [this, caller](std::exception_ptr e) {
 			error = e;
