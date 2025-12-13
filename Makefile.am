@@ -695,8 +695,8 @@ compile_commands.json bear-compile-commands:
 	bear --output compile_commands.json -- $(MAKE) all
 
 .PHONY: coverage coverage-clean coverage-report
-COVERAGE_CFLAGS ?= -Og -g --coverage
-COVERAGE_CXXFLAGS ?= -Og -g --coverage
+COVERAGE_CFLAGS ?= -Og --coverage
+COVERAGE_CXXFLAGS ?= -Og --coverage
 COVERAGE_LDFLAGS ?= --coverage
 LCOV ?= lcov
 GENHTML ?= genhtml
@@ -759,6 +759,7 @@ coverage-report:
 		'*/src/*' \
 		'/usr/*' \
 		'/nix/store/*' \
+		--ignore-errors unused \
 		--output-file coverage.info \
 	|| $(LCOV) --remove coverage.info \
 		'*/external/*' \
@@ -767,7 +768,6 @@ coverage-report:
 		'*/src/*' \
 		'/usr/*' \
 		'/nix/store/*' \
-		--ignore-errors inconsistent \
 		--output-file coverage.info
 	$(LCOV) --summary coverage.info
 	$(GENHTML) coverage.info \

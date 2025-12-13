@@ -200,6 +200,10 @@ coverage-instrumented build, run:
 
     make coverage-report
 
+If you want debug symbols as well, override the coverage flags, e.g.:
+
+    make COVERAGE_CXXFLAGS="-Og -g --coverage" COVERAGE_CFLAGS="-Og -g --coverage" coverage
+
 To clean coverage outputs (`coverage.info`, `coverage-html/`, and `*.gcda/*.gcno`
 files):
 
