@@ -59,6 +59,12 @@ What we do instead is that at final suspend, we schedule
 the `std::coroutine_handle::destroy` to be called later,
 at an idle handler.
 
+Note that the returned `Ev::Io` might be destroyed without ever being
+run/attached.  In that case we still need to clean up the coroutine
+frame after final suspend, so the `Ev::Io` returned from a coroutine
+captures a small lifetime token that lets the promise detect that the
+last `Ev::Io` handle has gone away and schedule cleanup once finalized.
+
 This is a singly-linked embedded list because one of the
 possible things that can cause something to be cleaned
 up is `std::bad_alloc`, a.k.a. out-of-memory.
@@ -200,13 +206,37 @@ class PromiseBase : public ToBeCleaned {
 protected:
 	typedef std::function<void(std::exception_ptr)> FailF;
 
+private:
+	struct CleanupState {
+		PromiseBase* promise;
+		bool io_gone;
+		CleanupState() : promise(nullptr), io_gone(false) { }
+	};
+	struct IoLifetimeToken {
+		std::shared_ptr<CleanupState> state;
+		explicit IoLifetimeToken(std::shared_ptr<CleanupState> state_)
+			: state(std::move(state_)) { }
+		~IoLifetimeToken() {
+			state->io_gone = true;
+			if (state->promise) {
+				state->promise->note_io_gone();
+			}
+		}
+	};
+
+protected:
 	std::exception_ptr error;
 	FailF fail;
 	bool attached;
 	bool finalized;
 	bool cleanup_scheduled;
+	std::shared_ptr<CleanupState> cleanup_state;
 
 	virtual void clear_pass() =0;
+
+	std::shared_ptr<IoLifetimeToken> make_io_lifetime_token() {
+		return std::make_shared<IoLifetimeToken>(cleanup_state);
+	}
 
 	void note_attached() noexcept {
 		attached = true;
@@ -218,11 +248,17 @@ protected:
 	}
 
 private:
+	void note_io_gone() noexcept {
+		try_schedule_cleanup();
+	}
 	void try_schedule_cleanup() noexcept {
 		if (cleanup_scheduled) {
 			return;
 		}
-		if (!(attached && finalized)) {
+		if (!finalized) {
+			return;
+		}
+		if (!(attached || cleanup_state->io_gone)) {
 			return;
 		}
 		cleanup_scheduled = true;
@@ -238,7 +274,13 @@ public:
 		      , attached(false)
 		      , finalized(false)
 		      , cleanup_scheduled(false)
-		      { }
+		      , cleanup_state(std::make_shared<CleanupState>())
+		      {
+		cleanup_state->promise = this;
+	}
+	~PromiseBase() {
+		cleanup_state->promise = nullptr;
+	}
 
 	/*---- Expected by compiler.  ----*/
 	/* Called when an exception is caught by the
@@ -334,7 +376,8 @@ public:
 	/*---- Expected by compiler. ----*/
 	/* Integration of the coroutines to the Ev::Io.  */
 	Ev::Io<a> get_return_object() {
-		return Ev::Io<a>([this
+		auto lifetime = PromiseBase::make_io_lifetime_token();
+		return Ev::Io<a>([this, lifetime
 				 ]( PassF f_pass
 				  , FailF f_fail
 				  ) {
@@ -391,9 +434,11 @@ public:
 
 	/*---- Expected by compiler. ----*/
 	Ev::Io<void> get_return_object() {
-		return Ev::Io<void>([this]( PassF f_pass
-					  , FailF f_fail
-					  ) {
+		auto lifetime = PromiseBase::make_io_lifetime_token();
+		return Ev::Io<void>([this, lifetime
+				    ]( PassF f_pass
+				     , FailF f_fail
+				     ) {
 			note_attached();
 			if (done) {
 				f_fail = nullptr;
