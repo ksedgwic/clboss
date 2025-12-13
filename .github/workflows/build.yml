@@ -12,3 +12,50 @@ jobs:
       with:
         github_access_token: ${{ secrets.GITHUB_TOKEN }}
     - run: nix develop --command bash -c "autoreconf -i && ./configure && make -j4 distcheck"
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install build + coverage dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          autoconf \
+          autoconf-archive \
+          automake \
+          build-essential \
+          curl \
+          git \
+          lcov \
+          libcurl4-openssl-dev \
+          libev-dev \
+          libsqlite3-dev \
+          libtool \
+          libunwind-dev \
+          pkg-config
+    - name: Configure (coverage)
+      run: |
+        autoreconf -fi
+        ./configure \
+          --disable-valgrind \
+          CFLAGS='-Og -g --coverage' \
+          CXXFLAGS='-Og -g --coverage' \
+          LDFLAGS='--coverage'
+    - name: Build + run unit tests
+      run: |
+        make -j$(nproc)
+        make -j$(nproc) check-TESTS
+    - name: Generate HTML coverage report
+      run: |
+        make coverage-report
+    - name: Upload coverage (HTML)
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-html
+        path: coverage-html
+    - name: Upload coverage (lcov)
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-lcov
+        path: coverage.info

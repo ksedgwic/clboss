@@ -40,3 +40,10 @@ test_*
 !test_*.cpp
 !test_*.c
 /commit_hash.h
+
+coverage*.info
+coverage-html/
+*.gcda
+*.gcno
+*.gcov
+*.gcov.json.gz
