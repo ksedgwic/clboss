@@ -47,3 +47,5 @@ coverage-html/
 *.gcno
 *.gcov
 *.gcov.json.gz
+
+result
