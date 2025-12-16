@@ -34,6 +34,23 @@ namespace Ev::coroutine {
 
 class ToBeCleaned;
 
+/* Threading / confinement
+ *
+ * This coroutine support code assumes `Ev::Io` objects (and the
+ * coroutine-returned `Ev::Io` wrappers) are created, used, and destroyed
+ * on the libev loop thread (normally the main thread).
+ *
+ * In particular, destruction can trigger cleanup scheduling, which mutates
+ * internal global state and interacts with libev watchers without any
+ * cross-thread synchronization.
+ */
+
+namespace detail {
+#ifndef NDEBUG
+void assert_main_thread(char const* where) noexcept;
+#endif
+}
+
 /* Function that schedules an item to be cleaned up.  */
 void schedule_for_cleaning(ToBeCleaned*) noexcept;
 /* Function used internally by the cleanup procedure.  */
@@ -212,6 +229,11 @@ private:
 		explicit IoLifetimeToken(std::shared_ptr<CleanupState> state_)
 			: state(std::move(state_)) { }
 		~IoLifetimeToken() {
+#ifndef NDEBUG
+			Ev::coroutine::detail::assert_main_thread(
+				"Ev::coroutine::PromiseBase::IoLifetimeToken::~IoLifetimeToken"
+			);
+#endif
 			state->io_gone = true;
 			if (state->promise) {
 				state->promise->note_io_gone();
