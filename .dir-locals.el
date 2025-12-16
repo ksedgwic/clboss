@@ -11,4 +11,11 @@
               (c-basic-offset . 8)
               (tab-width . 8)
               ))
+
+ (nil . ((indent-tabs-mode . t)
+         (tab-width . 8)
+         (fill-column . 80)
+         (require-final-newline . t)
+         (show-trailing-whitespace . t)
+         (whitespace-style . (face tabs tab-mark trailing)))))
 )

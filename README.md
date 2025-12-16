@@ -1,3 +1,9 @@
+> ⚠️ **Note about repository ownership**
+>
+> This repository was originally created and maintained by [ZmnSCPxj](https://github.com/ZmnSCPxj).
+> In 2025, the top-level CLBOSS repository was transferred to
+> [Ken Sedgwick](https://github.com/ksedgwic), who is the current maintainer.
+
 CLBOSS The Core Lightning Node Manager
 ===================================
 
@@ -31,6 +37,14 @@ You can read more information about CLBOSS here:
 https://zmnscpxj.github.io/clboss/index.html
 As of this release, this page is a work in progress, stay tuned
 for updates!
+
+## Project ownership and maintenance
+
+This repository was originally created and maintained by [ZmnSCPxj](https://github.com/ZmnSCPxj).
+In 2025, ownership of the top-level CLBOSS repository was transferred to
+[Ken Sedgwick](https://github.com/ksedgwic), who is the current maintainer.
+
+All history and prior contributions remain credited to their original authors.
 
 Dependencies
 ------------
@@ -167,6 +181,38 @@ nix develop
 autoreconf -i
 ./configure && make
 ```
+
+### Developer helpers
+
+To generate an IDE-friendly `compile_commands.json`, run `make
+compile_commands.json` (requires `bear`). The file is git-ignored;
+rerun the target whenever your build flags or sources change.
+
+### Coverage
+
+To run the unit tests with code coverage instrumentation:
+
+    make coverage
+
+If `lcov`/`genhtml` are available, this writes `coverage.info` and an HTML report
+at `coverage-html/index.html`. To generate the report from an existing
+coverage-instrumented build, run:
+
+    make coverage-report
+
+If you want debug symbols as well, override the coverage flags, e.g.:
+
+    make COVERAGE_CXXFLAGS="-Og -g --coverage" COVERAGE_CFLAGS="-Og -g --coverage" coverage
+
+To clean coverage outputs (`coverage.info`, `coverage-html/`, and `*.gcda/*.gcno`
+files):
+
+    make coverage-clean
+
+Installing `lcov`:
+* Fedora: `sudo dnf install lcov`
+* Debian/Ubuntu: `sudo apt-get install lcov`
+* Or via Nix (without installing system-wide): `nix shell nixpkgs#lcov --command make coverage-report`
 
 ### Contributed Utilities
 
@@ -375,36 +421,6 @@ Earlier versions do not record, so if you have been using CLBOSS
 before 0.11D, then historical offchain-to-onchain swaps are not
 reported.
 
-### `clboss-recent-earnings`, `clboss-earnings-history`
-
-As of CLBOSS version [TBD], earnings and expenditures are tracked on a daily basis.
-The following commands have been added to observe the new data:
-
-- **`clboss-recent-earnings`**:
-  - **Purpose**: Returns a data structure equivalent to the
-    `offchain_earnings_tracker` collection in `clboss-status`, but
-    only includes recent earnings and expenditures.
-  - **Arguments**:
-    - `days` (optional): Specifies the number of days to include in
-      the report. Defaults to a fortnight (14 days) if not provided.
-
-- **`clboss-earnings-history`**:
-  - **Purpose**: Provides a daily breakdown of earnings and expenditures.
-  - **Arguments**:
-    - `nodeid` (optional): Limits the history to a particular node if
-      provided. Without this argument, the values are accumulated
-      across all peers.
-  - **Output**: 
-    - The history consists of an array of records showing the earnings
-      and expenditures for each day.
-    - The history includes an initial record with a time value of 0,
-      which contains any legacy earnings and expenditures collected by
-      CLBOSS before daily tracking was implemented.
-
-These commands enhance the tracking of financial metrics, allowing for
-detailed and recent analysis of earnings and expenditures on a daily
-basis.
-
 ### `--clboss-min-onchain=<satoshis>`
 
 Pass this option to `lightningd` in order to specify a target
@@ -521,7 +537,7 @@ The following commands have been added to observe the new data:
   - **Arguments**:
     - `nodeid` (optional): Limits the history to a particular node if
       provided. Without this argument, the history is accumulated
-      across all nodes.
+      across all peers.
   - **Output**: 
     - The history consists of an array of records showing the earnings
       and expenditures for each day.

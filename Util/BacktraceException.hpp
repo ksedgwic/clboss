@@ -5,7 +5,8 @@
 # include"config.h"
 #endif
 
-#if !ENABLE_EXCEPTION_BACKTRACE // If not enabled or undefined
+#if !defined(ENABLE_EXCEPTION_BACKTRACE) || !ENABLE_EXCEPTION_BACKTRACE || defined(USE_VALGRIND)
+// If backtraces are disabled (or we're running under valgrind), use a no-op wrapper.
 
 #include <utility>
 
@@ -30,7 +31,7 @@ public:
 
 } // namespace Util
 
-#else // ENABLE_EXCEPTION_BACKTRACE in force
+#else // ENABLE_EXCEPTION_BACKTRACE in force and not running under valgrind
 
 #include <array>
 #include <execinfo.h>

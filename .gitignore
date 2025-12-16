@@ -16,6 +16,7 @@ config.status
 config.h
 configure
 contrib/clboss/__pycache__/
+compile_commands.json
 *.log
 *.m4
 !external/libsodium/m4/*.m4
@@ -33,9 +34,19 @@ auxdir
 .deps
 .dirstamp
 .libs
+.cache
 
 test_*
 !test_*.cpp
 !test_*.c
 /commit_hash.h
+
+coverage*.info
+coverage-html/
+*.gcda
+*.gcno
+*.gcov
+*.gcov.json.gz
+
 result
+
