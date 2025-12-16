@@ -4,7 +4,7 @@
 
 namespace {
 
-/* Take advantage of the fact that `Ev:::Io` is
+/* Take advantage of the fact that `Ev::Io` is
 fully intended to be used only in the main thread.
 */
 auto cleaning_list = (Ev::coroutine::ToBeCleaned*)(nullptr);
