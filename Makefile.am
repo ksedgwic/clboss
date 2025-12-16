@@ -694,6 +694,100 @@ compile_commands.json bear-compile-commands:
 	$(MAKE) clean
 	bear --output compile_commands.json -- $(MAKE) all
 
+.PHONY: coverage coverage-clean coverage-report
+COVERAGE_CFLAGS ?= -Og --coverage
+COVERAGE_CXXFLAGS ?= -Og --coverage
+COVERAGE_LDFLAGS ?= --coverage
+LCOV ?= lcov
+GENHTML ?= genhtml
+GCOV ?= gcov
+
+coverage-clean:
+	rm -f coverage.info
+	rm -rf coverage-html
+	find . \( \
+		-name '*.gcda' -o \
+		-name '*.gcno' -o \
+		-name '*.gcov' -o \
+		-name '*.gcov.json.gz' \
+	\) -exec rm -f {} +
+
+coverage:
+	$(MAKE) coverage-clean
+	$(MAKE) distclean || true
+	autoreconf -fi
+	./configure \
+		--disable-valgrind \
+		CFLAGS='$(COVERAGE_CFLAGS)' \
+		CXXFLAGS='$(COVERAGE_CXXFLAGS)' \
+		LDFLAGS='$(COVERAGE_LDFLAGS)'
+	$(MAKE) -j$$(nproc)
+	$(MAKE) -j$$(nproc) check-TESTS
+	@if command -v "$(LCOV)" >/dev/null 2>&1; then \
+		$(MAKE) coverage-report; \
+	else \
+		echo "$(LCOV) not found; skipping coverage report." >&2; \
+		echo "Install it (e.g. apt install lcov) or run: nix shell nixpkgs#lcov --command make coverage-report" >&2; \
+	fi
+
+coverage-report:
+	@if ! command -v $(LCOV) >/dev/null 2>&1; then \
+		echo "$(LCOV) not found; install it (e.g. apt install lcov) or run via: nix shell nixpkgs#lcov" >&2; \
+		exit 1; \
+	fi
+	$(LCOV) --gcov-tool "$(GCOV)" --capture \
+		--no-external \
+		--ignore-errors source \
+		--directory . \
+		--base-directory "$(abs_top_srcdir)" \
+		--output-file coverage.info \
+	|| $(LCOV) --gcov-tool "$(GCOV)" --capture \
+		--no-external \
+		--ignore-errors inconsistent,source \
+		--directory . \
+		--base-directory "$(abs_top_srcdir)" \
+		--output-file coverage.info \
+	|| $(LCOV) --gcov-tool "$(GCOV)" --capture \
+		--no-external \
+		--directory . \
+		--base-directory "$(abs_top_srcdir)" \
+		--output-file coverage.info
+	$(LCOV) --remove coverage.info \
+		'*/external/*' \
+		'*/tests/*' \
+		'*/crypto/*' \
+		'*/src/*' \
+		'*/basicsecure.c' \
+		'/usr/*' \
+		'/nix/store/*' \
+		--ignore-errors unused \
+		--output-file coverage.info \
+	|| $(LCOV) --remove coverage.info \
+		'*/external/*' \
+		'*/tests/*' \
+		'*/crypto/*' \
+		'*/src/*' \
+		'*/basicsecure.c' \
+		'/usr/*' \
+		'/nix/store/*' \
+		--output-file coverage.info
+	$(LCOV) --summary coverage.info
+	$(GENHTML) coverage.info \
+		--filter missing \
+		--ignore-errors inconsistent,corrupt \
+		--legend \
+		--title "clboss coverage" \
+		--output-directory coverage-html \
+	|| $(GENHTML) coverage.info \
+		--ignore-errors source \
+		--legend \
+		--title "clboss coverage" \
+		--output-directory coverage-html \
+	|| $(GENHTML) coverage.info \
+		--legend \
+		--title "clboss coverage" \
+		--output-directory coverage-html
+
 commit_hash.h: FORCE
 	@if git -C $(srcdir) rev-parse --is-inside-work-tree > /dev/null 2>&1; then \
 		CURRENT_HASH="$$(git -C $(srcdir) rev-parse HEAD)"; \

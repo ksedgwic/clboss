@@ -7,8 +7,67 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - uses: cachix/install-nix-action@v22
       with:
         github_access_token: ${{ secrets.GITHUB_TOKEN }}
     - run: nix develop --command bash -c "autoreconf -i && ./configure && make -j4 distcheck"
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Free disk space
+      run: |
+        df -h
+        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
+        sudo apt-get clean || true
+        df -h
+    - name: Install build + coverage dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          autoconf \
+          autoconf-archive \
+          automake \
+          build-essential \
+          curl \
+          git \
+          lcov \
+          libcurl4-openssl-dev \
+          libev-dev \
+          libsqlite3-dev \
+          libtool \
+          libunwind-dev \
+          pkg-config
+    - name: Configure (coverage)
+      run: |
+        autoreconf -fi
+        ./configure \
+          --disable-valgrind \
+          CFLAGS='-Og --coverage' \
+          CXXFLAGS='-Og --coverage' \
+          LDFLAGS='--coverage'
+    - name: Build + run unit tests
+      run: |
+        make -j2
+        make -j2 check-TESTS
+    - name: Generate HTML coverage report
+      run: |
+        make coverage-report
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: coverage.info
+        fail_ci_if_error: false
+    - name: Upload coverage (HTML)
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-html
+        path: coverage-html
+    - name: Upload coverage (lcov)
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-lcov
+        path: coverage.info

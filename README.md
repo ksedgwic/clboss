@@ -188,6 +188,32 @@ To generate an IDE-friendly `compile_commands.json`, run `make
 compile_commands.json` (requires `bear`). The file is git-ignored;
 rerun the target whenever your build flags or sources change.
 
+### Coverage
+
+To run the unit tests with code coverage instrumentation:
+
+    make coverage
+
+If `lcov`/`genhtml` are available, this writes `coverage.info` and an HTML report
+at `coverage-html/index.html`. To generate the report from an existing
+coverage-instrumented build, run:
+
+    make coverage-report
+
+If you want debug symbols as well, override the coverage flags, e.g.:
+
+    make COVERAGE_CXXFLAGS="-Og -g --coverage" COVERAGE_CFLAGS="-Og -g --coverage" coverage
+
+To clean coverage outputs (`coverage.info`, `coverage-html/`, and `*.gcda/*.gcno`
+files):
+
+    make coverage-clean
+
+Installing `lcov`:
+* Fedora: `sudo dnf install lcov`
+* Debian/Ubuntu: `sudo apt-get install lcov`
+* Or via Nix (without installing system-wide): `nix shell nixpkgs#lcov --command make coverage-report`
+
 ### Contributed Utilities
 
 There are a number of contributed utilities in the `contrib` directory.  See
