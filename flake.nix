@@ -69,22 +69,16 @@
 
         devShells.default = pkgs.mkShell {
           inherit nativeBuildInputs;
-          buildInputs =
-            with pkgs;
-            nativeBuildInputs
-            ++ [
-              gcc
-              libevdev
-              bind
-              autoconf
-              autoconf-archive
-              libtool
-              automake
-              git
-
-              # editor support
-              bear
-            ];
+          buildInputs = buildInputs ++ (with pkgs; [
+            gcc
+            bind
+            autoconf
+            libtool
+            automake
+            git
+            # editor support
+            bear
+          ]);
         };
       }
     );
