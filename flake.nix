@@ -27,6 +27,8 @@
           pkgs.autoconf-archive
           pkgs.autoreconfHook
           pkgs.pkg-config
+	];
+        buildInputs = [
           pkgs.libev
           pkgs.libunwind
           pkgs.curlWithGnuTls
@@ -36,6 +38,7 @@
           name = "clboss";
           src = ./.;
           inherit nativeBuildInputs;
+          inherit buildInputs;
 
           enableParallelBuilding = true;
 
