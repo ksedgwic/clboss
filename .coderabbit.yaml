@@ -6,9 +6,21 @@ reviews:
   profile: "chill"
   request_changes_workflow: false
   high_level_summary: true
-  poem: true
+  high_level_summary_instructions: >
+    Keep the summary concise: max 3 bullet points, no tables, no code blocks.
+  poem: false
   review_status: true
-  collapse_walkthrough: false
+  collapse_walkthrough: true
+  changed_files_summary: false
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  assess_linked_issues: false
+  related_issues: false
+  related_prs: false
+  suggested_labels: false
+  suggested_reviewers: false
+  in_progress_fortune: false
+  enable_prompt_for_ai_agents: true
 
   auto_review:
     enabled: true
