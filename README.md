@@ -166,7 +166,7 @@ You need to install the below first before you can run
     pkg install git
 
 While releases and pre-releases will be tested for
-compileability in a FreeBSD VM, git `master` may
+compileability in a FreeBSD VM, git `main` may
 transiently be in a state where the default CLANG may
 raise warnings that are not raised by GCC, or may refer to
 Linux-specific header files and functions.
