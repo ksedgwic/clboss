@@ -109,33 +109,6 @@ Ev::Io<void> OnchainFundsAnnouncer::announce() {
 
 Ev::Io<Jsmn::Object>
 OnchainFundsAnnouncer::fundpsbt() {
-	try {
-		/* On old C-Lightning, "reserve" is a bool.
-		 * Try that first.
-		 * If we get a parameter error -32602,
-		 * try with a number 0.
-		 */
-		auto params = Json::Out()
-			.start_object()
-				/* Get all the funds.  */
-				.field("satoshi", std::string("all"))
-				.field("feerate", std::string("normal"))
-				.field("startweight", (double) startweight)
-				.field("minconf", (double) minconf)
-				/* Do not reserve; we just want to know
-				 * how much money could be spent.
-				 */
-				.field("reserve", false)
-			.end_object()
-			;
-		co_return co_await rpc->command("fundpsbt", std::move(params));
-	} catch (RpcError const& e) {
-		/* If not a parameter error, throw.  */
-		if (int(double(e.error["code"])) != -32602) {
-			throw;
-		}
-	}
-	/* Retry with "reserve" as a number.  */
 	auto params = Json::Out()
 		.start_object()
 			/* Get all the funds.  */
