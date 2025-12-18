@@ -112,6 +112,19 @@ You will then need to modify your `lightning.conf` to add the
 path to `which clboss` as a `plugin` or `important-plugin` of
 `lightningd`.
 
+For production rollouts/quick rollback, you can install a versioned
+binary and keep `clboss` as a symlink you can switch:
+
+    sudo make install-versioned
+
+This installs `clboss-<git-describe>` (e.g.
+`/usr/local/bin/clboss-v0.15.1-47-g9b61c28`) and updates the symlink
+at `/usr/local/bin/clboss` (or whatever `--prefix` you configured).
+
+To roll back (or switch forward) after multiple installs replace the
+`/usr/local/bin/clboss` symbolic link with one pointing to the
+desired version.
+
 Usually, autotools-based projects like CLBOSS will default
 to using `-g -O2` for compilation flags, where `-g` causes
 the compiler to include debug info.

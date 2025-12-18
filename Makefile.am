@@ -816,6 +816,26 @@ dist-hook:
 
 FORCE:
 
-.PHONY: FORCE
+.PHONY: FORCE install-versioned
+
+CLBOSS_VERSIONED_SYMLINK ?= clboss
+CLBOSS_VERSIONED_DESCRIBE ?=
+
+install-versioned: all
+	@set -e; \
+	describe="$(CLBOSS_VERSIONED_DESCRIBE)"; \
+	if [ -z "$$describe" ]; then \
+		if git -C "$(srcdir)" rev-parse --is-inside-work-tree > /dev/null 2>&1; then \
+			describe="$$(git -C "$(srcdir)" describe --tags --always --dirty)"; \
+		else \
+			describe="v$(PACKAGE_VERSION)"; \
+		fi; \
+	fi; \
+	bindir_path="$(DESTDIR)$(bindir)"; \
+	$(MKDIR_P) "$$bindir_path"; \
+	$(INSTALL_PROGRAM) clboss "$$bindir_path/clboss-$$describe"; \
+	rm -f "$$bindir_path/$(CLBOSS_VERSIONED_SYMLINK)"; \
+	ln -s "clboss-$$describe" "$$bindir_path/$(CLBOSS_VERSIONED_SYMLINK)"; \
+	echo "Installed $$bindir_path/clboss-$$describe and set $$bindir_path/$(CLBOSS_VERSIONED_SYMLINK)"
 
 clboss libclboss.la: $(BUILT_SOURCES)
