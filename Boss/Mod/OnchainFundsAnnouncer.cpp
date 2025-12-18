@@ -13,6 +13,7 @@
 #include"Json/Out.hpp"
 #include"S/Bus.hpp"
 #include<cstddef>
+#include<cstdint>
 #include<sstream>
 
 namespace {
@@ -119,7 +120,7 @@ OnchainFundsAnnouncer::fundpsbt() {
 			/* Do not reserve; we just want to know
 			 * how much money could be spent.
 			 */
-			.field("reserve", (double) 0)
+			.field("reserve", std::uint32_t(0))
 		.end_object()
 		;
 	co_return co_await rpc->command("fundpsbt", std::move(params));
