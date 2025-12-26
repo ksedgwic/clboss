@@ -561,3 +561,4 @@ The following commands have been added to observe the new data:
 These commands enhance the tracking of financial metrics, allowing for
 detailed and recent analysis of earnings and expenditures on a daily
 basis.
+
