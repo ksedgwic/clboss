@@ -122,9 +122,11 @@ def compute_estimate(state, peer):
 
 
 class Output:
-    def __init__(self, conn=None):
+    def __init__(self, conn=None, commit_interval=1000):
         self.conn = conn
         self.cur = conn.cursor() if conn else None
+        self.commit_interval = commit_interval
+        self.pending_writes = 0
 
     def commit(self):
         if self.conn:
@@ -155,6 +157,9 @@ class Output:
                     snapshot["est_ppm"],
                 ),
             )
+            self.pending_writes += 1
+            if self.pending_writes % self.commit_interval == 0:
+                self.conn.commit()
         else:
             sys.stdout.write(
                 "{ts},{peer},{scid},{baseline_base},{baseline_ppm},{size_mult},"
