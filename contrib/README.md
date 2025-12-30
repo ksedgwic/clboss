@@ -61,6 +61,10 @@ cd contrib/
 The `clboss-routing-stats` and `clboss-forwarding-stats` scripts now accept `--days` to limit
 how many days of earnings history are considered when ranking channels.
 
+./fee_log_parser.py /path/to/lightning.log
+
+./fee_log_parser.py /path/to/lightning.log --db /path/to/fee-changes.sqlite3
+
 ```
 
 ### Script Details
@@ -75,3 +79,5 @@ how many days of earnings history are considered when ranking channels.
   accepts the `--days` option.
 - **`recently-closed`** lists channels that closed within the last N days, also
   controlled via `--days`.
+- **`fee_log_parser.py`** parses fee-setting logs from stdin or file paths, emits CSV
+  to stdout by default, and can store results in sqlite with `--db`.
