@@ -75,3 +75,7 @@ how many days of earnings history are considered when ranking channels.
   accepts the `--days` option.
 - **`recently-closed`** lists channels that closed within the last N days, also
   controlled via `--days`.
+- **`fee-log-parser`** is a parser that streams DEBUG level logging and writes
+  a sqlite database containing fee algorithm information.
+- **`plot-fees`** plots fee-related time series from the `fee-log-parser` sqlite
+  output.
