@@ -17,7 +17,7 @@ def parse_args():
     )
     parser.add_argument(
         "--out",
-        default="price_level.png",
+        default=None,
         help="Output image path.",
     )
     parser.add_argument(
@@ -66,7 +66,9 @@ def main():
     plt.ylabel("price_level")
     plt.title(args.peer)
     plt.tight_layout()
-    plt.savefig(args.out, dpi=150)
+    prefix = args.peer[:8]
+    out_path = args.out or f"{prefix}-pricelevel.png"
+    plt.savefig(out_path, dpi=150)
 
     if args.show:
         plt.show()
