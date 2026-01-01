@@ -62,14 +62,22 @@ def main():
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    plt.figure(figsize=(12, 4))
-    plt.plot(ts, bases, linewidth=1, label="base")
-    plt.plot(ts, ppms, linewidth=1, label="ppm")
-    plt.xlabel("time")
-    plt.ylabel("fee")
-    plt.title(args.peer)
-    plt.legend()
-    plt.tight_layout()
+    fig, ax_base = plt.subplots(figsize=(12, 4))
+    ax_ppm = ax_base.twinx()
+
+    base_line, = ax_base.plot(ts, bases, linewidth=1, label="base")
+    ppm_line, = ax_ppm.plot(ts, ppms, linewidth=1, label="ppm", color="orange")
+
+    ax_base.set_xlabel("time")
+    ax_base.set_ylabel("base")
+    ax_ppm.set_ylabel("ppm")
+    ax_base.set_title(args.peer)
+
+    ax_base.set_ylim(bottom=0)
+    ax_ppm.set_ylim(bottom=0)
+
+    ax_base.legend([base_line, ppm_line], ["base", "ppm"])
+    fig.tight_layout()
     prefix = args.peer[:8]
     out_path = args.out or f"{prefix}-baseppm.png"
     plt.savefig(out_path, dpi=150)
