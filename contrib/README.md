@@ -83,3 +83,5 @@ how many days of earnings history are considered when ranking channels.
   to stdout by default, and can store results in sqlite with `--db`.
 - **`plot_fee_price_level`** plots `price_level` over time for a peer from the
   `fee_log_parser` sqlite output, writing a PNG by default.
+- **`plot_fee_base_ppm`** plots `est_base` and `est_ppm` over time for a peer from
+  the `fee_log_parser` sqlite output, writing a PNG by default.
