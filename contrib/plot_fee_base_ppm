@@ -50,6 +50,8 @@ def main():
     for t, base, ppm in rows:
         if base is None or ppm is None:
             continue
+        if base <= 0 or ppm <= 0:
+            continue
         ts.append(parse_ts(t))
         bases.append(base)
         ppms.append(ppm)
@@ -59,6 +61,7 @@ def main():
 
     try:
         import matplotlib.pyplot as plt
+        from matplotlib.ticker import ScalarFormatter
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
@@ -73,8 +76,21 @@ def main():
     ax_ppm.set_ylabel("ppm")
     ax_base.set_title(args.peer)
 
-    ax_base.set_ylim(bottom=0)
-    ax_ppm.set_ylim(bottom=0)
+    ax_base.set_yscale("log")
+    ax_ppm.set_yscale("log")
+
+    ax_base.set_ylim(bottom=1)
+    ax_ppm.set_ylim(bottom=1)
+
+    base_fmt = ScalarFormatter()
+    base_fmt.set_scientific(False)
+    base_fmt.set_useOffset(False)
+    ax_base.yaxis.set_major_formatter(base_fmt)
+
+    ppm_fmt = ScalarFormatter()
+    ppm_fmt.set_scientific(False)
+    ppm_fmt.set_useOffset(False)
+    ax_ppm.yaxis.set_major_formatter(ppm_fmt)
 
     ax_base.legend([base_line, ppm_line], ["base", "ppm"])
     fig.tight_layout()
