@@ -100,7 +100,7 @@ def filter_by_time(rows, from_ts, to_ts):
 def plot_price_level(args):
     conn = sqlite3.connect(args.db)
     rows = conn.execute(
-        "SELECT ts, price_level FROM fee_change_events "
+        "SELECT ts, price_level, price_mult FROM fee_change_events "
         "WHERE peer = ? ORDER BY ts",
         (args.peer,),
     ).fetchall()
@@ -109,26 +109,53 @@ def plot_price_level(args):
     rows = [r for r in rows if r[1] is not None]
     rows = filter_by_time(rows, args.from_ts, args.to_ts)
 
-    ts = []
+    ts_levels = []
     levels = []
-    for t, level in rows:
-        ts.append(parse_ts(t))
+    ts_mult = []
+    mults = []
+    for t, level, mult in rows:
+        ts = parse_ts(t)
+        ts_levels.append(ts)
         levels.append(level)
+        if mult is not None and mult > 0:
+            ts_mult.append(ts)
+            mults.append(mult)
 
-    if not ts:
+    if not ts_levels:
         raise SystemExit("no price_level data for peer in time range")
 
     try:
         import matplotlib.pyplot as plt
+        from matplotlib.ticker import ScalarFormatter
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    plt.figure(figsize=(12, 4))
-    plt.plot(ts, levels, linewidth=1)
-    plt.xlabel("time")
-    plt.ylabel("price_level")
-    plt.title(args.peer)
-    plt.tight_layout()
+    fig, ax_level = plt.subplots(figsize=(12, 4))
+    ax_mult = ax_level.twinx()
+
+    level_line, = ax_level.plot(ts_levels, levels, linewidth=1, label="price_level")
+    mult_line = None
+    if mults:
+        mult_line, = ax_mult.plot(
+            ts_mult, mults, linewidth=1, label="price_mult", color="orange"
+        )
+
+    ax_level.set_xlabel("time")
+    ax_level.set_ylabel("price_level")
+    ax_mult.set_ylabel("price_mult")
+    ax_level.set_title(args.peer)
+
+    mult_fmt = ScalarFormatter()
+    mult_fmt.set_scientific(False)
+    mult_fmt.set_useOffset(False)
+    ax_mult.yaxis.set_major_formatter(mult_fmt)
+
+    if mult_line is not None:
+        ax_level.legend([level_line, mult_line], ["price_level", "price_mult"])
+    else:
+        ax_level.legend([level_line], ["price_level"])
+
+    fig.tight_layout()
     prefix = args.peer[:8]
     out_path = args.out or f"{prefix}-pricelevel.png"
     plt.savefig(out_path, dpi=150)
