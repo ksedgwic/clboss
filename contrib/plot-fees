@@ -97,18 +97,15 @@ def filter_by_time(rows, from_ts, to_ts):
     return filtered
 
 
-def plot_price_level(args):
-    conn = sqlite3.connect(args.db)
-    rows = conn.execute(
-        "SELECT ts, price_level, price_mult FROM fee_change_events "
-        "WHERE peer = ? ORDER BY ts",
-        (args.peer,),
-    ).fetchall()
+def fetch_rows(db, query, peer):
+    conn = sqlite3.connect(db)
+    rows = conn.execute(query, (peer,)).fetchall()
     conn.close()
+    return rows
 
+
+def plot_price_level_on(ax_level, ax_mult, rows, peer):
     rows = [r for r in rows if r[1] is not None]
-    rows = filter_by_time(rows, args.from_ts, args.to_ts)
-
     ts_levels = []
     levels = []
     ts_mult = []
@@ -124,58 +121,25 @@ def plot_price_level(args):
     if not ts_levels:
         raise SystemExit("no price_level data for peer in time range")
 
-    try:
-        import matplotlib.pyplot as plt
-        from matplotlib.ticker import ScalarFormatter
-    except ImportError:
-        raise SystemExit("matplotlib is required to output graphs.")
-
-    fig, ax_level = plt.subplots(figsize=(12, 4))
-    ax_mult = ax_level.twinx()
-
-    level_line, = ax_level.plot(ts_levels, levels, linewidth=1, label="price_level")
+    level_line, = ax_level.plot(
+        ts_levels, levels, linewidth=1, label="price_level"
+    )
     mult_line = None
     if mults:
         mult_line, = ax_mult.plot(
             ts_mult, mults, linewidth=1, label="price_mult", color="orange"
         )
 
-    ax_level.set_xlabel("time")
     ax_level.set_ylabel("price_level")
     ax_mult.set_ylabel("price_mult")
-    ax_level.set_title(args.peer)
-
-    mult_fmt = ScalarFormatter()
-    mult_fmt.set_scientific(False)
-    mult_fmt.set_useOffset(False)
-    ax_mult.yaxis.set_major_formatter(mult_fmt)
-
     if mult_line is not None:
         ax_level.legend([level_line, mult_line], ["price_level", "price_mult"])
     else:
         ax_level.legend([level_line], ["price_level"])
 
-    fig.tight_layout()
-    prefix = args.peer[:8]
-    out_path = args.out or f"{prefix}-pricelevel.png"
-    plt.savefig(out_path, dpi=150)
 
-    if args.show:
-        plt.show()
-
-
-def plot_base_ppm(args):
-    conn = sqlite3.connect(args.db)
-    rows = conn.execute(
-        "SELECT ts, est_base, est_ppm FROM fee_change_events "
-        "WHERE peer = ? ORDER BY ts",
-        (args.peer,),
-    ).fetchall()
-    conn.close()
-
+def plot_base_ppm_on(ax_base, ax_ppm, rows, peer):
     rows = [r for r in rows if r[1] is not None and r[2] is not None]
-    rows = filter_by_time(rows, args.from_ts, args.to_ts)
-
     ts = []
     bases = []
     ppms = []
@@ -189,28 +153,109 @@ def plot_base_ppm(args):
     if not ts:
         raise SystemExit("no est_base/est_ppm data for peer in time range")
 
+    base_line, = ax_base.plot(ts, bases, linewidth=1, label="base")
+    ppm_line, = ax_ppm.plot(ts, ppms, linewidth=1, label="ppm", color="orange")
+
+    ax_base.set_ylabel("base")
+    ax_ppm.set_ylabel("ppm")
+    ax_base.set_yscale("log")
+    ax_ppm.set_yscale("log")
+
+    ax_base.set_ylim(bottom=1)
+    ax_ppm.set_ylim(bottom=1)
+
+    ax_base.legend([base_line, ppm_line], ["base", "ppm"])
+
+
+def plot_size_mult_on(ax, rows, peer):
+    rows = [r for r in rows if r[1] is not None]
+    ts = []
+    mults = []
+    for t, mult in rows:
+        ts.append(parse_ts(t))
+        mults.append(mult)
+
+    if not ts:
+        raise SystemExit("no size_mult data for peer in time range")
+
+    ax.plot(ts, mults, linewidth=1)
+    ax.set_ylabel("size_mult")
+
+def plot_balance_mult_on(ax, rows, peer):
+    rows = [r for r in rows if r[1] is not None]
+    ts = []
+    mults = []
+    for t, mult in rows:
+        ts.append(parse_ts(t))
+        mults.append(mult)
+
+    if not ts:
+        raise SystemExit("no balance_mult data for peer in time range")
+
+    ax.plot(ts, mults, linewidth=1, color="orange")
+    ax.set_ylabel("balance_mult")
+    ax.set_yscale("log")
+    ax.set_yticks(
+        [1 / 6, 1 / 3, 1, 3, 6],
+        ["1/6", "1/3", "1", "3", "6"],
+    )
+
+
+def plot_price_level(args):
     try:
         import matplotlib.pyplot as plt
         from matplotlib.ticker import ScalarFormatter
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
+    rows = fetch_rows(
+        args.db,
+        "SELECT ts, price_level, price_mult FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        args.peer,
+    )
+    rows = filter_by_time(rows, args.from_ts, args.to_ts)
+
+    fig, ax_level = plt.subplots(figsize=(12, 4))
+    ax_mult = ax_level.twinx()
+    plot_price_level_on(ax_level, ax_mult, rows, args.peer)
+    ax_level.set_xlabel("time")
+    ax_level.set_title(args.peer)
+
+    mult_fmt = ScalarFormatter()
+    mult_fmt.set_scientific(False)
+    mult_fmt.set_useOffset(False)
+    ax_mult.yaxis.set_major_formatter(mult_fmt)
+
+    fig.tight_layout()
+    prefix = args.peer[:8]
+    out_path = args.out or f"{prefix}-pricelevel.png"
+    plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+
+
+def plot_base_ppm(args):
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import ScalarFormatter
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    rows = fetch_rows(
+        args.db,
+        "SELECT ts, est_base, est_ppm FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        args.peer,
+    )
+    rows = filter_by_time(rows, args.from_ts, args.to_ts)
+
     fig, ax_base = plt.subplots(figsize=(12, 4))
     ax_ppm = ax_base.twinx()
-
-    base_line, = ax_base.plot(ts, bases, linewidth=1, label="base")
-    ppm_line, = ax_ppm.plot(ts, ppms, linewidth=1, label="ppm", color="orange")
-
+    plot_base_ppm_on(ax_base, ax_ppm, rows, args.peer)
     ax_base.set_xlabel("time")
-    ax_base.set_ylabel("base")
-    ax_ppm.set_ylabel("ppm")
     ax_base.set_title(args.peer)
-
-    ax_base.set_yscale("log")
-    ax_ppm.set_yscale("log")
-
-    ax_base.set_ylim(bottom=1)
-    ax_ppm.set_ylim(bottom=1)
 
     base_fmt = ScalarFormatter()
     base_fmt.set_scientific(False)
@@ -222,7 +267,6 @@ def plot_base_ppm(args):
     ppm_fmt.set_useOffset(False)
     ax_ppm.yaxis.set_major_formatter(ppm_fmt)
 
-    ax_base.legend([base_line, ppm_line], ["base", "ppm"])
     fig.tight_layout()
     prefix = args.peer[:8]
     out_path = args.out or f"{prefix}-baseppm.png"
@@ -233,35 +277,22 @@ def plot_base_ppm(args):
 
 
 def plot_size_mult(args):
-    conn = sqlite3.connect(args.db)
-    rows = conn.execute(
-        "SELECT ts, size_mult FROM fee_change_events "
-        "WHERE peer = ? ORDER BY ts",
-        (args.peer,),
-    ).fetchall()
-    conn.close()
-
-    rows = [r for r in rows if r[1] is not None]
-    rows = filter_by_time(rows, args.from_ts, args.to_ts)
-
-    ts = []
-    mults = []
-    for t, mult in rows:
-        ts.append(parse_ts(t))
-        mults.append(mult)
-
-    if not ts:
-        raise SystemExit("no size_mult data for peer in time range")
-
     try:
         import matplotlib.pyplot as plt
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
+    rows = fetch_rows(
+        args.db,
+        "SELECT ts, size_mult FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        args.peer,
+    )
+    rows = filter_by_time(rows, args.from_ts, args.to_ts)
+
     plt.figure(figsize=(12, 4))
-    plt.plot(ts, mults, linewidth=1)
+    plot_size_mult_on(plt.gca(), rows, args.peer)
     plt.xlabel("time")
-    plt.ylabel("size_mult")
     plt.title(args.peer)
     plt.tight_layout()
     prefix = args.peer[:8]
@@ -273,44 +304,104 @@ def plot_size_mult(args):
 
 
 def plot_balance_mult(args):
-    conn = sqlite3.connect(args.db)
-    rows = conn.execute(
-        "SELECT ts, balance_mult FROM fee_change_events "
-        "WHERE peer = ? ORDER BY ts",
-        (args.peer,),
-    ).fetchall()
-    conn.close()
-
-    rows = [r for r in rows if r[1] is not None]
-    rows = filter_by_time(rows, args.from_ts, args.to_ts)
-
-    ts = []
-    mults = []
-    for t, mult in rows:
-        ts.append(parse_ts(t))
-        mults.append(mult)
-
-    if not ts:
-        raise SystemExit("no balance_mult data for peer in time range")
-
     try:
         import matplotlib.pyplot as plt
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    plt.figure(figsize=(12, 4))
-    plt.plot(ts, mults, linewidth=1, color="orange")
-    plt.xlabel("time")
-    plt.ylabel("balance_mult")
-    plt.title(args.peer)
-    plt.yscale("log")
-    plt.yticks(
-        [1 / 6, 1 / 3, 1, 3, 6],
-        ["1/6", "1/3", "1", "3", "6"],
+    rows = fetch_rows(
+        args.db,
+        "SELECT ts, balance_mult FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        args.peer,
     )
+    rows = filter_by_time(rows, args.from_ts, args.to_ts)
+
+    plt.figure(figsize=(12, 4))
+    plot_balance_mult_on(plt.gca(), rows, args.peer)
+    plt.xlabel("time")
+    plt.title(args.peer)
     plt.tight_layout()
     prefix = args.peer[:8]
     out_path = args.out or f"{prefix}-balancemult.png"
+    plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+
+
+def plot_combo(args):
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import ScalarFormatter
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    size_rows = fetch_rows(
+        args.db,
+        "SELECT ts, size_mult FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        args.peer,
+    )
+    balance_rows = fetch_rows(
+        args.db,
+        "SELECT ts, balance_mult FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        args.peer,
+    )
+    price_rows = fetch_rows(
+        args.db,
+        "SELECT ts, price_level, price_mult FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        args.peer,
+    )
+    base_rows = fetch_rows(
+        args.db,
+        "SELECT ts, est_base, est_ppm FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        args.peer,
+    )
+
+    size_rows = filter_by_time(size_rows, args.from_ts, args.to_ts)
+    balance_rows = filter_by_time(balance_rows, args.from_ts, args.to_ts)
+    price_rows = filter_by_time(price_rows, args.from_ts, args.to_ts)
+    base_rows = filter_by_time(base_rows, args.from_ts, args.to_ts)
+
+    fig, axes = plt.subplots(4, 1, figsize=(12, 12), sharex=True)
+    ax_size, ax_balance, ax_price, ax_base = axes
+
+    plot_size_mult_on(ax_size, size_rows, args.peer)
+    plot_balance_mult_on(ax_balance, balance_rows, args.peer)
+
+    ax_price_level = ax_price
+    ax_price_mult = ax_price_level.twinx()
+    plot_price_level_on(ax_price_level, ax_price_mult, price_rows, args.peer)
+
+    ax_base_fee = ax_base
+    ax_base_ppm = ax_base_fee.twinx()
+    plot_base_ppm_on(ax_base_fee, ax_base_ppm, base_rows, args.peer)
+
+    mult_fmt = ScalarFormatter()
+    mult_fmt.set_scientific(False)
+    mult_fmt.set_useOffset(False)
+    ax_price_mult.yaxis.set_major_formatter(mult_fmt)
+
+    base_fmt = ScalarFormatter()
+    base_fmt.set_scientific(False)
+    base_fmt.set_useOffset(False)
+    ax_base_fee.yaxis.set_major_formatter(base_fmt)
+
+    ppm_fmt = ScalarFormatter()
+    ppm_fmt.set_scientific(False)
+    ppm_fmt.set_useOffset(False)
+    ax_base_ppm.yaxis.set_major_formatter(ppm_fmt)
+
+    ax_base.set_xlabel("time")
+    fig.suptitle(args.peer)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+    prefix = args.peer[:8]
+    out_path = args.out or f"{prefix}-combo.png"
     plt.savefig(out_path, dpi=150)
 
     if args.show:
@@ -346,6 +437,12 @@ def main():
     )
     add_common_args(balance_mult_parser)
     balance_mult_parser.set_defaults(func=plot_balance_mult)
+
+    combo_parser = subparsers.add_parser(
+        "combo", help="Stack size, balance, price, and base/ppm views."
+    )
+    add_common_args(combo_parser)
+    combo_parser.set_defaults(func=plot_combo)
 
     args = parser.parse_args()
     args.from_ts = parse_time_arg(args.from_ts)
