@@ -167,6 +167,36 @@ def plot_base_ppm_on(ax_base, ax_ppm, rows, peer):
     ax_base.legend([base_line, ppm_line], ["base", "ppm"])
 
 
+def plot_baseline_on(ax_base, ax_ppm, rows, peer):
+    rows = [r for r in rows if r[1] is not None and r[2] is not None]
+    ts = []
+    bases = []
+    ppms = []
+    for t, base, ppm in rows:
+        if base <= 0 or ppm <= 0:
+            continue
+        ts.append(parse_ts(t))
+        bases.append(base)
+        ppms.append(ppm)
+
+    if not ts:
+        raise SystemExit("no baseline data for peer in time range")
+
+    base_line, = ax_base.plot(ts, bases, linewidth=1, label="base")
+    ppm_line, = ax_ppm.plot(ts, ppms, linewidth=1, label="ppm", color="orange")
+
+    ax_base.set_ylabel("baseline_base")
+    ax_ppm.set_ylabel("baseline_ppm")
+
+    ax_base.set_yscale("log")
+    ax_ppm.set_yscale("log")
+
+    ax_base.set_ylim(bottom=1)
+    ax_ppm.set_ylim(bottom=1)
+
+    ax_base.legend([base_line, ppm_line], ["base", "ppm"])
+
+
 def plot_size_mult_on(ax, rows, peer):
     rows = [r for r in rows if r[1] is not None]
     ts = []
@@ -276,6 +306,46 @@ def plot_base_ppm(args):
         plt.show()
 
 
+def plot_baseline(args):
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import ScalarFormatter
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    rows = fetch_rows(
+        args.db,
+        "SELECT ts, baseline_base, baseline_ppm FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        args.peer,
+    )
+    rows = filter_by_time(rows, args.from_ts, args.to_ts)
+
+    fig, ax_base = plt.subplots(figsize=(12, 4))
+    ax_ppm = ax_base.twinx()
+    plot_baseline_on(ax_base, ax_ppm, rows, args.peer)
+    ax_base.set_xlabel("time")
+    ax_base.set_title(args.peer)
+
+    base_fmt = ScalarFormatter()
+    base_fmt.set_scientific(False)
+    base_fmt.set_useOffset(False)
+    ax_base.yaxis.set_major_formatter(base_fmt)
+
+    ppm_fmt = ScalarFormatter()
+    ppm_fmt.set_scientific(False)
+    ppm_fmt.set_useOffset(False)
+    ax_ppm.yaxis.set_major_formatter(ppm_fmt)
+
+    fig.tight_layout()
+    prefix = args.peer[:8]
+    out_path = args.out or f"{prefix}-baseline.png"
+    plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+
+
 def plot_size_mult(args):
     try:
         import matplotlib.pyplot as plt
@@ -343,6 +413,12 @@ def plot_combo(args):
         "WHERE peer = ? ORDER BY ts",
         args.peer,
     )
+    baseline_rows = fetch_rows(
+        args.db,
+        "SELECT ts, baseline_base, baseline_ppm FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        args.peer,
+    )
     balance_rows = fetch_rows(
         args.db,
         "SELECT ts, balance_mult FROM fee_change_events "
@@ -363,12 +439,17 @@ def plot_combo(args):
     )
 
     size_rows = filter_by_time(size_rows, args.from_ts, args.to_ts)
+    baseline_rows = filter_by_time(baseline_rows, args.from_ts, args.to_ts)
     balance_rows = filter_by_time(balance_rows, args.from_ts, args.to_ts)
     price_rows = filter_by_time(price_rows, args.from_ts, args.to_ts)
     base_rows = filter_by_time(base_rows, args.from_ts, args.to_ts)
 
-    fig, axes = plt.subplots(4, 1, figsize=(12, 12), sharex=True)
-    ax_size, ax_balance, ax_price, ax_base = axes
+    fig, axes = plt.subplots(5, 1, figsize=(12, 15), sharex=True)
+    ax_baseline, ax_size, ax_balance, ax_price, ax_base = axes
+
+    ax_baseline_base = ax_baseline
+    ax_baseline_ppm = ax_baseline_base.twinx()
+    plot_baseline_on(ax_baseline_base, ax_baseline_ppm, baseline_rows, args.peer)
 
     plot_size_mult_on(ax_size, size_rows, args.peer)
     plot_balance_mult_on(ax_balance, balance_rows, args.peer)
@@ -395,6 +476,16 @@ def plot_combo(args):
     ppm_fmt.set_scientific(False)
     ppm_fmt.set_useOffset(False)
     ax_base_ppm.yaxis.set_major_formatter(ppm_fmt)
+
+    baseline_base_fmt = ScalarFormatter()
+    baseline_base_fmt.set_scientific(False)
+    baseline_base_fmt.set_useOffset(False)
+    ax_baseline_base.yaxis.set_major_formatter(baseline_base_fmt)
+
+    baseline_ppm_fmt = ScalarFormatter()
+    baseline_ppm_fmt.set_scientific(False)
+    baseline_ppm_fmt.set_useOffset(False)
+    ax_baseline_ppm.yaxis.set_major_formatter(baseline_ppm_fmt)
 
     ax_base.set_xlabel("time")
     fig.suptitle(args.peer)
@@ -425,6 +516,12 @@ def main():
     )
     add_common_args(base_ppm_parser)
     base_ppm_parser.set_defaults(func=plot_base_ppm)
+
+    baseline_parser = subparsers.add_parser(
+        "baseline", help="Plot baseline_base and baseline_ppm over time."
+    )
+    add_common_args(baseline_parser)
+    baseline_parser.set_defaults(func=plot_baseline)
 
     size_mult_parser = subparsers.add_parser(
         "size-mult", help="Plot size_mult over time."

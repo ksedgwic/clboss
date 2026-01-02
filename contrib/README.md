@@ -82,5 +82,5 @@ how many days of earnings history are considered when ranking channels.
 - **`fee_log_parser`** parses fee-setting logs from stdin or file paths, emits CSV
   to stdout by default, and can store results in sqlite with `--db`.
 - **`plot-fees`** plots fee-related time series from the `fee_log_parser` sqlite
-  output. Views include `price-level`, `base-ppm`, `size-mult`, `balance-mult`,
-  and `combo` for a stacked summary.
+  output. Views include `baseline`, `price-level`, `base-ppm`, `size-mult`,
+  `balance-mult`, and `combo` for a stacked summary.
