@@ -232,6 +232,91 @@ def plot_base_ppm(args):
         plt.show()
 
 
+def plot_size_mult(args):
+    conn = sqlite3.connect(args.db)
+    rows = conn.execute(
+        "SELECT ts, size_mult FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        (args.peer,),
+    ).fetchall()
+    conn.close()
+
+    rows = [r for r in rows if r[1] is not None]
+    rows = filter_by_time(rows, args.from_ts, args.to_ts)
+
+    ts = []
+    mults = []
+    for t, mult in rows:
+        ts.append(parse_ts(t))
+        mults.append(mult)
+
+    if not ts:
+        raise SystemExit("no size_mult data for peer in time range")
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    plt.figure(figsize=(12, 4))
+    plt.plot(ts, mults, linewidth=1)
+    plt.xlabel("time")
+    plt.ylabel("size_mult")
+    plt.title(args.peer)
+    plt.tight_layout()
+    prefix = args.peer[:8]
+    out_path = args.out or f"{prefix}-sizemult.png"
+    plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+
+
+def plot_balance_mult(args):
+    conn = sqlite3.connect(args.db)
+    rows = conn.execute(
+        "SELECT ts, balance_mult FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        (args.peer,),
+    ).fetchall()
+    conn.close()
+
+    rows = [r for r in rows if r[1] is not None]
+    rows = filter_by_time(rows, args.from_ts, args.to_ts)
+
+    ts = []
+    mults = []
+    for t, mult in rows:
+        ts.append(parse_ts(t))
+        mults.append(mult)
+
+    if not ts:
+        raise SystemExit("no balance_mult data for peer in time range")
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    plt.figure(figsize=(12, 4))
+    plt.plot(ts, mults, linewidth=1, color="orange")
+    plt.xlabel("time")
+    plt.ylabel("balance_mult")
+    plt.title(args.peer)
+    plt.yscale("log")
+    plt.yticks(
+        [1 / 6, 1 / 3, 1, 3, 6],
+        ["1/6", "1/3", "1", "3", "6"],
+    )
+    plt.tight_layout()
+    prefix = args.peer[:8]
+    out_path = args.out or f"{prefix}-balancemult.png"
+    plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Plot fee-related time series from clboss fee logs."
@@ -249,6 +334,18 @@ def main():
     )
     add_common_args(base_ppm_parser)
     base_ppm_parser.set_defaults(func=plot_base_ppm)
+
+    size_mult_parser = subparsers.add_parser(
+        "size-mult", help="Plot size_mult over time."
+    )
+    add_common_args(size_mult_parser)
+    size_mult_parser.set_defaults(func=plot_size_mult)
+
+    balance_mult_parser = subparsers.add_parser(
+        "balance-mult", help="Plot balance_mult over time."
+    )
+    add_common_args(balance_mult_parser)
+    balance_mult_parser.set_defaults(func=plot_balance_mult)
 
     args = parser.parse_args()
     args.from_ts = parse_time_arg(args.from_ts)
