@@ -81,7 +81,6 @@ how many days of earnings history are considered when ranking channels.
   controlled via `--days`.
 - **`fee_log_parser`** parses fee-setting logs from stdin or file paths, emits CSV
   to stdout by default, and can store results in sqlite with `--db`.
-- **`plot_fee_price_level`** plots `price_level` over time for a peer from the
-  `fee_log_parser` sqlite output, writing a PNG by default.
-- **`plot_fee_base_ppm`** plots `est_base` and `est_ppm` over time for a peer from
-  the `fee_log_parser` sqlite output, writing a PNG by default.
+- **`plot-fees`** plots fee-related time series from the `fee_log_parser` sqlite
+  output. Use `price-level` or `base-ppm` views for `price_level` or
+  `est_base`/`est_ppm` respectively.

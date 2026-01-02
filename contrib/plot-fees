@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import re
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+
+def local_tz():
+    return datetime.now().astimezone().tzinfo
+
+
+def normalize_dt(dt):
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=local_tz())
+    return dt.astimezone(timezone.utc)
+
+
+def parse_ts(ts):
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    return normalize_dt(datetime.fromisoformat(ts))
+
+
+def parse_time_arg(value):
+    if value is None:
+        return None
+    # Ideally, we'd accept the same time arguments as journalctl.
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    if re.match(r"^[0-9]{4}-[0-9]{2}$", value):
+        return normalize_dt(datetime.fromisoformat(f"{value}-01T00:00:00"))
+    if re.match(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$", value):
+        return normalize_dt(datetime.fromisoformat(f"{value}T00:00:00"))
+    rel = re.match(r"^([+-]?)(\d+)([smhdw])$", value)
+    if rel:
+        sign, num_s, unit = rel.groups()
+        num = int(num_s)
+        delta = {
+            "s": timedelta(seconds=num),
+            "m": timedelta(minutes=num),
+            "h": timedelta(hours=num),
+            "d": timedelta(days=num),
+            "w": timedelta(weeks=num),
+        }[unit]
+        if sign == "-":
+            delta = -delta
+        return normalize_dt(datetime.now() + delta)
+    if value.count(":") in (1, 2) and "T" not in value and "-" not in value:
+        today = datetime.now().date().isoformat()
+        return normalize_dt(datetime.fromisoformat(f"{today}T{value}"))
+    return normalize_dt(datetime.fromisoformat(value))
+
+
+def add_common_args(parser):
+    parser.add_argument("peer", help="Peer nodeid (hex).")
+    parser.add_argument(
+        "--db",
+        default=os.path.expanduser("~/bonsai/doc/data/clboss-fees.sqlite3"),
+        help="Path to sqlite database.",
+    )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Output image path.",
+    )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Show the plot interactively.",
+    )
+    parser.add_argument(
+        "--since",
+        dest="from_ts",
+        default=None,
+        help="Start time (ISO-8601 or HH:MM[:SS]).",
+    )
+    parser.add_argument(
+        "--before",
+        dest="to_ts",
+        default=None,
+        help="End time (ISO-8601 or HH:MM[:SS]).",
+    )
+
+
+def filter_by_time(rows, from_ts, to_ts):
+    if from_ts is None and to_ts is None:
+        return rows
+    filtered = []
+    for row in rows:
+        ts = parse_ts(row[0])
+        if from_ts and ts < from_ts:
+            continue
+        if to_ts and ts > to_ts:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def plot_price_level(args):
+    conn = sqlite3.connect(args.db)
+    rows = conn.execute(
+        "SELECT ts, price_level FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        (args.peer,),
+    ).fetchall()
+    conn.close()
+
+    rows = [r for r in rows if r[1] is not None]
+    rows = filter_by_time(rows, args.from_ts, args.to_ts)
+
+    ts = []
+    levels = []
+    for t, level in rows:
+        ts.append(parse_ts(t))
+        levels.append(level)
+
+    if not ts:
+        raise SystemExit("no price_level data for peer in time range")
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    plt.figure(figsize=(12, 4))
+    plt.plot(ts, levels, linewidth=1)
+    plt.xlabel("time")
+    plt.ylabel("price_level")
+    plt.title(args.peer)
+    plt.tight_layout()
+    prefix = args.peer[:8]
+    out_path = args.out or f"{prefix}-pricelevel.png"
+    plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+
+
+def plot_base_ppm(args):
+    conn = sqlite3.connect(args.db)
+    rows = conn.execute(
+        "SELECT ts, est_base, est_ppm FROM fee_change_events "
+        "WHERE peer = ? ORDER BY ts",
+        (args.peer,),
+    ).fetchall()
+    conn.close()
+
+    rows = [r for r in rows if r[1] is not None and r[2] is not None]
+    rows = filter_by_time(rows, args.from_ts, args.to_ts)
+
+    ts = []
+    bases = []
+    ppms = []
+    for t, base, ppm in rows:
+        if base <= 0 or ppm <= 0:
+            continue
+        ts.append(parse_ts(t))
+        bases.append(base)
+        ppms.append(ppm)
+
+    if not ts:
+        raise SystemExit("no est_base/est_ppm data for peer in time range")
+
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import ScalarFormatter
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    fig, ax_base = plt.subplots(figsize=(12, 4))
+    ax_ppm = ax_base.twinx()
+
+    base_line, = ax_base.plot(ts, bases, linewidth=1, label="base")
+    ppm_line, = ax_ppm.plot(ts, ppms, linewidth=1, label="ppm", color="orange")
+
+    ax_base.set_xlabel("time")
+    ax_base.set_ylabel("base")
+    ax_ppm.set_ylabel("ppm")
+    ax_base.set_title(args.peer)
+
+    ax_base.set_yscale("log")
+    ax_ppm.set_yscale("log")
+
+    ax_base.set_ylim(bottom=1)
+    ax_ppm.set_ylim(bottom=1)
+
+    base_fmt = ScalarFormatter()
+    base_fmt.set_scientific(False)
+    base_fmt.set_useOffset(False)
+    ax_base.yaxis.set_major_formatter(base_fmt)
+
+    ppm_fmt = ScalarFormatter()
+    ppm_fmt.set_scientific(False)
+    ppm_fmt.set_useOffset(False)
+    ax_ppm.yaxis.set_major_formatter(ppm_fmt)
+
+    ax_base.legend([base_line, ppm_line], ["base", "ppm"])
+    fig.tight_layout()
+    prefix = args.peer[:8]
+    out_path = args.out or f"{prefix}-baseppm.png"
+    plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Plot fee-related time series from clboss fee logs."
+    )
+    subparsers = parser.add_subparsers(dest="view", required=True)
+
+    price_parser = subparsers.add_parser(
+        "price-level", help="Plot price_level over time."
+    )
+    add_common_args(price_parser)
+    price_parser.set_defaults(func=plot_price_level)
+
+    base_ppm_parser = subparsers.add_parser(
+        "base-ppm", help="Plot est_base and est_ppm over time."
+    )
+    add_common_args(base_ppm_parser)
+    base_ppm_parser.set_defaults(func=plot_base_ppm)
+
+    args = parser.parse_args()
+    args.from_ts = parse_time_arg(args.from_ts)
+    args.to_ts = parse_time_arg(args.to_ts)
+
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
