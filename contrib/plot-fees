@@ -208,7 +208,7 @@ def plot_baseline_on(ax_base, ax_ppm, rows, peer):
     ax_base.legend([base_line, ppm_line], ["base", "ppm"])
 
 
-def plot_size_mult_on(ax, rows, peer):
+def plot_size_mult_on(ax_left, ax_right, rows, peer):
     rows = [r for r in rows if r[1] is not None]
     ts = []
     mults = []
@@ -219,10 +219,13 @@ def plot_size_mult_on(ax, rows, peer):
     if not ts:
         raise SystemExit("no size_mult data for peer in time range")
 
-    ax.plot(ts, mults, linewidth=1)
-    ax.set_ylabel("size_mult")
+    ax_right.plot(ts, mults, linewidth=1)
+    ax_left.set_ylabel("")
+    ax_left.tick_params(left=False, labelleft=False)
+    ax_right.set_ylabel("size_mult")
 
-def plot_balance_mult_on(ax, rows, peer):
+
+def plot_balance_mult_on(ax_left, ax_right, rows, peer):
     rows = [r for r in rows if r[1] is not None]
     ts = []
     mults = []
@@ -233,10 +236,12 @@ def plot_balance_mult_on(ax, rows, peer):
     if not ts:
         raise SystemExit("no balance_mult data for peer in time range")
 
-    ax.plot(ts, mults, linewidth=1, color="orange")
-    ax.set_ylabel("balance_mult")
-    ax.set_yscale("log")
-    ax.set_yticks(
+    ax_right.plot(ts, mults, linewidth=1, color="orange")
+    ax_left.set_ylabel("")
+    ax_left.tick_params(left=False, labelleft=False)
+    ax_right.set_ylabel("balance_mult")
+    ax_right.set_yscale("log")
+    ax_right.set_yticks(
         [1 / 6, 1 / 3, 1, 3, 6],
         ["1/6", "1/3", "1", "3", "6"],
     )
@@ -371,10 +376,11 @@ def plot_size_mult(args):
     )
     rows = filter_by_time(rows, args.from_ts, args.to_ts)
 
-    plt.figure(figsize=(12, 4))
-    plot_size_mult_on(plt.gca(), rows, args.peer)
-    plt.xlabel("time")
-    plt.title(args.peer)
+    fig, ax_left = plt.subplots(figsize=(12, 4))
+    ax_right = ax_left.twinx()
+    plot_size_mult_on(ax_left, ax_right, rows, args.peer)
+    ax_left.set_xlabel("time")
+    ax_left.set_title(args.peer)
     plt.tight_layout()
     out_path = get_out_path(args, "sizemult")
     if out_path:
@@ -398,10 +404,11 @@ def plot_balance_mult(args):
     )
     rows = filter_by_time(rows, args.from_ts, args.to_ts)
 
-    plt.figure(figsize=(12, 4))
-    plot_balance_mult_on(plt.gca(), rows, args.peer)
-    plt.xlabel("time")
-    plt.title(args.peer)
+    fig, ax_left = plt.subplots(figsize=(12, 4))
+    ax_right = ax_left.twinx()
+    plot_balance_mult_on(ax_left, ax_right, rows, args.peer)
+    ax_left.set_xlabel("time")
+    ax_left.set_title(args.peer)
     plt.tight_layout()
     out_path = get_out_path(args, "balancemult")
     if out_path:
@@ -462,8 +469,10 @@ def plot_combo(args):
     ax_baseline_ppm = ax_baseline_base.twinx()
     plot_baseline_on(ax_baseline_base, ax_baseline_ppm, baseline_rows, args.peer)
 
-    plot_size_mult_on(ax_size, size_rows, args.peer)
-    plot_balance_mult_on(ax_balance, balance_rows, args.peer)
+    ax_size_right = ax_size.twinx()
+    plot_size_mult_on(ax_size, ax_size_right, size_rows, args.peer)
+    ax_balance_right = ax_balance.twinx()
+    plot_balance_mult_on(ax_balance, ax_balance_right, balance_rows, args.peer)
 
     ax_price_level = ax_price
     ax_price_mult = ax_price_level.twinx()
