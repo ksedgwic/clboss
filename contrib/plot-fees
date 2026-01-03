@@ -61,6 +61,8 @@ def add_common_args(parser):
     )
     parser.add_argument(
         "--out",
+        nargs="?",
+        const="__DEFAULT__",
         default=None,
         help="Output image path.",
     )
@@ -95,6 +97,15 @@ def filter_by_time(rows, from_ts, to_ts):
             continue
         filtered.append(row)
     return filtered
+
+
+def get_out_path(args, suffix):
+    if args.out is None:
+        return None
+    if args.out == "__DEFAULT__":
+        prefix = args.peer[:8]
+        return f"{prefix}-{suffix}.png"
+    return args.out
 
 
 def fetch_rows(db, query, peer):
@@ -258,9 +269,9 @@ def plot_price_level(args):
     ax_mult.yaxis.set_major_formatter(mult_fmt)
 
     fig.tight_layout()
-    prefix = args.peer[:8]
-    out_path = args.out or f"{prefix}-pricelevel.png"
-    plt.savefig(out_path, dpi=150)
+    out_path = get_out_path(args, "pricelevel")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
 
     if args.show:
         plt.show()
@@ -298,9 +309,9 @@ def plot_base_ppm(args):
     ax_ppm.yaxis.set_major_formatter(ppm_fmt)
 
     fig.tight_layout()
-    prefix = args.peer[:8]
-    out_path = args.out or f"{prefix}-baseppm.png"
-    plt.savefig(out_path, dpi=150)
+    out_path = get_out_path(args, "baseppm")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
 
     if args.show:
         plt.show()
@@ -338,9 +349,9 @@ def plot_baseline(args):
     ax_ppm.yaxis.set_major_formatter(ppm_fmt)
 
     fig.tight_layout()
-    prefix = args.peer[:8]
-    out_path = args.out or f"{prefix}-baseline.png"
-    plt.savefig(out_path, dpi=150)
+    out_path = get_out_path(args, "baseline")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
 
     if args.show:
         plt.show()
@@ -365,9 +376,9 @@ def plot_size_mult(args):
     plt.xlabel("time")
     plt.title(args.peer)
     plt.tight_layout()
-    prefix = args.peer[:8]
-    out_path = args.out or f"{prefix}-sizemult.png"
-    plt.savefig(out_path, dpi=150)
+    out_path = get_out_path(args, "sizemult")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
 
     if args.show:
         plt.show()
@@ -392,9 +403,9 @@ def plot_balance_mult(args):
     plt.xlabel("time")
     plt.title(args.peer)
     plt.tight_layout()
-    prefix = args.peer[:8]
-    out_path = args.out or f"{prefix}-balancemult.png"
-    plt.savefig(out_path, dpi=150)
+    out_path = get_out_path(args, "balancemult")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
 
     if args.show:
         plt.show()
@@ -491,9 +502,9 @@ def plot_combo(args):
     fig.suptitle(args.peer)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
 
-    prefix = args.peer[:8]
-    out_path = args.out or f"{prefix}-combo.png"
-    plt.savefig(out_path, dpi=150)
+    out_path = get_out_path(args, "combo")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
 
     if args.show:
         plt.show()
@@ -544,6 +555,9 @@ def main():
     args = parser.parse_args()
     args.from_ts = parse_time_arg(args.from_ts)
     args.to_ts = parse_time_arg(args.to_ts)
+
+    if not args.out and not args.show:
+        raise SystemExit("use --out to save or --show to display")
 
     args.func(args)
 
