@@ -198,7 +198,7 @@ def set_log_decade_ticks(ax):
 def add_common_args(parser):
     parser.add_argument(
         "--db",
-        default=os.path.expanduser("~/bonsai/doc/data/clboss-fees.sqlite3"),
+        default=os.path.expanduser("./clboss-fee-info.sqlite3"),
         help="Path to sqlite database.",
     )
     parser.add_argument(

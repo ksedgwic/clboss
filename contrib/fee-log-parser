@@ -337,15 +337,7 @@ def extract_events_from_msg(msg):
         more = int(more_s)
         if total == less + more:
             mult = float(mult_s)
-            # sys.stderr.write(
-            #     f"size ok peer={peer} total={total} less={less} "
-            #     f"more={more} mult={mult}\n"
-            # )
             return [("size", (peer, total, less, mult))]
-        # sys.stderr.write(
-        #     f"size drop peer={peer} total={total} less={less} "
-        #     f"more={more} mult={mult_s}\n"
-        # )
         return []
 
     m = BALANCE_MOVED_RE.search(msg)
