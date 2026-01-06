@@ -347,9 +347,9 @@ public:
 	Ev::Io<Jsmn::Object> core_command( std::string const& command
 					 , Json::Out params
 					 ) {
-		return Ev::Io<Jsmn::Object>([=]( std::function<void(Jsmn::Object)> pass
-					       , std::function<void(std::exception_ptr)> fail
-					       ) {
+		return Ev::Io<Jsmn::Object>([=, this]( std::function<void(Jsmn::Object)> pass
+						     , std::function<void(std::exception_ptr)> fail
+						     ) {
 			if (is_shutting_down) {
 				try {
 					throw Boss::Shutdown();

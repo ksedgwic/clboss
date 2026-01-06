@@ -49,7 +49,7 @@ AS_IF([test ${clboss_set_CXXFLAGS}], [
 		CXXFLAGS=""
 	])
 ])
-AX_CXX_COMPILE_STDCXX([17])
+AX_CXX_COMPILE_STDCXX([20], , [mandatory])
 AC_LANG([C++])
 
 AC_PROG_AWK
