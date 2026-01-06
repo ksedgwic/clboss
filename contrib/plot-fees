@@ -292,11 +292,69 @@ def write_csv(args, rows, suffix):
         writer.writerows(rows)
 
 
+CSV_QUERY = (
+    "SELECT f.ts, p.node_id, f.set_base, f.set_ppm, "
+    "f.baseline_base, f.baseline_ppm, f.size_mult, "
+    "f.size_total_peers, f.size_less_peers, f.balance_mult, "
+    "f.balance_our_msat, f.balance_total_msat, "
+    "f.price_level, f.price_mult "
+    "FROM fee_change_events f "
+    "JOIN peers p ON p.id = f.peer_id "
+    "WHERE p.node_id = ? ORDER BY f.ts"
+)
+
+
 def fetch_rows(db, query, peer):
     conn = sqlite3.connect(db)
     rows = conn.execute(query, (peer,)).fetchall()
     conn.close()
     return rows
+
+
+def fetch_csv_rows(args):
+    rows = fetch_rows(args.db, CSV_QUERY, args.peer)
+    return filter_by_time(rows, args.from_ts, args.to_ts)
+
+
+def make_single_axes(plt):
+    fig, ax = plt.subplots(figsize=(12, 4))
+    return fig, ax, (ax,)
+
+
+def make_twin_axes(plt):
+    fig, ax_left = plt.subplots(figsize=(12, 4))
+    ax_right = ax_left.twinx()
+    return fig, ax_left, (ax_left, ax_right)
+
+
+def plot_single_view(
+    args, suffix, rows_query, axes_factory, plotter, use_plt_tight_layout=False
+):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    rows = fetch_rows(args.db, rows_query, args.peer)
+    rows = filter_by_time(rows, args.from_ts, args.to_ts)
+    csv_rows = fetch_csv_rows(args)
+
+    fig, primary_ax, plot_axes = axes_factory(plt)
+    plotter(*plot_axes, rows, args.peer)
+    primary_ax.set_xlabel("time")
+    primary_ax.set_title(args.peer)
+
+    if use_plt_tight_layout:
+        plt.tight_layout()
+    else:
+        fig.tight_layout()
+    out_path = get_out_path(args, suffix)
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, csv_rows, suffix)
 
 
 def plot_price_level_on(ax_level, rows, peer):
@@ -498,228 +556,88 @@ def plot_balance_mult_on(ax_left, ax_right, rows, peer):
     )
 
 
+PRICE_LEVEL_QUERY = (
+    "SELECT f.ts, f.price_level, f.price_mult "
+    "FROM fee_change_events f "
+    "JOIN peers p ON p.id = f.peer_id "
+    "WHERE p.node_id = ? ORDER BY f.ts"
+)
+BASE_PPM_QUERY = (
+    "SELECT f.ts, f.set_base, f.set_ppm FROM fee_change_events f "
+    "JOIN peers p ON p.id = f.peer_id "
+    "WHERE p.node_id = ? ORDER BY f.ts"
+)
+BASELINE_QUERY = (
+    "SELECT f.ts, f.baseline_base, f.baseline_ppm FROM fee_change_events f "
+    "JOIN peers p ON p.id = f.peer_id "
+    "WHERE p.node_id = ? ORDER BY f.ts"
+)
+SIZE_MULT_QUERY = (
+    "SELECT f.ts, f.size_total_peers, f.size_less_peers, f.size_mult "
+    "FROM fee_change_events f "
+    "JOIN peers p ON p.id = f.peer_id "
+    "WHERE p.node_id = ? ORDER BY f.ts"
+)
+BALANCE_MULT_QUERY = (
+    "SELECT f.ts, f.balance_our_msat, f.balance_total_msat, f.balance_mult "
+    "FROM fee_change_events f "
+    "JOIN peers p ON p.id = f.peer_id "
+    "WHERE p.node_id = ? ORDER BY f.ts"
+)
+
+
 def plot_price_level(args):
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        raise SystemExit("matplotlib is required to output graphs.")
-
-    rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, f.price_level, f.price_mult "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
+    plot_single_view(
+        args,
+        "pricelevel",
+        PRICE_LEVEL_QUERY,
+        make_single_axes,
+        plot_price_level_on,
     )
-    rows = filter_by_time(rows, args.from_ts, args.to_ts)
-    csv_rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, p.node_id, f.set_base, f.set_ppm, "
-        "f.baseline_base, f.baseline_ppm, f.size_mult, "
-        "f.size_total_peers, f.size_less_peers, f.balance_mult, "
-        "f.balance_our_msat, f.balance_total_msat, "
-        "f.price_level, f.price_mult "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
-    )
-    csv_rows = filter_by_time(csv_rows, args.from_ts, args.to_ts)
-
-    fig, ax_level = plt.subplots(figsize=(12, 4))
-    ax_mult = plot_price_level_on(ax_level, rows, args.peer)
-    ax_level.set_xlabel("time")
-    ax_level.set_title(args.peer)
-
-    fig.tight_layout()
-    out_path = get_out_path(args, "pricelevel")
-    if out_path:
-        plt.savefig(out_path, dpi=150)
-
-    if args.show:
-        plt.show()
-    write_csv(args, csv_rows, "pricelevel")
 
 
 def plot_base_ppm(args):
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        raise SystemExit("matplotlib is required to output graphs.")
-
-    rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, f.set_base, f.set_ppm FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
+    plot_single_view(
+        args,
+        "baseppm",
+        BASE_PPM_QUERY,
+        make_twin_axes,
+        plot_base_ppm_on,
     )
-    rows = filter_by_time(rows, args.from_ts, args.to_ts)
-    csv_rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, p.node_id, f.set_base, f.set_ppm, "
-        "f.baseline_base, f.baseline_ppm, f.size_mult, "
-        "f.size_total_peers, f.size_less_peers, f.balance_mult, "
-        "f.balance_our_msat, f.balance_total_msat, "
-        "f.price_level, f.price_mult "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
-    )
-    csv_rows = filter_by_time(csv_rows, args.from_ts, args.to_ts)
-
-    fig, ax_base = plt.subplots(figsize=(12, 4))
-    ax_ppm = ax_base.twinx()
-    plot_base_ppm_on(ax_base, ax_ppm, rows, args.peer)
-    ax_base.set_xlabel("time")
-    ax_base.set_title(args.peer)
-
     # Keep log tick formatting from plot_base_ppm_on.
-
-    fig.tight_layout()
-    out_path = get_out_path(args, "baseppm")
-    if out_path:
-        plt.savefig(out_path, dpi=150)
-
-    if args.show:
-        plt.show()
-    write_csv(args, csv_rows, "baseppm")
 
 
 def plot_baseline(args):
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        raise SystemExit("matplotlib is required to output graphs.")
-
-    rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, f.baseline_base, f.baseline_ppm FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
+    plot_single_view(
+        args,
+        "baseline",
+        BASELINE_QUERY,
+        make_twin_axes,
+        plot_baseline_on,
     )
-    rows = filter_by_time(rows, args.from_ts, args.to_ts)
-    csv_rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, p.node_id, f.set_base, f.set_ppm, "
-        "f.baseline_base, f.baseline_ppm, f.size_mult, "
-        "f.size_total_peers, f.size_less_peers, f.balance_mult, "
-        "f.balance_our_msat, f.balance_total_msat, "
-        "f.price_level, f.price_mult "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
-    )
-    csv_rows = filter_by_time(csv_rows, args.from_ts, args.to_ts)
-
-    fig, ax_base = plt.subplots(figsize=(12, 4))
-    ax_ppm = ax_base.twinx()
-    plot_baseline_on(ax_base, ax_ppm, rows, args.peer)
-    ax_base.set_xlabel("time")
-    ax_base.set_title(args.peer)
-
     # Keep log tick formatting from plot_baseline_on.
-
-    fig.tight_layout()
-    out_path = get_out_path(args, "baseline")
-    if out_path:
-        plt.savefig(out_path, dpi=150)
-
-    if args.show:
-        plt.show()
-    write_csv(args, csv_rows, "baseline")
 
 
 def plot_size_mult(args):
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        raise SystemExit("matplotlib is required to output graphs.")
-
-    rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, f.size_total_peers, f.size_less_peers, f.size_mult "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
+    plot_single_view(
+        args,
+        "sizemult",
+        SIZE_MULT_QUERY,
+        make_twin_axes,
+        plot_size_mult_on,
+        use_plt_tight_layout=True,
     )
-    rows = filter_by_time(rows, args.from_ts, args.to_ts)
-    csv_rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, p.node_id, f.set_base, f.set_ppm, "
-        "f.baseline_base, f.baseline_ppm, f.size_mult, "
-        "f.size_total_peers, f.size_less_peers, f.balance_mult, "
-        "f.balance_our_msat, f.balance_total_msat, "
-        "f.price_level, f.price_mult "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
-    )
-    csv_rows = filter_by_time(csv_rows, args.from_ts, args.to_ts)
-
-    fig, ax_left = plt.subplots(figsize=(12, 4))
-    ax_right = ax_left.twinx()
-    plot_size_mult_on(ax_left, ax_right, rows, args.peer)
-    ax_left.set_xlabel("time")
-    ax_left.set_title(args.peer)
-    plt.tight_layout()
-    out_path = get_out_path(args, "sizemult")
-    if out_path:
-        plt.savefig(out_path, dpi=150)
-
-    if args.show:
-        plt.show()
-    write_csv(args, csv_rows, "sizemult")
 
 
 def plot_balance_mult(args):
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        raise SystemExit("matplotlib is required to output graphs.")
-
-    rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, f.balance_our_msat, f.balance_total_msat, f.balance_mult "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
+    plot_single_view(
+        args,
+        "balancemult",
+        BALANCE_MULT_QUERY,
+        make_twin_axes,
+        plot_balance_mult_on,
+        use_plt_tight_layout=True,
     )
-    rows = filter_by_time(rows, args.from_ts, args.to_ts)
-    csv_rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, p.node_id, f.set_base, f.set_ppm, "
-        "f.baseline_base, f.baseline_ppm, f.size_mult, "
-        "f.size_total_peers, f.size_less_peers, f.balance_mult, "
-        "f.balance_our_msat, f.balance_total_msat, "
-        "f.price_level, f.price_mult "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
-    )
-    csv_rows = filter_by_time(csv_rows, args.from_ts, args.to_ts)
-
-    fig, ax_left = plt.subplots(figsize=(12, 4))
-    ax_right = ax_left.twinx()
-    plot_balance_mult_on(ax_left, ax_right, rows, args.peer)
-    ax_left.set_xlabel("time")
-    ax_left.set_title(args.peer)
-    plt.tight_layout()
-    out_path = get_out_path(args, "balancemult")
-    if out_path:
-        plt.savefig(out_path, dpi=150)
-
-    if args.show:
-        plt.show()
-    write_csv(args, csv_rows, "balancemult")
 
 
 def plot_combo(args):
@@ -728,55 +646,12 @@ def plot_combo(args):
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    size_rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, f.size_total_peers, f.size_less_peers, f.size_mult "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
-    )
-    baseline_rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, f.baseline_base, f.baseline_ppm FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
-    )
-    balance_rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, f.balance_our_msat, f.balance_total_msat, f.balance_mult "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
-    )
-    price_rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, f.price_level, f.price_mult FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
-    )
-    base_rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, f.set_base, f.set_ppm FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
-    )
-    csv_rows = fetch_rows(
-        args.db,
-        "SELECT f.ts, p.node_id, f.set_base, f.set_ppm, "
-        "f.baseline_base, f.baseline_ppm, f.size_mult, "
-        "f.size_total_peers, f.size_less_peers, f.balance_mult, "
-        "f.balance_our_msat, f.balance_total_msat, "
-        "f.price_level, f.price_mult "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        "WHERE p.node_id = ? ORDER BY f.ts",
-        args.peer,
-    )
+    size_rows = fetch_rows(args.db, SIZE_MULT_QUERY, args.peer)
+    baseline_rows = fetch_rows(args.db, BASELINE_QUERY, args.peer)
+    balance_rows = fetch_rows(args.db, BALANCE_MULT_QUERY, args.peer)
+    price_rows = fetch_rows(args.db, PRICE_LEVEL_QUERY, args.peer)
+    base_rows = fetch_rows(args.db, BASE_PPM_QUERY, args.peer)
+    csv_rows = fetch_rows(args.db, CSV_QUERY, args.peer)
 
     size_rows = filter_by_time(size_rows, args.from_ts, args.to_ts)
     baseline_rows = filter_by_time(baseline_rows, args.from_ts, args.to_ts)
