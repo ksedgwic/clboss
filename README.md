@@ -390,7 +390,7 @@ which has two parameters, `nodeid` and `tags`.
     lightning-cli clboss-unmanage ${NODEID} lnfee
 
 After the above command, you can set the fee manually with
-the normal Core Lightning `setchannelfee` command.
+the normal Core Lightning `setchannel` command.
 
 The second parameter, `tags`, is a string containing a
 comma-separated set of unmanagement tags.
