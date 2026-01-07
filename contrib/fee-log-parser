@@ -227,11 +227,24 @@ class Output:
         self.commit_interval_seconds = commit_interval_seconds
         self.last_commit = time.monotonic() if conn else None
         self.peer_cache = {}
+        self.pending_writes = False
 
     def commit(self):
         if self.conn:
             self.conn.commit()
             self.last_commit = time.monotonic()
+            self.pending_writes = False
+
+    def maybe_commit(self):
+        if not self.conn:
+            return
+        if not self.pending_writes:
+            return
+        if self.commit_interval_seconds is None:
+            return
+        elapsed = time.monotonic() - self.last_commit
+        if elapsed >= self.commit_interval_seconds:
+            self.commit()
 
     def get_peer_id(self, peer):
         if peer in self.peer_cache:
@@ -281,10 +294,8 @@ class Output:
                     dedupe_hash,
                 ),
             )
-            if self.commit_interval_seconds is not None:
-                elapsed = time.monotonic() - self.last_commit
-                if elapsed >= self.commit_interval_seconds:
-                    self.commit()
+            self.pending_writes = True
+            self.maybe_commit()
         else:
             sys.stdout.write(
                 "{ts},{peer},{set_base},{set_ppm},{baseline_base},{baseline_ppm},"
@@ -422,11 +433,11 @@ def process_stream(lines, output):
     state = {}
     for line in lines:
         parsed = parse_line(line)
-        if not parsed:
-            continue
-        ts, msg, _ = parsed
-        for kind, data in extract_events_from_msg(msg):
-            apply_event(ts, kind, data, state, output)
+        if parsed:
+            ts, msg, _ = parsed
+            for kind, data in extract_events_from_msg(msg):
+                apply_event(ts, kind, data, state, output)
+        output.maybe_commit()
     output.commit()
 
 
