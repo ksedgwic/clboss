@@ -734,7 +734,7 @@ def plot_balance_mult_on(ax_left, ax_right, rows, peer):
     )
 
 
-def plot_earnings_on(ax_in, ax_out, rows, peer):
+def plot_earnings_on(ax, rows, peer):
     ts = []
     incoming = []
     outgoing = []
@@ -745,34 +745,39 @@ def plot_earnings_on(ax_in, ax_out, rows, peer):
         outgoing.append(out_earnings / 1000.0)
 
     if not ts:
-        ax_in.set_ylabel("earnings (sat/day) from incoming")
-        ax_out.set_ylabel("earnings (sat/day) from outgoing")
-        ax_in.set_ylim(bottom=0)
-        ax_out.set_ylim(bottom=0)
-        ax_in.set_title("earnings (no data)")
+        ax.set_ylabel("earnings (sat/day)")
+        ax.set_ylim(bottom=0)
+        ax.set_title("earnings (no data)")
         if sci_formatter:
-            ax_in.yaxis.set_major_formatter(sci_formatter)
-            ax_out.yaxis.set_major_formatter(sci_formatter)
+            ax.yaxis.set_major_formatter(sci_formatter)
         return
 
-    in_line, = ax_in.plot(
-        ts, incoming, linewidth=PLOT_LINEWIDTH, color="blue", label="incoming"
+    bar_width = 0.8
+    out_bars = ax.bar(
+        ts,
+        outgoing,
+        width=bar_width,
+        color="green",
+        label="earnings (sat/day) from outgoing",
     )
-    out_line, = ax_out.plot(
-        ts, outgoing, linewidth=PLOT_LINEWIDTH, color="green", label="outgoing"
+    in_bars = ax.bar(
+        ts,
+        incoming,
+        width=bar_width,
+        bottom=outgoing,
+        color="blue",
+        label="earnings (sat/day) from incoming",
     )
 
-    ax_in.set_ylabel("earnings (sat/day) from incoming")
-    ax_out.set_ylabel("earnings (sat/day) from outgoing")
-    ax_in.set_ylim(bottom=0, top=max(1, max(incoming) * 1.05))
-    ax_out.set_ylim(bottom=0, top=max(1, max(outgoing) * 1.05))
-    ax_in.legend(
-        [in_line, out_line],
-        ["earnings (sat/day) from incoming", "earnings (sat/day) from outgoing"],
-    )
+    ax.set_ylabel("earnings (sat/day)")
+    totals = [incoming[i] + outgoing[i] for i in range(len(ts))]
+    ax.set_ylim(bottom=0, top=max(1, max(totals) * 1.05))
+    ax.legend([in_bars, out_bars], [
+        "earnings (sat/day) from incoming",
+        "earnings (sat/day) from outgoing",
+    ])
     if sci_formatter:
-        ax_in.yaxis.set_major_formatter(sci_formatter)
-        ax_out.yaxis.set_major_formatter(sci_formatter)
+        ax.yaxis.set_major_formatter(sci_formatter)
 
 
 PRICE_LEVEL_QUERY = (
@@ -900,8 +905,7 @@ def plot_combo(args):
     ax_base_ppm = ax_base_fee.twinx()
     plot_base_ppm_on(ax_base_fee, ax_base_ppm, base_rows, args.peer_label)
 
-    ax_earnings_out = ax_earnings.twinx()
-    plot_earnings_on(ax_earnings, ax_earnings_out, earnings_rows, args.peer_label)
+    plot_earnings_on(ax_earnings, earnings_rows, args.peer_label)
 
     set_log_ylim_from_ax(ax_baseline_base)
     set_log_ylim_from_ax(ax_baseline_ppm)
