@@ -78,4 +78,5 @@ how many days of earnings history are considered when ranking channels.
 - **`fee-log-parser`** is a parser that streams DEBUG-level logging and writes
   a sqlite database containing fee algorithm information.
 - **`plot-fees`** plots fee-related time series from the `fee-log-parser` sqlite
-  output.
+  output. `--peer` accepts a nodeid, alias (via lightning-cli/listnodes), or
+  SCID (via lightning-cli/listpeerchannels).
