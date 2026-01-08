@@ -79,4 +79,6 @@ how many days of earnings history are considered when ranking channels.
   a sqlite database containing fee algorithm information.
 - **`plot-fees`** plots fee-related time series from the `fee-log-parser` sqlite
   output. `--peer` accepts a nodeid, alias (via lightning-cli/listnodes), or
-  SCID (via lightning-cli/listpeerchannels).
+  SCID (via lightning-cli/listpeerchannels). The combo view includes a daily
+  earnings panel (incoming/outgoing msat per day) when lightning-cli is
+  available.
