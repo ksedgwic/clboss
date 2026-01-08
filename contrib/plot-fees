@@ -8,6 +8,7 @@ import re
 import sqlite3
 import subprocess
 import shutil
+import sys
 from datetime import datetime, timedelta, timezone
 
 from clboss.alias_cache import is_nodeid, load_cache, lookup_alias, lookup_nodeid_by_alias
@@ -377,6 +378,32 @@ def filter_by_time(rows, from_ts, to_ts):
     return filtered
 
 
+def fetch_earnings_rows(args):
+    if shutil.which("lightning-cli") is None:
+        print("warning: lightning-cli not found; skipping earnings plot", file=sys.stderr)
+        return []
+
+    network_option = resolve_network_option(args)
+    lightning_dir = resolve_lightning_dir(args)
+    data = run_lightning_cli_command(
+        lightning_dir, network_option, "clboss-earnings-history", args.peer
+    )
+    if not data or "history" not in data:
+        print("warning: earnings data unavailable; skipping earnings plot", file=sys.stderr)
+        return []
+
+    rows = []
+    for entry in data["history"]:
+        bucket_time = entry.get("bucket_time")
+        if not bucket_time:
+            continue
+        in_earnings = entry.get("in_earnings", 0)
+        out_earnings = entry.get("out_earnings", 0)
+        rows.append((bucket_time, in_earnings, out_earnings))
+
+    return filter_by_time(rows, args.from_ts, args.to_ts)
+
+
 def get_out_path(args, suffix):
     if args.png is None:
         return None
@@ -685,6 +712,54 @@ def plot_balance_mult_on(ax_left, ax_right, rows, peer):
     )
 
 
+def plot_earnings_on(ax_in, ax_out, rows, peer):
+    ts = []
+    incoming = []
+    outgoing = []
+    sci_formatter = None
+    try:
+        from matplotlib.ticker import ScalarFormatter
+        sci_formatter = ScalarFormatter(useMathText=True)
+        sci_formatter.set_scientific(True)
+        sci_formatter.set_powerlimits((0, 0))
+    except Exception:
+        sci_formatter = None
+    for t, in_earnings, out_earnings in rows:
+        ts.append(parse_ts(t))
+        incoming.append(in_earnings)
+        outgoing.append(out_earnings)
+
+    if not ts:
+        ax_in.set_ylabel("incoming msat per day")
+        ax_out.set_ylabel("outgoing msat per day")
+        ax_in.set_ylim(bottom=0)
+        ax_out.set_ylim(bottom=0)
+        ax_in.set_title("earnings (no data)")
+        if sci_formatter:
+            ax_in.yaxis.set_major_formatter(sci_formatter)
+            ax_out.yaxis.set_major_formatter(sci_formatter)
+        return
+
+    in_line, = ax_in.plot(
+        ts, incoming, linewidth=PLOT_LINEWIDTH, color="blue", label="incoming"
+    )
+    out_line, = ax_out.plot(
+        ts, outgoing, linewidth=PLOT_LINEWIDTH, color="green", label="outgoing"
+    )
+
+    ax_in.set_ylabel("incoming msat per day")
+    ax_out.set_ylabel("outgoing msat per day")
+    ax_in.set_ylim(bottom=0, top=max(1, max(incoming) * 1.05))
+    ax_out.set_ylim(bottom=0, top=max(1, max(outgoing) * 1.05))
+    ax_in.legend(
+        [in_line, out_line],
+        ["earnings msat per day (incoming)", "earnings msat per day (outgoing)"],
+    )
+    if sci_formatter:
+        ax_in.yaxis.set_major_formatter(sci_formatter)
+        ax_out.yaxis.set_major_formatter(sci_formatter)
+
+
 PRICE_LEVEL_QUERY = (
     "SELECT f.ts, f.price_level, f.price_mult "
     "FROM fee_change_events f "
@@ -781,6 +856,7 @@ def plot_combo(args):
     price_rows = fetch_rows(args.db, PRICE_LEVEL_QUERY, args.peer)
     base_rows = fetch_rows(args.db, BASE_PPM_QUERY, args.peer)
     csv_rows = fetch_rows(args.db, CSV_QUERY, args.peer)
+    earnings_rows = fetch_earnings_rows(args)
 
     size_rows = filter_by_time(size_rows, args.from_ts, args.to_ts)
     baseline_rows = filter_by_time(baseline_rows, args.from_ts, args.to_ts)
@@ -788,9 +864,8 @@ def plot_combo(args):
     price_rows = filter_by_time(price_rows, args.from_ts, args.to_ts)
     base_rows = filter_by_time(base_rows, args.from_ts, args.to_ts)
     csv_rows = filter_by_time(csv_rows, args.from_ts, args.to_ts)
-
-    fig, axes = plt.subplots(5, 1, figsize=(12, 15), sharex=True)
-    ax_baseline, ax_size, ax_balance, ax_price, ax_base = axes
+    fig, axes = plt.subplots(6, 1, figsize=(12, 18), sharex=True)
+    ax_baseline, ax_size, ax_balance, ax_price, ax_base, ax_earnings = axes
 
     ax_baseline_base = ax_baseline
     ax_baseline_ppm = ax_baseline_base.twinx()
@@ -810,6 +885,9 @@ def plot_combo(args):
     ax_base_ppm = ax_base_fee.twinx()
     plot_base_ppm_on(ax_base_fee, ax_base_ppm, base_rows, args.peer_label)
 
+    ax_earnings_out = ax_earnings.twinx()
+    plot_earnings_on(ax_earnings, ax_earnings_out, earnings_rows, args.peer_label)
+
     set_log_ylim_from_ax(ax_baseline_base)
     set_log_ylim_from_ax(ax_baseline_ppm)
     set_log_decade_ticks(ax_baseline_base)
@@ -820,9 +898,9 @@ def plot_combo(args):
     set_log_decade_ticks(ax_base_fee)
     set_log_decade_ticks(ax_base_ppm)
 
-    ax_base.set_xlabel("time")
     fig.suptitle(args.peer_label)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.subplots_adjust(hspace=0.15)
 
     out_path = get_out_path(args, "combo")
     if out_path:
