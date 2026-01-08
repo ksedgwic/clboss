@@ -46,6 +46,25 @@ def parse_ts(ts):
     return parse_ts_epoch(ts)
 
 
+def make_engineering_formatter():
+    try:
+        from matplotlib.ticker import ScalarFormatter
+    except Exception:
+        return None
+
+    class EngineeringScalarFormatter(ScalarFormatter):
+        def _set_order_of_magnitude(self, *args, **kwargs):
+            super()._set_order_of_magnitude(*args, **kwargs)
+            order = self.orderOfMagnitude
+            if order != 0:
+                self.orderOfMagnitude = int(math.floor(order / 3.0) * 3)
+
+    formatter = EngineeringScalarFormatter(useMathText=True)
+    formatter.set_scientific(True)
+    formatter.set_powerlimits((0, 0))
+    return formatter
+
+
 def safe_prefix(value):
     sanitized = []
     for ch in value:
@@ -699,6 +718,9 @@ def plot_balance_mult_on(ax_left, ax_right, rows, peer):
         ax_left.set_ylim(bottom=0, top=max_total * 1.02)
     else:
         ax_left.set_ylim(bottom=0)
+    balance_formatter = make_engineering_formatter()
+    if balance_formatter:
+        ax_left.yaxis.set_major_formatter(balance_formatter)
     ax_left.legend(
         [total_line, peer_line, mult_line],
         ["total_balance", "our_balance", "balance_mult"],
@@ -716,22 +738,15 @@ def plot_earnings_on(ax_in, ax_out, rows, peer):
     ts = []
     incoming = []
     outgoing = []
-    sci_formatter = None
-    try:
-        from matplotlib.ticker import ScalarFormatter
-        sci_formatter = ScalarFormatter(useMathText=True)
-        sci_formatter.set_scientific(True)
-        sci_formatter.set_powerlimits((0, 0))
-    except Exception:
-        sci_formatter = None
+    sci_formatter = make_engineering_formatter()
     for t, in_earnings, out_earnings in rows:
         ts.append(parse_ts(t))
-        incoming.append(in_earnings)
-        outgoing.append(out_earnings)
+        incoming.append(in_earnings / 1000.0)
+        outgoing.append(out_earnings / 1000.0)
 
     if not ts:
-        ax_in.set_ylabel("incoming msat per day")
-        ax_out.set_ylabel("outgoing msat per day")
+        ax_in.set_ylabel("earnings (sat/day) from incoming")
+        ax_out.set_ylabel("earnings (sat/day) from outgoing")
         ax_in.set_ylim(bottom=0)
         ax_out.set_ylim(bottom=0)
         ax_in.set_title("earnings (no data)")
@@ -747,13 +762,13 @@ def plot_earnings_on(ax_in, ax_out, rows, peer):
         ts, outgoing, linewidth=PLOT_LINEWIDTH, color="green", label="outgoing"
     )
 
-    ax_in.set_ylabel("incoming msat per day")
-    ax_out.set_ylabel("outgoing msat per day")
+    ax_in.set_ylabel("earnings (sat/day) from incoming")
+    ax_out.set_ylabel("earnings (sat/day) from outgoing")
     ax_in.set_ylim(bottom=0, top=max(1, max(incoming) * 1.05))
     ax_out.set_ylim(bottom=0, top=max(1, max(outgoing) * 1.05))
     ax_in.legend(
         [in_line, out_line],
-        ["earnings msat per day (incoming)", "earnings msat per day (outgoing)"],
+        ["earnings (sat/day) from incoming", "earnings (sat/day) from outgoing"],
     )
     if sci_formatter:
         ax_in.yaxis.set_major_formatter(sci_formatter)
