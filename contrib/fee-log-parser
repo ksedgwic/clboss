@@ -1,0 +1,504 @@
+#!/usr/bin/env python3
+import argparse
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import sys
+import time
+from datetime import datetime, timezone
+
+
+LINE_RE = re.compile(
+    r"^(?:\d+:)?(\d{4}-\d{2}-\d{2}T[^ ]+)\s+\w+\s+[^:]+: (.*)$"
+)
+BASELINE_RE = re.compile(r"PeerCompetitorFeeMonitor: Weighted median fees: (.*)$")
+BASELINE_ENTRY_RE = re.compile(r"([0-9a-f]{66})\(b = (\d+), p = (\d+)\)")
+SIZE_RE = re.compile(
+    r"FeeModderBySize: Peer ([0-9a-f]{66}) has (\d+) other peers, "
+    r"(\d+) of which have less capacity than us, (\d+) have more\.\s+"
+    r"Multiplier: ([0-9.]+)"
+)
+BALANCE_MOVED_RE = re.compile(
+    r"FeeModderByBalance: Peer ([0-9a-f]{66}) moved from bin (\d+) to bin (\d+) "
+    r"of (\d+) due to balance (\d+)msat / (\d+)msat: ([0-9.]+)"
+)
+BALANCE_SET_RE = re.compile(
+    r"FeeModderByBalance: Peer ([0-9a-f]{66}) set to bin (\d+) of (\d+) "
+    r"due to balance (\d+)msat / (\d+)msat: ([0-9.]+)"
+)
+PRICE_RE = re.compile(
+    r"FeeModderByPriceTheory: ([0-9a-f]{66}): level = (-?\d+), mult = ([0-9.]+)"
+)
+SETCHANNEL_RE = re.compile(r"^Rpc out: setchannel (.*)$")
+SETCHANNELFEE_RE = re.compile(r"^Rpc out: setchannelfee (.*)$")
+
+ID_RE = re.compile(r'"id"\s*:\s*"([0-9a-f]{66})"')
+FEEBASE_RE = re.compile(r'"feebase"\s*:\s*(\d+)')
+FEEPPM_RE = re.compile(r'"feeppm"\s*:\s*(\d+)')
+BASE_RE = re.compile(r'"base"\s*:\s*(\d+)')
+PPM_RE = re.compile(r'"ppm"\s*:\s*(\d+)')
+
+
+def parse_line(line):
+    line = line.rstrip("\n")
+    m = LINE_RE.match(line)
+    if not m:
+        return None
+    ts, msg = m.group(1), m.group(2)
+    try:
+        ts_epoch = parse_timestamp(ts)
+    except ValueError:
+        return None
+    return ts_epoch, msg, line
+
+
+def local_tz():
+    return datetime.now().astimezone().tzinfo
+
+
+def normalize_dt(dt):
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=local_tz())
+    return dt.astimezone(timezone.utc)
+
+
+def parse_timestamp(ts):
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    return normalize_dt(datetime.fromisoformat(ts)).timestamp()
+
+
+def parse_json_payload(payload):
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        pass
+    if '\\"' in payload:
+        try:
+            return json.loads(payload.replace('\\"', '"'))
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def parse_setchannel_payload(payload):
+    data = parse_json_payload(payload)
+    if data:
+        node = data.get("id")
+        base = data.get("feebase", data.get("base"))
+        ppm = data.get("feeppm", data.get("ppm"))
+        if node and base is not None and ppm is not None:
+            return node, int(base), int(ppm)
+
+    cleaned = payload.replace('\\"', '"')
+    id_m = ID_RE.search(cleaned)
+    base_m = FEEBASE_RE.search(cleaned) or BASE_RE.search(cleaned)
+    ppm_m = FEEPPM_RE.search(cleaned) or PPM_RE.search(cleaned)
+    if id_m and base_m and ppm_m:
+        return id_m.group(1), int(base_m.group(1)), int(ppm_m.group(1))
+    return None
+
+
+def ensure_schema(conn):
+    cur = conn.cursor()
+    cur.execute("PRAGMA foreign_keys = ON")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS peers (
+            id INTEGER PRIMARY KEY,
+            node_id TEXT NOT NULL UNIQUE
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fee_change_events (
+            id INTEGER PRIMARY KEY,
+            ts REAL NOT NULL,
+            peer_id INTEGER NOT NULL,
+            set_base INTEGER,
+            set_ppm INTEGER,
+            baseline_base INTEGER,
+            baseline_ppm INTEGER,
+            size_mult REAL,
+            size_total_peers INTEGER,
+            size_less_peers INTEGER,
+            balance_mult REAL,
+            balance_our_msat INTEGER,
+            balance_total_msat INTEGER,
+            price_level INTEGER,
+            price_mult REAL,
+            mult_product REAL,
+            est_base INTEGER,
+            est_ppm INTEGER,
+            dedupe_hash TEXT NOT NULL,
+            FOREIGN KEY(peer_id) REFERENCES peers(id)
+        )
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS fee_change_events_unique
+        ON fee_change_events(peer_id, ts, dedupe_hash)
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS fee_change_events_peer_ts_idx
+        ON fee_change_events(peer_id, ts)
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS fee_change_events_ts_peer_idx
+        ON fee_change_events(ts, peer_id)
+        """
+    )
+    conn.commit()
+
+
+def update_state(state, peer, key, value):
+    if peer not in state:
+        state[peer] = {}
+    state[peer][key] = value
+
+
+def compute_estimate(state, peer):
+    s = state.get(peer, {})
+    base = s.get("baseline_base")
+    ppm = s.get("baseline_ppm")
+    if base is None or ppm is None:
+        return None
+
+    size_mult = s.get("size_mult")
+    balance_mult = s.get("balance_mult")
+    price_mult = s.get("price_mult")
+    if size_mult is None or balance_mult is None or price_mult is None:
+        return {
+            "mult_product": None,
+            "est_base": None,
+            "est_ppm": None,
+        }
+
+    mult_product = size_mult * balance_mult * price_mult
+    est_base = int(round(base * mult_product))
+    est_ppm = int(round(ppm * mult_product))
+    if est_ppm == 0:
+        est_ppm = 1
+
+    return {
+        "mult_product": mult_product,
+        "est_base": est_base,
+        "est_ppm": est_ppm,
+    }
+
+
+def build_dedupe_hash(ts, peer_id, snapshot):
+    fields = [
+        str(ts),
+        str(peer_id),
+        str(snapshot["set_base"]),
+        str(snapshot["set_ppm"]),
+        str(snapshot["baseline_base"]),
+        str(snapshot["baseline_ppm"]),
+        str(snapshot["size_mult"]),
+        str(snapshot["size_total_peers"]),
+        str(snapshot["size_less_peers"]),
+        str(snapshot["balance_mult"]),
+        str(snapshot["balance_our_msat"]),
+        str(snapshot["balance_total_msat"]),
+        str(snapshot["price_level"]),
+        str(snapshot["price_mult"]),
+        str(snapshot["mult_product"]),
+        str(snapshot["est_base"]),
+        str(snapshot["est_ppm"]),
+    ]
+    payload = "|".join(fields)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class Output:
+    def __init__(self, conn=None, commit_interval_seconds=60):
+        self.conn = conn
+        self.cur = conn.cursor() if conn else None
+        self.commit_interval_seconds = commit_interval_seconds
+        self.last_commit = time.monotonic() if conn else None
+        self.peer_cache = {}
+        self.pending_writes = False
+
+    def commit(self):
+        if self.conn:
+            self.conn.commit()
+            self.last_commit = time.monotonic()
+            self.pending_writes = False
+
+    def maybe_commit(self):
+        if not self.conn:
+            return
+        if not self.pending_writes:
+            return
+        if self.commit_interval_seconds is None:
+            return
+        elapsed = time.monotonic() - self.last_commit
+        if elapsed >= self.commit_interval_seconds:
+            self.commit()
+
+    def get_peer_id(self, peer):
+        if peer in self.peer_cache:
+            return self.peer_cache[peer]
+        self.cur.execute(
+            "INSERT OR IGNORE INTO peers (node_id) VALUES (?)",
+            (peer,),
+        )
+        self.cur.execute("SELECT id FROM peers WHERE node_id = ?", (peer,))
+        row = self.cur.fetchone()
+        peer_id = row[0]
+        self.peer_cache[peer] = peer_id
+        return peer_id
+
+    def insert_fee_change(self, ts, peer, snapshot):
+        if self.cur:
+            peer_id = self.get_peer_id(peer)
+            dedupe_hash = build_dedupe_hash(ts, peer_id, snapshot)
+            self.cur.execute(
+                """
+                INSERT OR IGNORE INTO fee_change_events (
+                    ts, peer_id, set_base, set_ppm, baseline_base, baseline_ppm,
+                    size_mult, size_total_peers, size_less_peers, balance_mult,
+                    balance_our_msat, balance_total_msat,
+                    price_level, price_mult, mult_product, est_base, est_ppm,
+                    dedupe_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ts,
+                    peer_id,
+                    snapshot["set_base"],
+                    snapshot["set_ppm"],
+                    snapshot["baseline_base"],
+                    snapshot["baseline_ppm"],
+                    snapshot["size_mult"],
+                    snapshot["size_total_peers"],
+                    snapshot["size_less_peers"],
+                    snapshot["balance_mult"],
+                    snapshot["balance_our_msat"],
+                    snapshot["balance_total_msat"],
+                    snapshot["price_level"],
+                    snapshot["price_mult"],
+                    snapshot["mult_product"],
+                    snapshot["est_base"],
+                    snapshot["est_ppm"],
+                    dedupe_hash,
+                ),
+            )
+            self.pending_writes = True
+            self.maybe_commit()
+        else:
+            sys.stdout.write(
+                "{ts},{peer},{set_base},{set_ppm},{baseline_base},{baseline_ppm},"
+                "{size_mult},{size_total_peers},{size_less_peers},{balance_mult},"
+                "{balance_our_msat},{balance_total_msat},{price_level},"
+                "{price_mult},{mult_product},{est_base},{est_ppm}\n".format(
+                    ts=ts,
+                    peer=peer,
+                    set_base=snapshot["set_base"],
+                    set_ppm=snapshot["set_ppm"],
+                    baseline_base=snapshot["baseline_base"],
+                    baseline_ppm=snapshot["baseline_ppm"],
+                    size_mult=snapshot["size_mult"],
+                    size_total_peers=snapshot["size_total_peers"],
+                    size_less_peers=snapshot["size_less_peers"],
+                    balance_mult=snapshot["balance_mult"],
+                    balance_our_msat=snapshot["balance_our_msat"],
+                    balance_total_msat=snapshot["balance_total_msat"],
+                    price_level=snapshot["price_level"],
+                    price_mult=snapshot["price_mult"],
+                    mult_product=snapshot["mult_product"],
+                    est_base=snapshot["est_base"],
+                    est_ppm=snapshot["est_ppm"],
+                )
+            )
+
+
+def extract_events_from_msg(msg):
+    m = SETCHANNEL_RE.match(msg) or SETCHANNELFEE_RE.match(msg)
+    if m:
+        payload = m.group(1)
+        parsed_payload = parse_setchannel_payload(payload)
+        if parsed_payload:
+            peer, base, ppm = parsed_payload
+            return [("setchannel", (peer, base, ppm))]
+        return []
+
+    m = BASELINE_RE.search(msg)
+    if m:
+        entries = BASELINE_ENTRY_RE.findall(m.group(1))
+        if entries:
+            return [("baseline", entries)]
+        return []
+
+    m = SIZE_RE.search(msg)
+    if m:
+        peer, total_s, less_s, more_s, mult_s = m.groups()
+        total = int(total_s)
+        less = int(less_s)
+        more = int(more_s)
+        if total == less + more:
+            mult = float(mult_s)
+            return [("size", (peer, total, less, mult))]
+        return []
+
+    m = BALANCE_MOVED_RE.search(msg)
+    if m:
+        peer = m.group(1)
+        to_us = int(m.group(5))
+        total = int(m.group(6))
+        mult = float(m.group(7))
+        return [("balance", (peer, mult, to_us, total))]
+
+    m = BALANCE_SET_RE.search(msg)
+    if m:
+        peer = m.group(1)
+        to_us = int(m.group(4))
+        total = int(m.group(5))
+        mult = float(m.group(6))
+        return [("balance", (peer, mult, to_us, total))]
+
+    m = PRICE_RE.search(msg)
+    if m:
+        peer, level_s, mult_s = m.groups()
+        level = int(level_s)
+        mult = float(mult_s)
+        return [("price", (peer, level, mult))]
+
+    return []
+
+
+def apply_event(ts, kind, data, state, output):
+    if kind == "baseline":
+        for peer, base_s, ppm_s in data:
+            base = int(base_s)
+            ppm = int(ppm_s)
+            update_state(state, peer, "baseline_base", base)
+            update_state(state, peer, "baseline_ppm", ppm)
+        return
+
+    if kind == "size":
+        peer, total, less, mult = data
+        update_state(state, peer, "size_mult", mult)
+        update_state(state, peer, "size_total_peers", total)
+        update_state(state, peer, "size_less_peers", less)
+        return
+
+    if kind == "balance":
+        peer, mult, to_us, total = data
+        update_state(state, peer, "balance_mult", mult)
+        update_state(state, peer, "balance_our_msat", to_us)
+        update_state(state, peer, "balance_total_msat", total)
+        return
+
+    if kind == "price":
+        peer, level, mult = data
+        update_state(state, peer, "price_level", level)
+        update_state(state, peer, "price_mult", mult)
+        return
+
+    if kind == "setchannel":
+        peer, set_base, set_ppm = data
+        est = compute_estimate(state, peer)
+        snapshot = {
+            "set_base": set_base,
+            "set_ppm": set_ppm,
+            "baseline_base": state.get(peer, {}).get("baseline_base"),
+            "baseline_ppm": state.get(peer, {}).get("baseline_ppm"),
+            "size_mult": state.get(peer, {}).get("size_mult"),
+            "size_total_peers": state.get(peer, {}).get("size_total_peers"),
+            "size_less_peers": state.get(peer, {}).get("size_less_peers"),
+            "balance_mult": state.get(peer, {}).get("balance_mult"),
+            "balance_our_msat": state.get(peer, {}).get("balance_our_msat"),
+            "balance_total_msat": state.get(peer, {}).get("balance_total_msat"),
+            "price_level": state.get(peer, {}).get("price_level"),
+            "price_mult": state.get(peer, {}).get("price_mult"),
+            "mult_product": est.get("mult_product") if est else None,
+            "est_base": est.get("est_base") if est else None,
+            "est_ppm": est.get("est_ppm") if est else None,
+        }
+        output.insert_fee_change(ts, peer, snapshot)
+
+
+def process_stream(lines, output):
+    state = {}
+    for line in lines:
+        parsed = parse_line(line)
+        if parsed:
+            ts, msg, _ = parsed
+            for kind, data in extract_events_from_msg(msg):
+                apply_event(ts, kind, data, state, output)
+        output.maybe_commit()
+    output.commit()
+
+
+def open_lines(paths):
+    if not paths:
+        for line in sys.stdin:
+            yield line
+        return
+
+    for path in paths:
+        if os.path.isdir(path):
+            for root, _, files in os.walk(path):
+                for name in files:
+                    full = os.path.join(root, name)
+                    with open(full, "r", encoding="utf-8", errors="replace") as f:
+                        for line in f:
+                            yield line
+        else:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    yield line
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Parse CLBOSS fee-setting logs into sqlite."
+    )
+    parser.add_argument(
+        "--db",
+        help="Path to sqlite database (created if missing).",
+    )
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        help="Log files or directories (reads stdin if omitted).",
+    )
+    parser.add_argument(
+        "--commit-seconds",
+        type=float,
+        default=60,
+        help="Commit database writes every N seconds (default: 60).",
+    )
+    args = parser.parse_args()
+
+    if args.db:
+        conn = sqlite3.connect(args.db)
+        ensure_schema(conn)
+        output = Output(conn=conn, commit_interval_seconds=args.commit_seconds)
+        process_stream(open_lines(args.paths), output)
+        conn.close()
+        return
+
+    sys.stdout.write(
+        "ts,peer,set_base,set_ppm,baseline_base,baseline_ppm,size_mult,"
+        "size_total_peers,size_less_peers,balance_mult,balance_our_msat,"
+        "balance_total_msat,price_level,price_mult,mult_product,est_base,"
+        "est_ppm\n"
+    )
+    output = Output()
+    process_stream(open_lines(args.paths), output)
+
+
+if __name__ == "__main__":
+    main()
