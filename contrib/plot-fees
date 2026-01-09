@@ -290,16 +290,15 @@ def resolve_network_option(args):
 
 def resolve_lightning_dir(args):
     if args.lightning_dir:
-        assert os.path.isdir(
-            args.lightning_dir
-        ), f'"{args.lightning_dir}" is not a valid directory'
+        if not os.path.isdir(args.lightning_dir):
+            raise ValueError(f'"{args.lightning_dir}" is not a valid directory')
         return args.lightning_dir
     return None
 
 
-def run_lightning_cli_command(lightning_dir, network_option, command, *args):
+def run_lightning_cli_command(lightning_dir, network_option, subcommand, *args):
     try:
-        command = ["lightning-cli", network_option, command, *args]
+        command = ["lightning-cli", network_option, subcommand, *args]
         if lightning_dir:
             command = command[:2] \
                 + [f"--lightning-dir={lightning_dir}"] \
@@ -454,7 +453,7 @@ def write_csv(args, rows, suffix):
         "price_level",
         "price_mult",
     ]
-    with open(path, "w", newline="") as f:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(headers)
         writer.writerows(rows)
@@ -473,10 +472,8 @@ CSV_QUERY = (
 
 
 def fetch_rows(db, query, peer):
-    conn = sqlite3.connect(db)
-    rows = conn.execute(query, (peer,)).fetchall()
-    conn.close()
-    return rows
+    with sqlite3.connect(db) as conn:
+        return conn.execute(query, (peer,)).fetchall()
 
 
 def fetch_csv_rows(args):
@@ -763,7 +760,7 @@ def plot_earnings_on(ax, rows, peer):
     )
 
     ax.set_ylabel("earnings (sat/day)")
-    totals = [incoming[i] + outgoing[i] for i in range(len(ts))]
+    totals = [in_val + out_val for in_val, out_val in zip(incoming, outgoing)]
     ax.set_ylim(bottom=0, top=max(1, max(totals) * 1.05))
     ax.legend([in_bars, out_bars], [
         "earnings (sat/day) from incoming",
