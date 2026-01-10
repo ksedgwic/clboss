@@ -82,3 +82,6 @@ how many days of earnings history are considered when ranking channels.
   SCID (via lightning-cli/listpeerchannels). The combo view includes a daily
   earnings panel (incoming/outgoing msat per day) when lightning-cli is
   available.
+- **`plot-aggregate`** plots aggregate percentile summaries from the
+  `fee-log-parser` sqlite output. The initial `price-level` view shows daily
+  p00/p10/p25/p50/p75/p90/p100 percentiles across nodes.
