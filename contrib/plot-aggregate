@@ -164,6 +164,29 @@ def nice_mult_ticks(vmin, vmax):
     return ticks
 
 
+def set_log_ylim(ax, values, pad_frac=0.2, min_floor=0.9, min_top=10):
+    if not values:
+        return
+    max_val = max(values)
+    if max_val < min_floor:
+        max_val = min_floor
+    top = max(max_val * (1.0 + pad_frac), min_top)
+    bottom = min_floor
+    ax.set_ylim(bottom=bottom, top=top)
+
+
+def set_log_decade_ticks(ax):
+    ymin, ymax = ax.get_ylim()
+    if ymin <= 0 or ymax <= 0:
+        return
+    exp_min = int(math.floor(math.log10(ymin)))
+    exp_max = int(math.ceil(math.log10(ymax)))
+    ticks = [10 ** e for e in range(exp_min, exp_max + 1) if 10 ** e >= 1]
+    labels = [str(int(t)) for t in ticks]
+    ax.set_yticks(ticks)
+    ax.set_yticklabels(labels)
+
+
 def percentile_from_sorted(values, q):
     if not values:
         return None
@@ -255,12 +278,12 @@ def write_csv(args, rows, suffix):
         writer.writerows(rows)
 
 
-def fetch_price_levels(db, from_ts, to_ts):
+def fetch_field_values(db, from_ts, to_ts, field):
     query = (
-        "SELECT f.ts, f.price_level, p.node_id "
+        f"SELECT f.ts, f.{field}, p.node_id "
         "FROM fee_change_events f "
         "JOIN peers p ON p.id = f.peer_id "
-        "WHERE f.price_level IS NOT NULL"
+        f"WHERE f.{field} IS NOT NULL"
     )
     params = []
     if from_ts:
@@ -275,13 +298,13 @@ def fetch_price_levels(db, from_ts, to_ts):
         return conn.execute(query, params).fetchall()
 
 
-def bucket_price_levels(rows):
+def bucket_latest_by_node(rows):
     buckets = {}
-    for ts, price_level, node_id in rows:
+    for ts, value, node_id in rows:
         bucket = math.floor(ts / BUCKET_SECONDS) * BUCKET_SECONDS
         bucket_nodes = buckets.setdefault(bucket, {})
-        # Keep the latest price_level per node in each bucket.
-        bucket_nodes[node_id] = price_level
+        # Keep the latest value per node in each bucket.
+        bucket_nodes[node_id] = value
     return buckets
 
 
@@ -298,30 +321,59 @@ def compute_percentile_series(buckets, percentiles):
     return series
 
 
+def get_percentile_series(db, from_ts, to_ts, field):
+    rows = fetch_field_values(db, from_ts, to_ts, field)
+    buckets = bucket_latest_by_node(rows)
+    percentiles = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
+    labels = ["p00", "p10", "p25", "p50", "p75", "p90", "p100"]
+    series = compute_percentile_series(buckets, percentiles)
+    return series, percentiles, labels
+
+
+def split_percentile_series(series, percentiles):
+    ts = [parse_ts_epoch(row[0]) for row in series]
+    percentile_series = []
+    for idx in range(1, len(percentiles) + 1):
+        percentile_series.append([row[idx] for row in series])
+    return ts, percentile_series
+
+
+def adjust_log_series(percentile_series):
+    adjusted = []
+    all_values = []
+    for series in percentile_series:
+        converted = [value if value > 0 else 1 for value in series]
+        adjusted.append(converted)
+        all_values.extend(converted)
+    return adjusted, all_values
+
+
+def add_percentile_lines(ax, ts, percentile_series, labels):
+    lines = []
+    for label, values in zip(labels, percentile_series):
+        line, = ax.plot(ts, values, linewidth=1.5, label=label)
+        lines.append(line)
+    legend_lines = list(reversed(lines))
+    legend_labels = list(reversed(labels))
+    ax.legend(legend_lines, legend_labels)
+
+
 def plot_price_level(args):
     try:
         import matplotlib.pyplot as plt
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    rows = fetch_price_levels(args.db, args.from_ts, args.to_ts)
-    buckets = bucket_price_levels(rows)
-    percentiles = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
-    labels = ["p00", "p10", "p25", "p50", "p75", "p90", "p100"]
-    series = compute_percentile_series(buckets, percentiles)
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "price_level"
+    )
     if not series:
         raise SystemExit("no price_level data in time range")
 
-    ts = [parse_ts_epoch(row[0]) for row in series]
-    percentile_series = []
-    for idx in range(1, len(percentiles) + 1):
-        percentile_series.append([row[idx] for row in series])
+    ts, percentile_series = split_percentile_series(series, percentiles)
 
     fig, ax = plt.subplots(figsize=(12, 4))
-    lines = []
-    for label, values in zip(labels, percentile_series):
-        line, = ax.plot(ts, values, linewidth=1.5, label=label)
-        lines.append(line)
+    add_percentile_lines(ax, ts, percentile_series, labels)
     ax.set_ylabel("price_level")
     ax.set_title("price_level percentiles")
 
@@ -340,9 +392,6 @@ def plot_price_level(args):
         ax_mult.set_yticks(mult_ticks)
         ax_mult.set_yticklabels([format_mult_tick(v) for v in mult_ticks])
 
-    legend_lines = list(reversed(lines))
-    legend_labels = list(reversed(labels))
-    ax.legend(legend_lines, legend_labels)
     fig.tight_layout()
 
     out_path = get_out_path(args, "pricelevel")
@@ -354,6 +403,147 @@ def plot_price_level(args):
     write_csv(args, series, "pricelevel")
 
 
+def plot_baseline_base(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "baseline_base"
+    )
+    if not series:
+        raise SystemExit("no baseline_base data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+    percentile_series, values = adjust_log_series(percentile_series)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("baseline_base")
+    ax.set_title("baseline_base percentiles")
+    ax.set_yscale("log")
+    set_log_ylim(ax, values)
+    set_log_decade_ticks(ax)
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "baseline-base")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "baseline-base")
+
+
+def plot_baseline_ppm(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "baseline_ppm"
+    )
+    if not series:
+        raise SystemExit("no baseline_ppm data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+    percentile_series, values = adjust_log_series(percentile_series)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("baseline_ppm")
+    ax.set_title("baseline_ppm percentiles")
+    ax.set_yscale("log")
+    set_log_ylim(ax, values)
+    set_log_decade_ticks(ax)
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "baseline-ppm")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "baseline-ppm")
+
+
+def plot_combo(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    price_series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "price_level"
+    )
+    base_series, _, _ = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "baseline_base"
+    )
+    ppm_series, _, _ = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "baseline_ppm"
+    )
+    if not price_series and not base_series and not ppm_series:
+        raise SystemExit("no aggregate data in time range")
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    ax_base, ax_ppm, ax_price = axes
+
+    if base_series:
+        ts, base_percentiles = split_percentile_series(base_series, percentiles)
+        base_percentiles, base_values = adjust_log_series(base_percentiles)
+        add_percentile_lines(ax_base, ts, base_percentiles, labels)
+        ax_base.set_ylabel("baseline_base")
+        ax_base.set_title("baseline_base percentiles")
+        ax_base.set_yscale("log")
+        set_log_ylim(ax_base, base_values)
+        set_log_decade_ticks(ax_base)
+    else:
+        ax_base.set_title("baseline_base percentiles (no data)")
+
+    if ppm_series:
+        ts, ppm_percentiles = split_percentile_series(ppm_series, percentiles)
+        ppm_percentiles, ppm_values = adjust_log_series(ppm_percentiles)
+        add_percentile_lines(ax_ppm, ts, ppm_percentiles, labels)
+        ax_ppm.set_ylabel("baseline_ppm")
+        ax_ppm.set_title("baseline_ppm percentiles")
+        ax_ppm.set_yscale("log")
+        set_log_ylim(ax_ppm, ppm_values)
+        set_log_decade_ticks(ax_ppm)
+    else:
+        ax_ppm.set_title("baseline_ppm percentiles (no data)")
+
+    if price_series:
+        ts, price_percentiles = split_percentile_series(price_series, percentiles)
+        add_percentile_lines(ax_price, ts, price_percentiles, labels)
+        ax_price.set_ylabel("price_level")
+        ax_price.set_title("price_level percentiles")
+
+        ax_mult = ax_price.secondary_yaxis(
+            "right",
+            functions=(price_level_to_mult, price_mult_to_level),
+        )
+        ax_mult.set_ylabel("price_mult")
+        min_level = min(price_percentiles[0])
+        max_level = max(price_percentiles[-1])
+        mult_min = price_level_to_mult(min_level)
+        mult_max = price_level_to_mult(max_level)
+        mult_ticks = nice_mult_ticks(mult_min, mult_max)
+        if mult_ticks:
+            ax_mult.set_yticks(mult_ticks)
+            ax_mult.set_yticklabels([format_mult_tick(v) for v in mult_ticks])
+    else:
+        ax_price.set_title("price_level percentiles (no data)")
+
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "combo")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Plot aggregated fee statistics from clboss fee logs."
@@ -363,6 +553,9 @@ def main():
         required=True,
         choices=[
             "price-level",
+            "baseline-base",
+            "baseline-ppm",
+            "combo",
         ],
         help="Aggregate view to render.",
     )
@@ -377,6 +570,9 @@ def main():
 
     view_map = {
         "price-level": plot_price_level,
+        "baseline-base": plot_baseline_base,
+        "baseline-ppm": plot_baseline_ppm,
+        "combo": plot_combo,
     }
     view_map[args.view](args)
 
