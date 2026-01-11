@@ -84,6 +84,6 @@ how many days of earnings history are considered when ranking channels.
   available.
 - **`plot-aggregate`** plots aggregate percentile summaries from the
   `fee-log-parser` sqlite output. Views include `price-level`,
-  `baseline-base`, `baseline-ppm`, `size-mult`, `balance-mult`, and a `combo`
-  view. Each view shows daily p00/p10/p25/p50/p75/p90/p100 percentiles across
-  nodes.
+  `baseline-base`, `baseline-ppm`, `size-mult`, `balance-mult`, `set-base`,
+  `set-ppm`, and a `combo` view. Each view shows daily
+  p00/p10/p25/p50/p75/p90/p100 percentiles across nodes.

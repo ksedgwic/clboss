@@ -553,6 +553,70 @@ def plot_balance_mult(args):
     write_csv(args, series, "balance-mult")
 
 
+def plot_set_base(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "set_base"
+    )
+    if not series:
+        raise SystemExit("no set_base data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+    percentile_series, values = adjust_log_series(percentile_series, floor=1)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("set_base")
+    ax.set_title("set_base percentiles")
+    ax.set_yscale("log")
+    set_log_ylim(ax, values)
+    set_log_decade_ticks(ax)
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "set-base")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "set-base")
+
+
+def plot_set_ppm(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "set_ppm"
+    )
+    if not series:
+        raise SystemExit("no set_ppm data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+    percentile_series, values = adjust_log_series(percentile_series, floor=1)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("set_ppm")
+    ax.set_title("set_ppm percentiles")
+    ax.set_yscale("log")
+    set_log_ylim(ax, values)
+    set_log_decade_ticks(ax)
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "set-ppm")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "set-ppm")
+
+
 def plot_combo(args):
     try:
         import matplotlib.pyplot as plt
@@ -574,17 +638,25 @@ def plot_combo(args):
     balance_series, _, _ = get_percentile_series(
         args.db, args.from_ts, args.to_ts, "balance_mult"
     )
+    set_base_series, _, _ = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "set_base"
+    )
+    set_ppm_series, _, _ = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "set_ppm"
+    )
     if (
         not price_series
         and not base_series
         and not ppm_series
         and not size_series
         and not balance_series
+        and not set_base_series
+        and not set_ppm_series
     ):
         raise SystemExit("no aggregate data in time range")
 
-    fig, axes = plt.subplots(5, 1, figsize=(12, 15), sharex=True)
-    ax_base, ax_ppm, ax_size, ax_balance, ax_price = axes
+    fig, axes = plt.subplots(7, 1, figsize=(12, 21), sharex=True)
+    ax_base, ax_ppm, ax_size, ax_balance, ax_price, ax_set_base, ax_set_ppm = axes
 
     if base_series:
         ts, base_percentiles = split_percentile_series(base_series, percentiles)
@@ -664,6 +736,38 @@ def plot_combo(args):
     else:
         ax_price.set_title("price_level percentiles (no data)")
 
+    if set_base_series:
+        ts, set_base_percentiles = split_percentile_series(
+            set_base_series, percentiles
+        )
+        set_base_percentiles, set_base_values = adjust_log_series(
+            set_base_percentiles, floor=1
+        )
+        add_percentile_lines(ax_set_base, ts, set_base_percentiles, labels)
+        ax_set_base.set_ylabel("set_base")
+        ax_set_base.set_title("set_base percentiles")
+        ax_set_base.set_yscale("log")
+        set_log_ylim(ax_set_base, set_base_values)
+        set_log_decade_ticks(ax_set_base)
+    else:
+        ax_set_base.set_title("set_base percentiles (no data)")
+
+    if set_ppm_series:
+        ts, set_ppm_percentiles = split_percentile_series(
+            set_ppm_series, percentiles
+        )
+        set_ppm_percentiles, set_ppm_values = adjust_log_series(
+            set_ppm_percentiles, floor=1
+        )
+        add_percentile_lines(ax_set_ppm, ts, set_ppm_percentiles, labels)
+        ax_set_ppm.set_ylabel("set_ppm")
+        ax_set_ppm.set_title("set_ppm percentiles")
+        ax_set_ppm.set_yscale("log")
+        set_log_ylim(ax_set_ppm, set_ppm_values)
+        set_log_decade_ticks(ax_set_ppm)
+    else:
+        ax_set_ppm.set_title("set_ppm percentiles (no data)")
+
     fig.tight_layout()
 
     out_path = get_out_path(args, "combo")
@@ -687,6 +791,8 @@ def main():
             "baseline-ppm",
             "size-mult",
             "balance-mult",
+            "set-base",
+            "set-ppm",
             "combo",
         ],
         help="Aggregate view to render.",
@@ -706,6 +812,8 @@ def main():
         "baseline-ppm": plot_baseline_ppm,
         "size-mult": plot_size_mult,
         "balance-mult": plot_balance_mult,
+        "set-base": plot_set_base,
+        "set-ppm": plot_set_ppm,
         "combo": plot_combo,
     }
     view_map[args.view](args)
