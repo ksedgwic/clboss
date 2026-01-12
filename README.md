@@ -550,7 +550,8 @@ The following commands have been added to observe the new data:
   - **Arguments**:
     - `nodeid` (optional): Limits the history to a particular node if
       provided. Without this argument, the history is accumulated
-      across all peers.
+      across all peers. Use `all` to return per-node buckets; each
+      history entry then includes a `node` field.
   - **Output**: 
     - The history consists of an array of records showing the earnings
       and expenditures for each day.

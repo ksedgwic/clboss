@@ -127,7 +127,7 @@ private:
 			}) + bus.raise(Msg::ManifestCommand{
 				"clboss-earnings-history", "[nodeid]",
 				"Show earnings and expenditure history for {nodeid} "
-				"(default all nodes)",
+				"(default all nodes). Use nodeid=all to list per-node buckets.",
 				false
 			});
 		});
@@ -173,6 +173,7 @@ private:
 			} else if (req.command == "clboss-earnings-history") {
 				auto nodeid = std::string("");
 				auto nodeid_j = Jsmn::Object();
+				auto by_node = false;
 				auto params = req.params;
 				if (params.is_object()) {
 					if (params.size() > 1)
@@ -193,8 +194,12 @@ private:
 						return paramfail();
 					nodeid = (std::string) nodeid_j;
 				}
-				return db.transact().then([this, id, nodeid](Sqlite3::Tx tx) {
-					auto report = earnings_history_report(tx, nodeid);
+				if (nodeid == "all") {
+					by_node = true;
+					nodeid.clear();
+				}
+				return db.transact().then([this, id, nodeid, by_node](Sqlite3::Tx tx) {
+					auto report = earnings_history_report(tx, nodeid, by_node);
 					tx.commit();
 					return bus.raise(Msg::CommandResponse{
 							id, report
@@ -594,9 +599,26 @@ private:
 		return out;
 	}
 
-	Json::Out earnings_history_report(Sqlite3::Tx& tx, std::string nodeid) {
+	Json::Out earnings_history_report(Sqlite3::Tx& tx, std::string nodeid, bool by_node) {
 		std::string sql;
-		if (nodeid.empty()) {
+		if (by_node) {
+		        sql = R"QRY(
+		            SELECT time_bucket,
+		                   node,
+		                   in_earnings,
+		                   in_forwarded,
+		                   in_expenditures,
+		                   in_rebalanced,
+		                   out_earnings,
+		                   out_forwarded,
+		                   out_expenditures,
+		                   out_rebalanced
+		              FROM "EarningsTracker"
+		        )QRY";
+			if (!nodeid.empty())
+				sql += " WHERE node = :nodeid";
+			sql += " ORDER BY time_bucket, node;";
+		} else if (nodeid.empty()) {
 		        sql = R"QRY(
 		            SELECT time_bucket,
 		                   SUM(in_earnings) AS total_in_earnings,
@@ -640,9 +662,15 @@ private:
 		for (auto& r : fetch) {
 			size_t ndx = 0;
 			auto bucket_time = r.get<double>(ndx++);
+			std::string row_node;
+			if (by_node) {
+				row_node = r.get<std::string>(ndx++);
+			}
 			auto earnings = EarningsData::from_row(r, ndx);
 			auto sub = history.start_object();
 			sub.field("bucket_time", static_cast<std::uint64_t>(bucket_time));
+			if (by_node)
+				sub.field("node", row_node);
 			earnings.to_json(sub);
 			sub.end_object();
 			total_earnings += earnings;
