@@ -614,10 +614,8 @@ private:
 		                   out_expenditures,
 		                   out_rebalanced
 		              FROM "EarningsTracker"
+			     ORDER BY time_bucket, node;
 		        )QRY";
-			if (!nodeid.empty())
-				sql += " WHERE node = :nodeid";
-			sql += " ORDER BY time_bucket, node;";
 		} else if (nodeid.empty()) {
 		        sql = R"QRY(
 		            SELECT time_bucket,
