@@ -204,7 +204,7 @@ void ChannelCreateDestroyMonitor::start() {
 		return destruction(bus, n);
 	};
 	bus.subscribe<Msg::Notification
-		     >([=](Msg::Notification const& n) {
+		     >([=, this](Msg::Notification const& n) {
 		if (n.notification == "channel_opened")
 			return on_channel_opened(n.params);
 		else if (n.notification == "channel_state_changed") {

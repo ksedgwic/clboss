@@ -212,7 +212,7 @@ void Manager::start() {
 		/* Human-readable text.  */
 		auto report = std::make_shared<std::string>();
 
-		return db.transact().then([=](Sqlite3::Tx tx) {
+		return db.transact().then([=, this](Sqlite3::Tx tx) {
 			auto act = Ev::lift();
 			/* First, if there are too many candidates,
 			 * delete one by random.
@@ -253,7 +253,7 @@ void Manager::start() {
 					);
 
 			return act;
-		}).then([=]() {
+		}).then([=, this]() {
 			/* If we are online, continue.  */
 			if (imon.is_online())
 				return Ev::lift();
@@ -264,7 +264,7 @@ void Manager::start() {
 					, "ChannelCandidateInvestigator: "
 					  "Offline.  Not investigating."
 					);
-		}).then([=]() {
+		}).then([=, this]() {
 			/* If too few candidates, get more.  */
 			if (*good_candidates < min_good_candidates)
 				return solicit_candidates(*good_candidates);
@@ -278,7 +278,7 @@ void Manager::start() {
 				return solicit_candidates(*good_candidates);
 
 			return Ev::lift();
-		}).then([=]() {
+		}).then([=, this]() {
 			/* Hand over possible cases to the gumshoe.  */
 			auto to_gumshoe = [this](Ln::NodeId n) {
 				return gumshoe.investigate(n).then([]() {

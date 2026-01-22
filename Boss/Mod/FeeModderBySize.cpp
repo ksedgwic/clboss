@@ -169,7 +169,7 @@ private:
 					);
 		}
 
-		return std::move(act).then([=]() {
+		return std::move(act).then([=, this]() {
 			auto channel = **pit;
 			++(*pit);
 			auto source = Ln::NodeId(std::string(
