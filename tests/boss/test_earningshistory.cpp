@@ -156,6 +156,49 @@ int main() {
                         )JSON"));
 		return Ev::lift();
 	}).then([&]() {
+		// Check history for all peers, per-node rows
+		++req_id;
+		return bus.raise(Boss::Msg::CommandRequest{
+				"clboss-earnings-history",
+				Jsmn::Object::parse_json(R"JSON(["all"])JSON"),
+				Ln::CommandId::left(req_id)
+			});
+	}).then([&]() {
+		// std::cerr << lastRsp.response.output() << std::endl;
+		assert(rsp);
+		assert(lastRsp.id == Ln::CommandId::left(req_id));
+		auto result = Jsmn::Object::parse_json(lastRsp.response.output().c_str());
+		assert(result["history"].size() == 127);
+		assert(result["history"][0] == Jsmn::Object::parse_json(R"JSON(
+			{
+			  "bucket_time": 1722902400,
+			  "node": "020000000000000000000000000000000000000000000000000000000000000001",
+			  "in_earnings": 48000,
+			  "in_expenditures": 0,
+			  "out_earnings": 0,
+			  "out_expenditures": 0,
+			  "in_forwarded": 24000000,
+			  "in_rebalanced": 0,
+			  "out_forwarded": 0,
+			  "out_rebalanced": 0
+			}
+                )JSON"));
+		assert(result["history"][126] == Jsmn::Object::parse_json(R"JSON(
+			{
+			  "bucket_time": 1728000000,
+			  "node": "020000000000000000000000000000000000000000000000000000000000000003",
+			  "in_earnings": 0,
+			  "in_expenditures": 1000,
+			  "out_earnings": 0,
+			  "out_expenditures": 0,
+			  "in_forwarded": 0,
+			  "in_rebalanced": 1000000,
+			  "out_forwarded": 0,
+			  "out_rebalanced": 0
+			}
+                )JSON"));
+		return Ev::lift();
+	}).then([&]() {
 		// Check history for peer A
 		++req_id;
 		return bus.raise(Boss::Msg::CommandRequest{
