@@ -149,6 +149,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/EarningsTracker.hpp \
 	Boss/Mod/FeeModderByBalance.cpp \
 	Boss/Mod/FeeModderByBalance.hpp \
+	Boss/Mod/FeeMonitor.cpp \
+	Boss/Mod/FeeMonitor.hpp \
 	Boss/Mod/FeeModderByPriceTheory.cpp \
 	Boss/Mod/FeeModderByPriceTheory.hpp \
 	Boss/Mod/FeeModderBySize.cpp \
@@ -291,6 +293,10 @@ libclboss_la_SOURCES = \
 	Boss/Msg/CommandRequest.hpp \
 	Boss/Msg/CommandResponse.hpp \
 	Boss/Msg/DbResource.hpp \
+	Boss/Msg/MonitorFeeByBalance.hpp \
+	Boss/Msg/MonitorFeeByTheory.hpp \
+	Boss/Msg/MonitorFeeSetChannel.hpp \
+	Boss/Msg/MonitorFeeBySize.hpp \
 	Boss/Msg/EndOfOptions.hpp \
 	Boss/Msg/ForwardFee.hpp \
 	Boss/Msg/Init.hpp \
@@ -599,6 +605,7 @@ TESTS = \
 	tests/boss/test_channelcreator_reprioritizer \
 	tests/boss/test_earningsrebalancer \
 	tests/boss/test_earningstracker \
+	tests/boss/test_feemon_history \
 	tests/boss/test_feemodderbypricetheory \
 	tests/boss/test_forwardfeemonitor \
 	tests/boss/test_getmanifest \

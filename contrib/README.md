@@ -76,7 +76,11 @@ how many days of earnings history are considered when ranking channels.
 - **`recently-closed`** lists channels that closed within the last N days, also
   controlled via `--days`.
 - **`fee-log-parser`** is a parser that streams DEBUG-level logging and writes
-  a sqlite database containing fee algorithm information.
+  a sqlite database containing fee algorithm information. CLBOSS now records
+  the same schema in its internal database (`data.clboss`, tables
+  `feemon_peers` and `feemon_change_events`) during normal operation.
+- **`clboss-feemon-history`** is a CLBOSS command that returns per-peer fee modifier
+  history between optional `since`/`before` timestamps.
 - **`plot-fees`** plots fee-related time series from the `fee-log-parser` sqlite
   output. `--peer` accepts a nodeid, alias (via lightning-cli/listnodes), or
   SCID (via lightning-cli/listpeerchannels). The combo view includes a daily
