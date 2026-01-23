@@ -27,6 +27,7 @@
 #include"Boss/Mod/EarningsRebalancer.hpp"
 #include"Boss/Mod/EarningsTracker.hpp"
 #include"Boss/Mod/FeeModderByBalance.hpp"
+#include"Boss/Mod/FeeMonitor.hpp"
 #include"Boss/Mod/FeeModderByPriceTheory.hpp"
 #include"Boss/Mod/FeeModderBySize.hpp"
 #include"Boss/Mod/ForwardFeeMonitor.hpp"
@@ -178,6 +179,7 @@ std::shared_ptr<void> all( std::ostream& cout
 	all->install<PaymentDeleter>(bus);
 
 	/* Channel fees.  */
+	all->install<FeeMonitor>(bus);
 	all->install<PeerCompetitorFeeMonitor::Main>(bus);
 	all->install<ChannelFeeSetter>(bus);
 	all->install<ChannelFeeManager>(bus);
