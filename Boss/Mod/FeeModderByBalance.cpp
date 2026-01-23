@@ -1,6 +1,7 @@
 #include"Boss/Mod/FeeModderByBalance.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/ChannelDestruction.hpp"
+#include"Boss/Msg/MonitorFeeByBalance.hpp"
 #include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/ProvideChannelFeeModifier.hpp"
 #include"Boss/Msg/SolicitChannelFeeModifier.hpp"
@@ -280,6 +281,8 @@ private:
 			}
 
 			auto mult = get_ratio_from_info(info);
+			auto to_us = info.to_us;
+			auto total = info.total;
 
 			return Boss::log( bus, Debug
 					, "FeeModderByBalance: Peer %s moved "
@@ -291,7 +294,14 @@ private:
 					, std::string(info.to_us).c_str()
 					, std::string(info.total).c_str()
 					, mult
-					).then([mult]() {
+					).then([this, node, mult, to_us, total]() {
+				return bus.raise(Msg::MonitorFeeByBalance{
+					*node,
+					mult,
+					to_us.to_msat(),
+					total.to_msat()
+				});
+			}).then([mult]() {
 				return Ev::lift(mult);
 			});
 		});
@@ -318,6 +328,8 @@ private:
 		if (info.bin >= info.num_bins)
 			info.bin = info.num_bins - 1;
 		auto mult = get_ratio_from_info(info);
+		auto to_us = info.to_us;
+		auto total = info.total;
 		return Boss::log( bus, Debug
 				, "FeeModderByBalance: Peer %s set to bin "
 				  "%zu of %zu due to balance %s / %s: %g"
@@ -327,7 +339,14 @@ private:
 				, std::string(info.to_us).c_str()
 				, std::string(info.total).c_str()
 				, mult
-				).then([mult]() {
+				).then([this, node, mult, to_us, total]() {
+			return bus.raise(Msg::MonitorFeeByBalance{
+				*node,
+				mult,
+				to_us.to_msat(),
+				total.to_msat()
+			});
+		}).then([mult]() {
 			return Ev::lift(mult);
 		});
 	}

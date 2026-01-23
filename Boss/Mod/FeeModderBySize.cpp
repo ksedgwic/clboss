@@ -3,6 +3,7 @@
 #include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/ChannelCreation.hpp"
 #include"Boss/Msg/ChannelDestruction.hpp"
+#include"Boss/Msg/MonitorFeeBySize.hpp"
 #include"Boss/Msg/ProvideChannelFeeModifier.hpp"
 #include"Boss/Msg/SolicitChannelFeeModifier.hpp"
 #include"Boss/Msg/TimerRandomDaily.hpp"
@@ -22,6 +23,7 @@
 #include"Util/stringify.hpp"
 #include<algorithm>
 #include<assert.h>
+#include<cstdint>
 #include<map>
 #include<math.h>
 #include<set>
@@ -353,7 +355,14 @@ private:
 			return Boss::log( bus, Info
 					, "FeeModderBySize: %s"
 					, os.str().c_str()
-					).then([multiplier]() {
+					).then([this, peer, total, worse, multiplier]() {
+				return bus.raise(Msg::MonitorFeeBySize{
+					peer,
+					std::uint64_t(total),
+					std::uint64_t(worse),
+					multiplier
+				});
+			}).then([multiplier]() {
 				return Ev::lift(multiplier);
 			});
 		});
