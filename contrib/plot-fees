@@ -20,12 +20,12 @@ FEE_SYMLOG_LINSCALE = 0.3
 
 
 def local_tz():
-    return datetime.now().astimezone().tzinfo
+    return timezone.utc
 
 
 def normalize_dt(dt):
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=local_tz())
+        dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
 
 
@@ -104,9 +104,9 @@ def parse_time_arg(value):
         }[unit]
         if sign == "-":
             delta = -delta
-        return normalize_dt(datetime.now() + delta)
+        return normalize_dt(datetime.now(timezone.utc) + delta)
     if value.count(":") in (1, 2) and "T" not in value and "-" not in value:
-        today = datetime.now().date().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         return normalize_dt(datetime.fromisoformat(f"{today}T{value}"))
     return normalize_dt(datetime.fromisoformat(value))
 
@@ -560,6 +560,10 @@ def plot_single_view(
         import matplotlib.pyplot as plt
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
+    else:
+        import matplotlib as mpl
+
+        mpl.rcParams["timezone"] = "UTC"
 
     rows = fetch_rows(args.db, rows_query, args.peer)
     rows = filter_by_time(rows, args.from_ts, args.to_ts)
@@ -968,6 +972,10 @@ def plot_combo(args):
         import matplotlib.pyplot as plt
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
+    else:
+        import matplotlib as mpl
+
+        mpl.rcParams["timezone"] = "UTC"
 
     def extend_times(acc, rows, end_pad=None):
         for row in rows:
