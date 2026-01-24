@@ -847,11 +847,14 @@ def plot_earnings_on(ax, rows, peer):
             ax.yaxis.set_major_formatter(sci_formatter)
         return
 
-    bar_width = 0.8
+    # Earnings buckets are daily; draw bars covering the full day starting
+    # at the bucket boundary to avoid spanning multiple days.
+    bar_width = timedelta(days=1)
     out_bars = ax.bar(
         ts,
         outgoing,
         width=bar_width,
+        align="edge",
         color="green",
         label="earnings (sat/day) from outgoing",
     )
@@ -860,6 +863,7 @@ def plot_earnings_on(ax, rows, peer):
         incoming,
         width=bar_width,
         bottom=outgoing,
+        align="edge",
         color="blue",
         label="earnings (sat/day) from incoming",
     )
@@ -965,6 +969,16 @@ def plot_combo(args):
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
+    def extend_times(acc, rows, end_pad=None):
+        for row in rows:
+            ts_val = row[0]
+            if ts_val is None:
+                continue
+            ts = parse_ts(ts_val)
+            acc.append(ts)
+            if end_pad:
+                acc.append(ts + end_pad)
+
     size_rows = fetch_rows(args.db, SIZE_MULT_QUERY, args.peer)
     baseline_rows = fetch_rows(args.db, BASELINE_QUERY, args.peer)
     balance_rows = fetch_rows(args.db, BALANCE_MULT_QUERY, args.peer)
@@ -1001,6 +1015,16 @@ def plot_combo(args):
     plot_base_ppm_on(ax_base_fee, ax_base_ppm, base_rows, args.peer_label)
 
     plot_earnings_on(ax_earnings, earnings_rows, args.peer_label)
+
+    all_times = []
+    extend_times(all_times, baseline_rows)
+    extend_times(all_times, size_rows)
+    extend_times(all_times, balance_rows)
+    extend_times(all_times, price_rows)
+    extend_times(all_times, base_rows)
+    extend_times(all_times, earnings_rows, end_pad=timedelta(days=1))
+    if all_times:
+        ax_baseline.set_xlim(min(all_times), max(all_times))
 
     fig.suptitle(args.peer_label)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
