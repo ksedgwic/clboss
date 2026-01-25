@@ -17,6 +17,8 @@ PLOT_LINEWIDTH = 1.5
 SCID_RE = re.compile(r"^\d+x\d+x\d+$")
 FEE_SYMLOG_LINTHRESH = 1.0
 FEE_SYMLOG_LINSCALE = 0.3
+EARNINGS_SYMLOG_LINTHRESH = 1.0
+EARNINGS_SYMLOG_LINSCALE = 0.3
 
 
 def local_tz():
@@ -833,54 +835,75 @@ def plot_balance_mult_on(ax_left, ax_right, rows, peer):
     )
 
 
-def plot_earnings_on(ax, rows, peer):
+def plot_earnings_split(ax_out, ax_in, rows, peer):
     ts = []
     incoming = []
     outgoing = []
-    sci_formatter = make_engineering_formatter()
     for t, in_earnings, out_earnings in rows:
         ts.append(parse_ts(t))
         incoming.append(in_earnings / 1000.0)
         outgoing.append(out_earnings / 1000.0)
 
     if not ts:
-        ax.set_ylabel("earnings (sat/day)")
-        ax.set_ylim(bottom=0)
-        ax.set_title("earnings (no data)")
-        if sci_formatter:
-            ax.yaxis.set_major_formatter(sci_formatter)
+        for ax, label in ((ax_out, "outgoing"), (ax_in, "incoming")):
+            ax.set_ylabel(f"earnings (sat/day) {label}")
+            ax.set_yscale(
+                "symlog",
+                linthresh=EARNINGS_SYMLOG_LINTHRESH,
+                linscale=EARNINGS_SYMLOG_LINSCALE,
+            )
+            set_symlog_ylim(
+                ax,
+                [0.0],
+                clamp_zero=True,
+                min_bottom=0,
+                min_top=EARNINGS_SYMLOG_LINTHRESH,
+            )
+            set_symlog_ticks(ax, EARNINGS_SYMLOG_LINTHRESH, symmetric=False)
+        ax_out.set_title("earnings (no data)")
         return
 
-    # Earnings buckets are daily; draw bars covering the full day starting
-    # at the bucket boundary to avoid spanning multiple days.
-    bar_width = timedelta(days=1)
-    out_bars = ax.bar(
+    # Earnings buckets are daily; draw near-full-day bars starting at the bucket
+    # boundary to preserve UTC alignment while still visually separating days.
+    bar_width = timedelta(days=0.9)
+    out_bars = ax_out.bar(
         ts,
         outgoing,
         width=bar_width,
         align="edge",
         color="green",
-        label="earnings (sat/day) from outgoing",
+        label="earnings (sat/day) outgoing",
     )
-    in_bars = ax.bar(
+    in_bars = ax_in.bar(
         ts,
         incoming,
         width=bar_width,
-        bottom=outgoing,
         align="edge",
         color="blue",
-        label="earnings (sat/day) from incoming",
+        label="earnings (sat/day) incoming",
     )
 
-    ax.set_ylabel("earnings (sat/day)")
-    totals = [in_val + out_val for in_val, out_val in zip(incoming, outgoing)]
-    ax.set_ylim(bottom=0, top=max(1, max(totals) * 1.05))
-    ax.legend([in_bars, out_bars], [
-        "earnings (sat/day) from incoming",
-        "earnings (sat/day) from outgoing",
-    ])
-    if sci_formatter:
-        ax.yaxis.set_major_formatter(sci_formatter)
+    for ax, values, label in (
+        (ax_out, outgoing, "outgoing"),
+        (ax_in, incoming, "incoming"),
+    ):
+        ax.set_ylabel(f"earnings (sat/day) {label}")
+        ax.set_yscale(
+            "symlog",
+            linthresh=EARNINGS_SYMLOG_LINTHRESH,
+            linscale=EARNINGS_SYMLOG_LINSCALE,
+        )
+        set_symlog_ylim(
+            ax,
+            [0.0] + values,
+            clamp_zero=True,
+            min_bottom=0,
+            min_top=EARNINGS_SYMLOG_LINTHRESH,
+        )
+        set_symlog_ticks(ax, EARNINGS_SYMLOG_LINTHRESH, symmetric=False)
+
+    ax_out.legend(handles=[out_bars], labels=["earnings (sat/day) outgoing"])
+    ax_in.legend(handles=[in_bars], labels=["earnings (sat/day) incoming"])
 
 
 PRICE_LEVEL_QUERY = (
@@ -1001,8 +1024,16 @@ def plot_combo(args):
     price_rows = filter_by_time(price_rows, args.from_ts, args.to_ts)
     base_rows = filter_by_time(base_rows, args.from_ts, args.to_ts)
     csv_rows = filter_by_time(csv_rows, args.from_ts, args.to_ts)
-    fig, axes = plt.subplots(6, 1, figsize=(12, 18), sharex=True)
-    ax_baseline, ax_size, ax_balance, ax_price, ax_base, ax_earnings = axes
+    fig, axes = plt.subplots(7, 1, figsize=(12, 21), sharex=True)
+    (
+        ax_baseline,
+        ax_size,
+        ax_balance,
+        ax_price,
+        ax_base,
+        ax_earnings_out,
+        ax_earnings_in,
+    ) = axes
 
     ax_baseline_base = ax_baseline
     ax_baseline_ppm = ax_baseline_base.twinx()
@@ -1022,7 +1053,7 @@ def plot_combo(args):
     ax_base_ppm = ax_base_fee.twinx()
     plot_base_ppm_on(ax_base_fee, ax_base_ppm, base_rows, args.peer_label)
 
-    plot_earnings_on(ax_earnings, earnings_rows, args.peer_label)
+    plot_earnings_split(ax_earnings_out, ax_earnings_in, earnings_rows, args.peer_label)
 
     all_times = []
     extend_times(all_times, baseline_rows)
