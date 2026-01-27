@@ -865,7 +865,7 @@ def plot_earnings_split(ax_out, ax_in, rows, peer):
 
     # Earnings buckets are daily; draw near-full-day bars starting at the bucket
     # boundary to preserve UTC alignment while still visually separating days.
-    bar_width = timedelta(days=0.9)
+    bar_width = timedelta(days=0.8)
     out_bars = ax_out.bar(
         ts,
         outgoing,
