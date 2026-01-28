@@ -21,6 +21,8 @@ private:
 	Jsmn::Parser parser;
 	Jsmn::Object result;
 	bool has_result;
+	bool parse_failed;
+	std::string parse_error;
 
 	std::vector<char> errbuf;
 
@@ -32,6 +34,7 @@ private:
 		for (auto& b : errbuf)
 			b = 0;
 		has_result = false;
+		parse_failed = false;
 		headers = NULL;
 		headers = curl_slist_append(headers
 					   , "Content-Type: application/json"
@@ -63,11 +66,19 @@ private:
 		return ((EasyHandle*)vself)->write_cb(ptr, nmemb);
 	}
 	size_t write_cb(char* ptr, size_t size) {
+		if (parse_failed)
+			return 0;
 		auto str = std::string(ptr, size);
-		auto results = parser.feed(str);
-		if (results.size() > 0 && !has_result) {
-			has_result = true;
-			result = std::move(results[0]);
+		try {
+			auto results = parser.feed(str);
+			if (results.size() > 0 && !has_result) {
+				has_result = true;
+				result = std::move(results[0]);
+			}
+		} catch (std::exception const& e) {
+			parse_failed = true;
+			parse_error = e.what();
+			return 0;
 		}
 		return size;
 	}
@@ -110,6 +121,11 @@ private:
 
 		try {
 			auto ret = curl_easy_perform(curl);
+			if (parse_failed) {
+				throw Boltz::ApiError(std::string("Invalid JSON for ")
+						      + api + ": "
+						      + parse_error);
+			}
 			if (ret != 0) {
 				auto msg = std::string(api)
 					 + ": "
@@ -127,6 +143,10 @@ private:
 				 + ": "
 				 + e.what();
 			throw Boltz::ApiError(msg);
+		}
+		if (!has_result) {
+			throw Boltz::ApiError(std::string("No JSON result for ")
+					      + api);
 		}
 	}
 };
@@ -163,10 +183,16 @@ public:
 							   , api
 							   , pparams
 							   ]() {
-			return EasyHandle::run( proxy
-					      , api_base + api
-					      , std::move(*pparams)
-					      );
+			try {
+				return EasyHandle::run( proxy
+						      , api_base + api
+						      , std::move(*pparams)
+						      );
+			} catch (Boltz::ApiError const&) {
+				throw;
+			} catch (std::exception const& e) {
+				throw Boltz::ApiError(e.what());
+			}
 		});
 	}
 };
