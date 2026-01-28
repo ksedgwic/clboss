@@ -2,6 +2,7 @@
 #include"Ev/Io.hpp"
 #include"Ev/ThreadPool.hpp"
 #include"Jsmn/Object.hpp"
+#include"Jsmn/ParseError.hpp"
 #include"Jsmn/Parser.hpp"
 #include"Json/Out.hpp"
 #include"Util/make_unique.hpp"
@@ -21,6 +22,8 @@ private:
 	Jsmn::Parser parser;
 	Jsmn::Object result;
 	bool has_result;
+	bool parse_failed;
+	std::string parse_error;
 
 	std::vector<char> errbuf;
 
@@ -32,6 +35,7 @@ private:
 		for (auto& b : errbuf)
 			b = 0;
 		has_result = false;
+		parse_failed = false;
 		headers = NULL;
 		headers = curl_slist_append(headers
 					   , "Content-Type: application/json"
@@ -63,11 +67,19 @@ private:
 		return ((EasyHandle*)vself)->write_cb(ptr, nmemb);
 	}
 	size_t write_cb(char* ptr, size_t size) {
+		if (parse_failed)
+			return 0;
 		auto str = std::string(ptr, size);
-		auto results = parser.feed(str);
-		if (results.size() > 0 && !has_result) {
-			has_result = true;
-			result = std::move(results[0]);
+		try {
+			auto results = parser.feed(str);
+			if (results.size() > 0 && !has_result) {
+				has_result = true;
+				result = std::move(results[0]);
+			}
+		} catch (std::exception const& e) {
+			parse_failed = true;
+			parse_error = e.what();
+			return 0;
 		}
 		return size;
 	}
@@ -109,12 +121,19 @@ private:
 		curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1);
 
 		auto ret = curl_easy_perform(curl);
+		if (parse_failed) {
+			throw Boltz::ApiError(std::string("Invalid JSON: ")
+					    + parse_error);
+		}
 		if (ret != 0) {
 			auto msg = std::string(curl_easy_strerror(ret))
 				 + ": "
 				 + std::string(&errbuf[0])
 				 ;
 			throw Boltz::ApiError(msg);
+		}
+		if (!has_result) {
+			throw Boltz::ApiError("No JSON result");
 		}
 	}
 };
@@ -151,10 +170,16 @@ public:
 							   , api
 							   , pparams
 							   ]() {
-			return EasyHandle::run( proxy
-					      , api_base + api
-					      , std::move(*pparams)
-					      );
+			try {
+				return EasyHandle::run( proxy
+						      , api_base + api
+						      , std::move(*pparams)
+						      );
+			} catch (Boltz::ApiError const&) {
+				throw;
+			} catch (std::exception const& e) {
+				throw Boltz::ApiError(e.what());
+			}
 		});
 	}
 };
