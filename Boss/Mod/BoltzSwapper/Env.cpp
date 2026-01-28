@@ -8,6 +8,7 @@
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
 #include"S/Bus.hpp"
+#include"Util/stringify.hpp"
 
 namespace Boss { namespace Mod { namespace BoltzSwapper {
 
@@ -30,9 +31,22 @@ Ev::Io<std::uint32_t> Env::get_feerate() {
 					.start_object()
 						.field("style", "perkw")
 					.end_object()
-		).then([](Jsmn::Object res) {
-			auto rate = res["perkw"]["opening"];
-			return Ev::lift<std::uint32_t>(double(rate));
+		).then([this](Jsmn::Object res) {
+			try {
+				auto rate = res["perkw"]["opening"];
+				return Ev::lift<std::uint32_t>(double(rate));
+			} catch (Jsmn::TypeError const& _) {
+				auto msg = std::string(
+					"BoltzSwapper::Env: unexpected "
+					"feerates response: "
+				) + Util::stringify(res);
+				return Boss::log(bus, Warn, "%s", msg.c_str())
+					.then([]() {
+						return Ev::lift<std::uint32_t>(
+							2000
+						);
+					});
+			}
 		});
 	});
 }
