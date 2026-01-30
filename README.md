@@ -135,6 +135,7 @@ override the CLBOSS default via `CXXFLAGS`, such as:
 
     ./configure CXXFLAGS="-g -O2"  # or whatever flags you like
     ./configure CXXFLAGS="-g -Og"  # recommended for debugging
+    ./configure CXXFLAGS="-O1 -g -fsanitize=address -fno-omit-frame-pointer" LDFLAGS="-fsanitize=address" # useful for debugging heap issues
 
 And if your build machine has more than 1 core, you probably
 want to pass in the `-j` option to `make`, too:
