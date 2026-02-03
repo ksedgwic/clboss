@@ -913,6 +913,55 @@ def plot_earnings_split(ax_out, ax_in, rows, peer):
     ax_in.legend(handles=[in_bars], labels=["earnings (sat/day) incoming"])
 
 
+def plot_earnings_single_on(ax, rows, direction):
+    incoming = direction == "incoming"
+    label = "incoming" if incoming else "outgoing"
+    color = "blue" if incoming else "green"
+    ts = []
+    values = []
+    for t, in_earnings, out_earnings in rows:
+        ts.append(parse_ts(t))
+        value = in_earnings if incoming else out_earnings
+        values.append(value / 1000.0)
+
+    ax.set_ylabel(f"earnings (sat/day) {label}")
+    ax.set_yscale(
+        "symlog",
+        linthresh=EARNINGS_SYMLOG_LINTHRESH,
+        linscale=EARNINGS_SYMLOG_LINSCALE,
+    )
+    if not ts:
+        set_symlog_ylim(
+            ax,
+            [0.0],
+            clamp_zero=True,
+            min_bottom=0,
+            min_top=EARNINGS_SYMLOG_LINTHRESH,
+        )
+        set_symlog_ticks(ax, EARNINGS_SYMLOG_LINTHRESH, symmetric=False)
+        ax.set_title(f"earnings (no data) {label}")
+        return
+
+    bar_width = timedelta(days=0.8)
+    bars = ax.bar(
+        ts,
+        values,
+        width=bar_width,
+        align="edge",
+        color=color,
+        label=f"earnings (sat/day) {label}",
+    )
+    set_symlog_ylim(
+        ax,
+        [0.0] + values,
+        clamp_zero=True,
+        min_bottom=0,
+        min_top=EARNINGS_SYMLOG_LINTHRESH,
+    )
+    set_symlog_ticks(ax, EARNINGS_SYMLOG_LINTHRESH, symmetric=False)
+    ax.legend(handles=[bars], labels=[f"earnings (sat/day) {label}"])
+
+
 PRICE_LEVEL_QUERY = (
     "SELECT f.ts, f.price_level, f.price_mult "
     "FROM fee_change_events f "
@@ -1085,6 +1134,42 @@ def plot_combo(args):
     write_csv(args, csv_rows, "combo")
 
 
+def plot_earnings_single(args, direction, suffix):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+    else:
+        import matplotlib as mpl
+
+        mpl.rcParams["timezone"] = "UTC"
+
+    rows = fetch_earnings_rows(args)
+    csv_rows = fetch_csv_rows(args)
+
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.set_title(args.title)
+    plot_earnings_single_on(ax, rows, direction)
+    ax.set_xlabel("time")
+    fig.tight_layout()
+
+    out_path = get_out_path(args, suffix)
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, csv_rows, suffix)
+
+
+def plot_earnings_incoming(args):
+    plot_earnings_single(args, "incoming", "earnings-incoming")
+
+
+def plot_earnings_outgoing(args):
+    plot_earnings_single(args, "outgoing", "earnings-outgoing")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Plot fee-related time series from clboss fee logs."
@@ -1098,6 +1183,8 @@ def main():
             "baseline",
             "size",
             "balance",
+            "incoming-earnings",
+            "outgoing-earnings",
             "combo",
         ],
         help="Plot view to render.",
@@ -1126,6 +1213,8 @@ def main():
         "baseline": plot_baseline,
         "size": plot_size_mult,
         "balance": plot_balance_mult,
+        "incoming-earnings": plot_earnings_incoming,
+        "outgoing-earnings": plot_earnings_outgoing,
         "combo": plot_combo,
     }
     view_map[args.view](args)
