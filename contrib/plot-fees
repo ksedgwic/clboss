@@ -317,6 +317,13 @@ def add_common_args(parser):
         help="Show the plot interactively.",
     )
     parser.add_argument(
+        "--title",
+        nargs="?",
+        const="",
+        default=None,
+        help="Plot title (defaults to peer label; pass empty to omit).",
+    )
+    parser.add_argument(
         "--since",
         dest="from_ts",
         default=None,
@@ -574,7 +581,7 @@ def plot_single_view(
     fig, primary_ax, plot_axes = axes_factory(plt)
     plotter(*plot_axes, rows, args.peer_label)
     primary_ax.set_xlabel("time")
-    primary_ax.set_title(args.peer_label)
+    primary_ax.set_title(args.title)
 
     if use_plt_tight_layout:
         plt.tight_layout()
@@ -1065,7 +1072,7 @@ def plot_combo(args):
     if all_times:
         ax_baseline.set_xlim(min(all_times), max(all_times))
 
-    fig.suptitle(args.peer_label)
+    fig.suptitle(args.title)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.subplots_adjust(hspace=0.15)
 
@@ -1108,6 +1115,7 @@ def main():
     args.from_ts = parse_time_arg(args.from_ts)
     args.to_ts = parse_time_arg(args.to_ts)
     args.peer, args.peer_label = resolve_peer(args)
+    args.title = args.peer_label if args.title is None else args.title
 
     if not args.png and not args.show and not args.csv:
         raise SystemExit("use --png to save, --show to display, or --csv to export")
