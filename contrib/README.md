@@ -81,8 +81,9 @@ how many days of earnings history are considered when ranking channels.
   output. `--peer` accepts a nodeid, alias (via lightning-cli/listnodes), or
   SCID (via lightning-cli/listpeerchannels). The combo view includes a daily
   earnings panel (incoming/outgoing msat per day) when lightning-cli is
-  available. Use `--title` to override the plot title (defaults to the peer
-  label; pass empty to omit).
+  available, and the `incoming-earnings`/`outgoing-earnings` views render
+  those panels on their own. Use `--title` to override the plot title
+  (defaults to the peer label; pass empty to omit).
 - **`plot-aggregate`** plots aggregate percentile summaries from the
   `fee-log-parser` sqlite output. Views include
   `baseline-base`, `baseline-ppm`, `size`, `balance`, `theory`,
