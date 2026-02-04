@@ -243,9 +243,9 @@ private:
 				  , mult
 				  , os.str().c_str()
 				  );
-		co_await bus.raise(Msg::MonitorFeeByTheory{
-			node, price, mult, cards_left
-		});
+		// Don't use aggregate temporaries in a `co_await`, see docs/COROUTINE.md
+		Msg::MonitorFeeByTheory msg{node, price, mult, cards_left};
+		co_await bus.raise(std::move(msg));
 		co_return mult;
 	}
 
