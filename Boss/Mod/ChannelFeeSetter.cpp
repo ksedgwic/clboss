@@ -78,11 +78,9 @@ Ev::Io<void> ChannelFeeSetter::set(Msg::SetChannelFee const& m) {
 	try {
 		co_await rpc->command(have_setchannel ? "setchannel" : "setchannelfee"
 				    , std::move(parms));
-		co_await bus.raise(Msg::MonitorFeeSetChannel{
-			m.node,
-			m.base,
-			m.proportional
-		});
+		// Don't use aggregate temporaries in a `co_await`, see docs/COROUTINE.md
+		Msg::MonitorFeeSetChannel msg{m.node, m.base, m.proportional};
+		co_await bus.raise(std::move(msg));
 	} catch (RpcError const&) {
 		/* Ignore errors - there is race condition between
 		 * when we think we still have a peer, and that
