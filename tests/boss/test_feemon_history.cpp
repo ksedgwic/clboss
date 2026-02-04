@@ -65,23 +65,31 @@ Ev::Io<int> run() {
 		return Ev::yield();
 	});
 
-	co_await bus.raise(Boss::Msg::DbResource{db});
-	co_await bus.raise(Boss::Msg::PeerMedianChannelFee{A, 10, 100});
-	co_await bus.raise(Boss::Msg::MonitorFeeBySize{A, 10, 3, 1.1});
-	co_await bus.raise(Boss::Msg::MonitorFeeByBalance{A, 1.2, 1000, 2000});
-	co_await bus.raise(Boss::Msg::MonitorFeeByTheory{A, 5, 1.3});
-	co_await bus.raise(Boss::Msg::MonitorFeeSetChannel{A, 1000, 10});
-	co_await bus.raise(Boss::Msg::MonitorFeeSetChannel{B, 3000, 30});
+	auto msg_db = Boss::Msg::DbResource{db};
+	co_await bus.raise(std::move(msg_db));
+	auto msg_peer_median = Boss::Msg::PeerMedianChannelFee{A, 10, 100};
+	co_await bus.raise(std::move(msg_peer_median));
+	auto msg_fee_size = Boss::Msg::MonitorFeeBySize{A, 10, 3, 1.1};
+	co_await bus.raise(std::move(msg_fee_size));
+	auto msg_fee_balance = Boss::Msg::MonitorFeeByBalance{A, 1.2, 1000, 2000};
+	co_await bus.raise(std::move(msg_fee_balance));
+	auto msg_fee_theory = Boss::Msg::MonitorFeeByTheory{A, 5, 1.3};
+	co_await bus.raise(std::move(msg_fee_theory));
+	auto msg_set_a = Boss::Msg::MonitorFeeSetChannel{A, 1000, 10};
+	co_await bus.raise(std::move(msg_set_a));
+	auto msg_set_b = Boss::Msg::MonitorFeeSetChannel{B, 3000, 30};
+	co_await bus.raise(std::move(msg_set_b));
 
 	++req_id;
 	rsp = false;
-	co_await bus.raise(Boss::Msg::CommandRequest{
-			"clboss-feemon-history",
-			Jsmn::Object::parse_json(
-				"{\"nodeid\":\"020000000000000000000000000000000000000000000000000000000000000001\"}"
-			),
-			Ln::CommandId::left(req_id)
-		});
+	auto req_initial = Boss::Msg::CommandRequest{
+		"clboss-feemon-history",
+		Jsmn::Object::parse_json(
+			"{\"nodeid\":\"020000000000000000000000000000000000000000000000000000000000000001\"}"
+		),
+		Ln::CommandId::left(req_id)
+	};
+	co_await bus.raise(std::move(req_initial));
 	assert(rsp);
 	assert(last_rsp.id == Ln::CommandId::left(req_id));
 	auto result = Jsmn::Object::parse_json(
@@ -93,16 +101,17 @@ Ev::Io<int> run() {
 
 	++req_id;
 	rsp = false;
-	co_await bus.raise(Boss::Msg::CommandRequest{
-			"clboss-feemon-history",
-			Jsmn::Object::parse_json(
-				make_since_query(
-					"020000000000000000000000000000000000000000000000000000000000000001",
-					far_past
-				).c_str()
-			),
-			Ln::CommandId::left(req_id)
-		});
+	auto req_since_past = Boss::Msg::CommandRequest{
+		"clboss-feemon-history",
+		Jsmn::Object::parse_json(
+			make_since_query(
+				"020000000000000000000000000000000000000000000000000000000000000001",
+				far_past
+			).c_str()
+		),
+		Ln::CommandId::left(req_id)
+	};
+	co_await bus.raise(std::move(req_since_past));
 	assert(rsp);
 	assert(last_rsp.id == Ln::CommandId::left(req_id));
 	result = Jsmn::Object::parse_json(
@@ -113,16 +122,17 @@ Ev::Io<int> run() {
 
 	++req_id;
 	rsp = false;
-	co_await bus.raise(Boss::Msg::CommandRequest{
-			"clboss-feemon-history",
-			Jsmn::Object::parse_json(
-				make_before_query(
-					"020000000000000000000000000000000000000000000000000000000000000001",
-					far_past
-				).c_str()
-			),
-			Ln::CommandId::left(req_id)
-		});
+	auto req_before_past = Boss::Msg::CommandRequest{
+		"clboss-feemon-history",
+		Jsmn::Object::parse_json(
+			make_before_query(
+				"020000000000000000000000000000000000000000000000000000000000000001",
+				far_past
+			).c_str()
+		),
+		Ln::CommandId::left(req_id)
+	};
+	co_await bus.raise(std::move(req_before_past));
 	assert(rsp);
 	assert(last_rsp.id == Ln::CommandId::left(req_id));
 	result = Jsmn::Object::parse_json(
@@ -132,16 +142,17 @@ Ev::Io<int> run() {
 
 	++req_id;
 	rsp = false;
-	co_await bus.raise(Boss::Msg::CommandRequest{
-			"clboss-feemon-history",
-			Jsmn::Object::parse_json(
-				make_since_query(
-					"020000000000000000000000000000000000000000000000000000000000000001",
-					far_future
-				).c_str()
-			),
-			Ln::CommandId::left(req_id)
-		});
+	auto req_since_future = Boss::Msg::CommandRequest{
+		"clboss-feemon-history",
+		Jsmn::Object::parse_json(
+			make_since_query(
+				"020000000000000000000000000000000000000000000000000000000000000001",
+				far_future
+			).c_str()
+		),
+		Ln::CommandId::left(req_id)
+	};
+	co_await bus.raise(std::move(req_since_future));
 	assert(rsp);
 	assert(last_rsp.id == Ln::CommandId::left(req_id));
 	result = Jsmn::Object::parse_json(
@@ -151,16 +162,17 @@ Ev::Io<int> run() {
 
 	++req_id;
 	rsp = false;
-	co_await bus.raise(Boss::Msg::CommandRequest{
-			"clboss-feemon-history",
-			Jsmn::Object::parse_json(
-				make_before_query(
-					"020000000000000000000000000000000000000000000000000000000000000001",
-					far_future
-				).c_str()
-			),
-			Ln::CommandId::left(req_id)
-		});
+	auto req_before_future = Boss::Msg::CommandRequest{
+		"clboss-feemon-history",
+		Jsmn::Object::parse_json(
+			make_before_query(
+				"020000000000000000000000000000000000000000000000000000000000000001",
+				far_future
+			).c_str()
+		),
+		Ln::CommandId::left(req_id)
+	};
+	co_await bus.raise(std::move(req_before_future));
 	assert(rsp);
 	assert(last_rsp.id == Ln::CommandId::left(req_id));
 	result = Jsmn::Object::parse_json(
@@ -171,13 +183,14 @@ Ev::Io<int> run() {
 
 	++req_id;
 	rsp = false;
-	co_await bus.raise(Boss::Msg::CommandRequest{
-			"clboss-feemon-history",
-			Jsmn::Object::parse_json(
-				"{\"nodeid\":\"020000000000000000000000000000000000000000000000000000000000000002\"}"
-			),
-			Ln::CommandId::left(req_id)
-		});
+	auto req_node_b = Boss::Msg::CommandRequest{
+		"clboss-feemon-history",
+		Jsmn::Object::parse_json(
+			"{\"nodeid\":\"020000000000000000000000000000000000000000000000000000000000000002\"}"
+		),
+		Ln::CommandId::left(req_id)
+	};
+	co_await bus.raise(std::move(req_node_b));
 	assert(rsp);
 	assert(last_rsp.id == Ln::CommandId::left(req_id));
 	result = Jsmn::Object::parse_json(
@@ -188,13 +201,14 @@ Ev::Io<int> run() {
 
 	++req_id;
 	rsp = false;
-	co_await bus.raise(Boss::Msg::CommandRequest{
-			"clboss-feemon-history",
-			Jsmn::Object::parse_json(
-				"{\"nodeid\":\"020000000000000000000000000000000000000000000000000000000000000003\"}"
-			),
-			Ln::CommandId::left(req_id)
-		});
+	auto req_node_c = Boss::Msg::CommandRequest{
+		"clboss-feemon-history",
+		Jsmn::Object::parse_json(
+			"{\"nodeid\":\"020000000000000000000000000000000000000000000000000000000000000003\"}"
+		),
+		Ln::CommandId::left(req_id)
+	};
+	co_await bus.raise(std::move(req_node_c));
 	assert(rsp);
 	assert(last_rsp.id == Ln::CommandId::left(req_id));
 	result = Jsmn::Object::parse_json(

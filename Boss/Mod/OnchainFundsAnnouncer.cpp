@@ -96,7 +96,9 @@ Ev::Io<void> OnchainFundsAnnouncer::announce() {
 				    "onchain."
 				  , std::string(amount).c_str()
 				  );
-		co_await bus.raise(Msg::OnchainFunds{amount});
+		// Don't use aggregate temporaries in a `co_await`, see docs/COROUTINE.md
+		Msg::OnchainFunds msg{amount};
+		co_await bus.raise(std::move(msg));
 	} catch (RpcError const&) {
 		no_onchain_funds = true;
 	}
