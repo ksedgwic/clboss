@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import math
+import os
+import sqlite3
+
+
+SECONDS_PER_DAY = 24 * 60 * 60
+
+
+def load_earnings_filter(path, min_abs_net_msat):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    history = data.get("history", [])
+    if not isinstance(history, list):
+        raise ValueError("earnings history JSON missing 'history' array")
+    active = set()
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        bucket_time = entry.get("bucket_time")
+        node = entry.get("node")
+        if not bucket_time or bucket_time <= 0 or not node:
+            continue
+        in_earnings = entry.get("in_earnings", 0)
+        out_earnings = entry.get("out_earnings", 0)
+        in_expenditures = entry.get("in_expenditures", 0)
+        out_expenditures = entry.get("out_expenditures", 0)
+        net = (in_earnings + out_earnings) - (in_expenditures + out_expenditures)
+        if abs(net) >= min_abs_net_msat:
+            active.add((int(bucket_time), node))
+    return active
+
+
+def fetch_points(db_path, min_age_days, earnings_filter):
+    min_age_seconds = min_age_days * SECONDS_PER_DAY
+    query = """
+        WITH firsts AS (
+            SELECT peer_id, MIN(ts) AS first_ts
+            FROM fee_change_events
+            GROUP BY peer_id
+        )
+        SELECT f.ts, p.node_id, f.size_less_peers, f.size_total_peers, f.price_level
+        FROM fee_change_events f
+        JOIN peers p ON p.id = f.peer_id
+        JOIN firsts ON firsts.peer_id = f.peer_id
+        WHERE f.size_less_peers IS NOT NULL
+          AND f.size_total_peers IS NOT NULL
+          AND f.price_level IS NOT NULL
+          AND f.ts >= firsts.first_ts + :min_age
+    """
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(query, {"min_age": min_age_seconds}).fetchall()
+    if not earnings_filter:
+        return rows
+    filtered = []
+    for ts, node_id, less_peers, total_peers, price_level in rows:
+        bucket = int(math.floor(ts / SECONDS_PER_DAY) * SECONDS_PER_DAY)
+        if (bucket, node_id) not in earnings_filter:
+            continue
+        filtered.append((ts, node_id, less_peers, total_peers, price_level))
+    return filtered
+
+
+def pearson_correlation(xs, ys):
+    n = len(xs)
+    if n < 2:
+        return None
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    cov = 0.0
+    var_x = 0.0
+    var_y = 0.0
+    for x, y in zip(xs, ys):
+        dx = x - mean_x
+        dy = y - mean_y
+        cov += dx * dy
+        var_x += dx * dx
+        var_y += dy * dy
+    if var_x <= 0 or var_y <= 0:
+        return None
+    return cov / math.sqrt(var_x * var_y)
+
+
+def linear_fit(xs, ys):
+    n = len(xs)
+    if n < 2:
+        return None
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    denom = 0.0
+    numer = 0.0
+    for x, y in zip(xs, ys):
+        dx = x - mean_x
+        numer += dx * (y - mean_y)
+        denom += dx * dx
+    if denom == 0:
+        return None
+    slope = numer / denom
+    intercept = mean_y - slope * mean_x
+    return slope, intercept
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Scatter plot of size_mult vs price_mult."
+    )
+    parser.add_argument(
+        "--db",
+        default=os.path.expanduser("./clboss-fee-info.sqlite3"),
+        help="Path to sqlite database.",
+    )
+    parser.add_argument(
+        "--min-age-days",
+        type=int,
+        default=60,
+        help="Minimum age in days since a peer's first data point.",
+    )
+    parser.add_argument(
+        "--earnings-json",
+        help="Path to clboss-earnings-history all JSON output.",
+    )
+    parser.add_argument(
+        "--min-abs-net-msat",
+        type=int,
+        default=None,
+        help=(
+            "Minimum absolute daily net earnings (msat) for a point to count. "
+            "Requires --earnings-json; omit to skip earnings filtering."
+        ),
+    )
+    parser.add_argument(
+        "--png",
+        nargs="?",
+        const="__DEFAULT__",
+        default=None,
+        help="Output image path.",
+    )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Show the plot interactively.",
+    )
+
+    args = parser.parse_args()
+
+    if not args.png and not args.show:
+        raise SystemExit("use --png to save or --show to display")
+
+    earnings_filter = None
+    if args.min_abs_net_msat is not None:
+        if not args.earnings_json:
+            raise SystemExit("--min-abs-net-msat requires --earnings-json")
+        earnings_filter = load_earnings_filter(
+            args.earnings_json,
+            args.min_abs_net_msat,
+        )
+        if not earnings_filter:
+            raise SystemExit(
+                "no earnings entries meeting "
+                f"|net| >= {args.min_abs_net_msat} msat"
+            )
+
+    points = fetch_points(args.db, args.min_age_days, earnings_filter)
+    if not points:
+        raise SystemExit("no size/price data found for the selected age window")
+
+    xs = []
+    ys = []
+    for _, _, less_peers, total_peers, price_level in points:
+        if total_peers <= 0 or less_peers < 0:
+            continue
+        if less_peers > total_peers:
+            continue
+        xs.append(less_peers / total_peers)
+        ys.append(price_level)
+    if not xs:
+        raise SystemExit("no valid size/price points after filtering")
+    corr = pearson_correlation(xs, ys)
+    fit = linear_fit(xs, ys)
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(xs, ys, s=8, alpha=0.3, linewidths=0)
+    ax.set_xlabel("size_ratio")
+    ax.set_ylabel("theory_level")
+
+    title = f"size_ratio vs theory_level (>= {args.min_age_days} days)"
+    if earnings_filter is not None:
+        title += f", |net| >= {args.min_abs_net_msat} msat"
+    if corr is not None:
+        title += f"  r={corr:.3f}"
+    ax.set_title(title)
+
+    if fit is not None:
+        slope, intercept = fit
+        y0 = intercept
+        y1 = slope + intercept
+        ax.plot([0.0, 1.0], [y0, y1], color="black", linewidth=1.2)
+        ax.annotate(
+            f"{y0:.2f}",
+            xy=(0.0, y0),
+            xytext=(6, 4),
+            textcoords="offset points",
+            ha="left",
+            va="bottom",
+        )
+        ax.annotate(
+            f"{y1:.2f}",
+            xy=(1.0, y1),
+            xytext=(-6, 4),
+            textcoords="offset points",
+            ha="right",
+            va="bottom",
+        )
+
+    fig.tight_layout()
+
+    if args.png:
+        out_path = args.png
+        if out_path == "__DEFAULT__":
+            out_path = "size-price.png"
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+
+
+if __name__ == "__main__":
+    main()
