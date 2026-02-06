@@ -81,6 +81,16 @@ how many days of earnings history are considered when ranking channels.
   `feemon_peers` and `feemon_change_events`) during normal operation.
 - **`clboss-feemon-history`** is a CLBOSS command that returns per-peer fee modifier
   history between optional `since`/`before` timestamps.
+- **`feemon-validate`** compares `fee-log-parser` sqlite history against
+  `clboss-feemon-history` per peer over a requested time window. It reports
+  per-peer progress, prints full-record diagnostics for mismatches, and exits
+  non-zero when discrepancies are found. Default external DB path is
+  `./clboss-fee-info.sqlite3` and default timestamp tolerance is 3 seconds.
+  Default float tolerance is `1e-5` and is scaled by value magnitude
+  (`tol * max(1, |a|, |b|)`) to avoid false mismatches from JSON float
+  rendering precision (notably `mult_product`).
+  `--since`/`--before` accept Unix epoch seconds in addition to the existing
+  human-readable time formats.
 - **`plot-fees`** plots fee-related time series from the `fee-log-parser` sqlite
   output. `--peer` accepts a nodeid, alias (via lightning-cli/listnodes), or
   SCID (via lightning-cli/listpeerchannels). The combo view includes a daily
