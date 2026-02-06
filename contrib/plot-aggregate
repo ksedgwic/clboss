@@ -1,0 +1,1121 @@
+#!/usr/bin/env python3
+import argparse
+import csv
+import json
+import math
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+
+BUCKET_SECONDS = 24 * 60 * 60
+EARNINGS_SYMLOG_LINTHRESH = 1.0
+EARNINGS_SYMLOG_LINSCALE = 0.3
+FEE_SYMLOG_LINTHRESH = 1.0
+FEE_SYMLOG_LINSCALE = 0.3
+
+
+def local_tz():
+    return datetime.now().astimezone().tzinfo
+
+
+def normalize_dt(dt):
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=local_tz())
+    return dt.astimezone(timezone.utc)
+
+
+def parse_ts_iso(ts):
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    return normalize_dt(datetime.fromisoformat(ts))
+
+
+def parse_ts_epoch(ts):
+    if isinstance(ts, (int, float)):
+        return datetime.fromtimestamp(ts, timezone.utc)
+    try:
+        return datetime.fromtimestamp(float(ts), timezone.utc)
+    except (TypeError, ValueError):
+        return parse_ts_iso(ts)
+
+
+def parse_ts(ts):
+    return parse_ts_epoch(ts)
+
+
+def parse_time_arg(value):
+    if value is None:
+        return None
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    if re.match(r"^[0-9]{4}-[0-9]{2}$", value):
+        return normalize_dt(datetime.fromisoformat(f"{value}-01T00:00:00"))
+    if re.match(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$", value):
+        return normalize_dt(datetime.fromisoformat(f"{value}T00:00:00"))
+    rel = re.match(r"^([+-]?)(\d+)([smhdw])$", value)
+    if rel:
+        sign, num_s, unit = rel.groups()
+        num = int(num_s)
+        delta = {
+            "s": timedelta(seconds=num),
+            "m": timedelta(minutes=num),
+            "h": timedelta(hours=num),
+            "d": timedelta(days=num),
+            "w": timedelta(weeks=num),
+        }[unit]
+        if sign == "-":
+            delta = -delta
+        return normalize_dt(datetime.now() + delta)
+    if value.count(":") in (1, 2) and "T" not in value and "-" not in value:
+        today = datetime.now().date().isoformat()
+        return normalize_dt(datetime.fromisoformat(f"{today}T{value}"))
+    return normalize_dt(datetime.fromisoformat(value))
+
+
+def price_level_to_mult(level):
+    try:
+        import numpy as np
+    except ImportError:
+        if isinstance(level, (int, float)):
+            if level < 0:
+                return math.pow(0.8, -level)
+            if level > 0:
+                return math.pow(1.2, level)
+            return 1.0
+        return [price_level_to_mult(v) for v in level]
+
+    arr = np.asarray(level, dtype=float)
+    mult = np.where(
+        arr < 0,
+        np.power(0.8, -arr),
+        np.where(arr > 0, np.power(1.2, arr), 1.0),
+    )
+    if np.isscalar(level):
+        return float(mult)
+    return mult
+
+
+def price_mult_to_level(mult):
+    try:
+        import numpy as np
+    except ImportError:
+        if isinstance(mult, (int, float)):
+            if mult < 1:
+                return -math.log(mult) / math.log(0.8)
+            if mult > 1:
+                return math.log(mult) / math.log(1.2)
+            return 0.0
+        return [price_mult_to_level(v) for v in mult]
+
+    arr = np.asarray(mult, dtype=float)
+    level = np.zeros_like(arr, dtype=float)
+    lt_one = (arr > 0) & (arr < 1)
+    gt_one = arr > 1
+    if np.any(lt_one):
+        level[lt_one] = -np.log(arr[lt_one]) / np.log(0.8)
+    if np.any(gt_one):
+        level[gt_one] = np.log(arr[gt_one]) / np.log(1.2)
+    if np.isscalar(mult):
+        return float(level)
+    return level
+
+
+def format_mult_tick(value):
+    if value == 0:
+        return "0"
+    if value < 1:
+        nice_values = [
+            (0.5, "0.5"),
+            (0.2, "0.2"),
+            (0.1, "0.10"),
+            (0.05, "0.05"),
+            (0.02, "0.02"),
+            (0.01, "0.01"),
+        ]
+        for target, label in nice_values:
+            if abs(value - target) / target <= 0.08:
+                return label
+    abs_val = abs(value)
+    for decimals in (0, 1, 2):
+        rounded = round(value, decimals)
+        if rounded != 0 and abs(value - rounded) / abs_val < 0.01:
+            if decimals == 0:
+                return str(int(round(rounded)))
+            text = f"{rounded:.{decimals}f}"
+            return text.rstrip("0").rstrip(".")
+    return f"{value:.3g}"
+
+
+def nice_mult_ticks(vmin, vmax):
+    if vmin <= 0 or vmax <= 0:
+        return []
+    if vmin > vmax:
+        vmin, vmax = vmax, vmin
+    exp_min = int(math.floor(math.log10(vmin)))
+    exp_max = int(math.ceil(math.log10(vmax)))
+    mantissas = [1, 2, 5]
+    ticks = []
+    for exp in range(exp_min, exp_max + 1):
+        base = 10 ** exp
+        for m in mantissas:
+            value = m * base
+            if vmin <= value <= vmax:
+                ticks.append(value)
+    if not ticks:
+        if vmin == vmax:
+            return [vmin]
+        return [vmin, vmax]
+    return ticks
+
+
+def set_log_ylim(ax, values, pad_frac=0.2, min_floor=0.9, min_top=10):
+    if not values:
+        return
+    max_val = max(values)
+    if max_val < min_floor:
+        max_val = min_floor
+    top = max(max_val * (1.0 + pad_frac), min_top)
+    bottom = min_floor
+    ax.set_ylim(bottom=bottom, top=top)
+
+
+def set_log_decade_ticks(ax):
+    ymin, ymax = ax.get_ylim()
+    if ymin <= 0 or ymax <= 0:
+        return
+    exp_min = int(math.floor(math.log10(ymin)))
+    exp_max = int(math.ceil(math.log10(ymax)))
+    ticks = [10 ** e for e in range(exp_min, exp_max + 1) if 10 ** e >= 1]
+    labels = [str(int(t)) for t in ticks]
+    ax.set_yticks(ticks)
+    ax.set_yticklabels(labels)
+
+
+def set_log_ylim_with_floor(ax, values, floor, min_top, pad_frac=0.05):
+    if not values:
+        return
+    max_val = max(values)
+    top = max(max_val * (1.0 + pad_frac), min_top)
+    bottom = floor / (1.0 + pad_frac)
+    ax.set_ylim(bottom=bottom, top=top)
+
+
+def set_linear_ylim(ax, values, pad_frac=0.1, min_pad=1.0):
+    if not values:
+        return
+    vmin = min(values)
+    vmax = max(values)
+    if vmin == vmax:
+        pad = max(abs(vmin) * pad_frac, min_pad)
+    else:
+        pad = (vmax - vmin) * pad_frac
+    ax.set_ylim(bottom=vmin - pad, top=vmax + pad)
+
+
+def set_symlog_ylim(ax, values, clamp_zero=False, pad_frac=0.1, min_pad=1.0):
+    if not values:
+        return
+    vmin = min(values)
+    vmax = max(values)
+    if vmin == vmax:
+        pad = max(abs(vmin) * pad_frac, min_pad)
+    else:
+        pad = (vmax - vmin) * pad_frac
+    bottom = vmin - pad
+    top = vmax + pad
+    if clamp_zero and bottom < 0:
+        bottom = 0
+    ax.set_ylim(bottom=bottom, top=top)
+
+
+def set_symlog_ticks(ax, linthresh, symmetric=True):
+    ymin, ymax = ax.get_ylim()
+    max_abs = max(abs(ymin), abs(ymax))
+    if max_abs <= 0:
+        ax.set_yticks([0])
+        ax.set_yticklabels(["0"])
+        return
+    max_exp = int(math.floor(math.log10(max_abs)))
+    ticks = [0.0]
+    for exp in range(0, max_exp + 1):
+        tick = 10 ** exp
+        if tick < linthresh or tick > max_abs:
+            continue
+        if symmetric:
+            ticks.extend([-tick, tick])
+        else:
+            ticks.append(tick)
+    ticks = sorted(set(ticks))
+    labels = []
+    for tick in ticks:
+        if tick == 0:
+            labels.append("0")
+        else:
+            labels.append(str(int(tick)))
+    ax.set_yticks(ticks)
+    ax.set_yticklabels(labels)
+
+
+def percentile_from_sorted(values, q):
+    if not values:
+        return None
+    if q <= 0:
+        return values[0]
+    if q >= 1:
+        return values[-1]
+    pos = q * (len(values) - 1)
+    low = int(math.floor(pos))
+    high = int(math.ceil(pos))
+    if low == high:
+        return values[low]
+    weight = pos - low
+    return values[low] + (values[high] - values[low]) * weight
+
+
+def add_common_args(parser):
+    parser.add_argument(
+        "--db",
+        default=os.path.expanduser("./clboss-fee-info.sqlite3"),
+        help="Path to sqlite database.",
+    )
+    parser.add_argument(
+        "--png",
+        nargs="?",
+        const="__DEFAULT__",
+        default=None,
+        help="Output image path.",
+    )
+    parser.add_argument(
+        "--csv",
+        nargs="?",
+        const="__DEFAULT__",
+        default=None,
+        help="Output CSV path.",
+    )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Show the plot interactively.",
+    )
+    parser.add_argument(
+        "--since",
+        dest="from_ts",
+        default=None,
+        help="Start time (ISO-8601 or HH:MM[:SS]).",
+    )
+    parser.add_argument(
+        "--before",
+        dest="to_ts",
+        default=None,
+        help="End time (ISO-8601 or HH:MM[:SS]).",
+    )
+
+
+def add_lightning_args(parser):
+    parser.add_argument("--mainnet", action="store_true", help="Run on mainnet")
+    parser.add_argument("--testnet", action="store_true", help="Run on testnet")
+    parser.add_argument("--signet", action="store_true", help="Run on signet")
+    parser.add_argument("--regtest", action="store_true", help="Run on regtest")
+    parser.add_argument("--network", help="Set the network explicitly")
+    parser.add_argument("--lightning-dir", help="lightning data location")
+
+
+def resolve_network_option(args):
+    if args.network:
+        return f"--network={args.network}"
+    if args.testnet:
+        return "--network=testnet"
+    if args.signet:
+        return "--network=signet"
+    if args.regtest:
+        return "--network=regtest"
+    return "--network=bitcoin"
+
+
+def resolve_lightning_dir(args):
+    if args.lightning_dir:
+        if not os.path.isdir(args.lightning_dir):
+            raise ValueError(f'"{args.lightning_dir}" is not a valid directory')
+        return args.lightning_dir
+    return None
+
+
+def run_lightning_cli_command(lightning_dir, network_option, subcommand, *args):
+    try:
+        command = ["lightning-cli", network_option, subcommand, *args]
+        if lightning_dir:
+            command = command[:2] \
+                + [f"--lightning-dir={lightning_dir}"] \
+                + command[2:]
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        return json.loads(result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(f"Command '{command}' failed with error: {e}", file=sys.stderr)
+    except FileNotFoundError:
+        print("lightning-cli not found in PATH.", file=sys.stderr)
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse JSON from command '{command}': {e}", file=sys.stderr)
+    return None
+
+
+def get_out_path(args, suffix):
+    if args.png is None:
+        return None
+    if args.png == "__DEFAULT__":
+        return f"aggregate-{suffix}.png"
+    return args.png
+
+
+def get_csv_path(args, suffix):
+    if args.csv is None:
+        return None
+    if args.csv == "__DEFAULT__":
+        return f"aggregate-{suffix}.csv"
+    return args.csv
+
+
+def write_csv(args, rows, suffix):
+    path = get_csv_path(args, suffix)
+    if not path:
+        return
+    headers = [
+        "bucket_time",
+        "p00",
+        "p10",
+        "p25",
+        "p50",
+        "p75",
+        "p90",
+        "p100",
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        writer.writerows(rows)
+
+
+def fetch_field_values(db, from_ts, to_ts, field):
+    query = (
+        f"SELECT f.ts, f.{field}, p.node_id "
+        "FROM fee_change_events f "
+        "JOIN peers p ON p.id = f.peer_id "
+        f"WHERE f.{field} IS NOT NULL"
+    )
+    params = []
+    if from_ts:
+        query += " AND f.ts >= ?"
+        params.append(from_ts.timestamp())
+    if to_ts:
+        query += " AND f.ts <= ?"
+        params.append(to_ts.timestamp())
+    query += " ORDER BY f.ts"
+
+    with sqlite3.connect(db) as conn:
+        return conn.execute(query, params).fetchall()
+
+
+def bucket_latest_by_node(rows):
+    buckets = {}
+    for ts, value, node_id in rows:
+        bucket = math.floor(ts / BUCKET_SECONDS) * BUCKET_SECONDS
+        bucket_nodes = buckets.setdefault(bucket, {})
+        # Keep the latest value per node in each bucket.
+        bucket_nodes[node_id] = value
+    return buckets
+
+
+def compute_percentile_series(buckets, percentiles):
+    series = []
+    for bucket in sorted(buckets):
+        values = sorted(buckets[bucket].values())
+        if not values:
+            continue
+        row = [bucket]
+        for q in percentiles:
+            row.append(percentile_from_sorted(values, q))
+        series.append(row)
+    return series
+
+
+def get_percentile_series(db, from_ts, to_ts, field):
+    rows = fetch_field_values(db, from_ts, to_ts, field)
+    buckets = bucket_latest_by_node(rows)
+    percentiles = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
+    labels = ["p00", "p10", "p25", "p50", "p75", "p90", "p100"]
+    series = compute_percentile_series(buckets, percentiles)
+    return series, percentiles, labels
+
+
+def filter_earnings_history(history, from_ts, to_ts):
+    filtered = []
+    for entry in history:
+        bucket_time = entry.get("bucket_time")
+        if not bucket_time or bucket_time <= 0:
+            continue
+        ts = parse_ts_epoch(bucket_time)
+        if from_ts and ts < from_ts:
+            continue
+        if to_ts and ts > to_ts:
+            continue
+        filtered.append(entry)
+    return filtered
+
+
+def fetch_earnings_history(args):
+    if shutil.which("lightning-cli") is None:
+        print("warning: lightning-cli not found; skipping earnings data", file=sys.stderr)
+        return []
+
+    network_option = resolve_network_option(args)
+    lightning_dir = resolve_lightning_dir(args)
+    data = run_lightning_cli_command(
+        lightning_dir, network_option, "clboss-earnings-history", "all"
+    )
+    if not data or "history" not in data:
+        print("warning: earnings data unavailable; skipping earnings data", file=sys.stderr)
+        return []
+    return data["history"]
+
+
+def get_earnings_percentile_series(args):
+    percentiles = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
+    labels = ["p00", "p10", "p25", "p50", "p75", "p90", "p100"]
+
+    history = fetch_earnings_history(args)
+    if not history:
+        return [], percentiles, labels
+    if "node" not in history[0]:
+        print(
+            "warning: clboss-earnings-history did not return per-node entries; "
+            "update clboss to use nodeid=all",
+            file=sys.stderr,
+        )
+        return [], percentiles, labels
+    history = filter_earnings_history(history, args.from_ts, args.to_ts)
+    if not history:
+        return [], percentiles, labels
+
+    buckets = {}
+    nodes = set()
+    for entry in history:
+        bucket_time = entry.get("bucket_time")
+        node = entry.get("node")
+        if not bucket_time or not node:
+            continue
+        in_earnings = entry.get("in_earnings", 0)
+        out_earnings = entry.get("out_earnings", 0)
+        in_expenditures = entry.get("in_expenditures", 0)
+        out_expenditures = entry.get("out_expenditures", 0)
+        net_msat = (in_earnings + out_earnings) - (in_expenditures + out_expenditures)
+        buckets.setdefault(bucket_time, {})[node] = net_msat
+        nodes.add(node)
+
+    if not buckets or not nodes:
+        return [], percentiles, labels
+
+    nodes = sorted(nodes)
+    series = []
+    for bucket in sorted(buckets):
+        values = []
+        bucket_nodes = buckets[bucket]
+        for node in nodes:
+            values.append(bucket_nodes.get(node, 0) / 1000.0)
+        values.sort()
+        row = [bucket]
+        for q in percentiles:
+            row.append(percentile_from_sorted(values, q))
+        series.append(row)
+
+    return series, percentiles, labels
+
+
+def split_percentile_series(series, percentiles):
+    ts = [parse_ts_epoch(row[0]) for row in series]
+    percentile_series = []
+    for idx in range(1, len(percentiles) + 1):
+        percentile_series.append([row[idx] for row in series])
+    return ts, percentile_series
+
+
+def adjust_log_series(percentile_series, floor=1):
+    adjusted = []
+    all_values = []
+    for series in percentile_series:
+        converted = [value if value > floor else floor for value in series]
+        adjusted.append(converted)
+        all_values.extend(converted)
+    return adjusted, all_values
+
+
+def add_percentile_lines(ax, ts, percentile_series, labels):
+    lines = []
+    for label, values in zip(labels, percentile_series):
+        line, = ax.plot(ts, values, linewidth=1.5, label=label)
+        lines.append(line)
+    legend_lines = list(reversed(lines))
+    legend_labels = list(reversed(labels))
+    ax.legend(legend_lines, legend_labels)
+
+
+def move_yaxis_right(ax):
+    ax.yaxis.set_label_position("right")
+    ax.yaxis.tick_right()
+
+
+def plot_price_level(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "price_level"
+    )
+    if not series:
+        raise SystemExit("no theory_level data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("theory_level")
+    ax.set_title("theory_level percentiles")
+
+    ax_mult = ax.secondary_yaxis(
+        "right",
+        functions=(price_level_to_mult, price_mult_to_level),
+    )
+    ax_mult.set_ylabel("theory_mult")
+
+    min_level = min(percentile_series[0])
+    max_level = max(percentile_series[-1])
+    mult_min = price_level_to_mult(min_level)
+    mult_max = price_level_to_mult(max_level)
+    mult_ticks = nice_mult_ticks(mult_min, mult_max)
+    if mult_ticks:
+        ax_mult.set_yticks(mult_ticks)
+        ax_mult.set_yticklabels([format_mult_tick(v) for v in mult_ticks])
+
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "theory")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "theory")
+
+
+def plot_baseline_base(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "baseline_base"
+    )
+    if not series:
+        raise SystemExit("no baseline_base data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("baseline_base")
+    ax.set_title("baseline_base percentiles")
+    ax.set_yscale(
+        "symlog",
+        linthresh=FEE_SYMLOG_LINTHRESH,
+        linscale=FEE_SYMLOG_LINSCALE,
+    )
+    values = [value for band in percentile_series for value in band]
+    min_val = min(values)
+    set_symlog_ylim(ax, values, clamp_zero=min_val >= 0)
+    set_symlog_ticks(ax, FEE_SYMLOG_LINTHRESH, symmetric=min_val < 0)
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "baseline-base")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "baseline-base")
+
+
+def plot_baseline_ppm(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "baseline_ppm"
+    )
+    if not series:
+        raise SystemExit("no baseline_ppm data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("baseline_ppm")
+    ax.set_title("baseline_ppm percentiles")
+    ax.set_yscale(
+        "symlog",
+        linthresh=FEE_SYMLOG_LINTHRESH,
+        linscale=FEE_SYMLOG_LINSCALE,
+    )
+    values = [value for band in percentile_series for value in band]
+    min_val = min(values)
+    set_symlog_ylim(ax, values, clamp_zero=min_val >= 0)
+    set_symlog_ticks(ax, FEE_SYMLOG_LINTHRESH, symmetric=min_val < 0)
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "baseline-ppm")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "baseline-ppm")
+
+
+def plot_size_mult(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "size_mult"
+    )
+    if not series:
+        raise SystemExit("no size_mult data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+    percentile_series, values = adjust_log_series(percentile_series, floor=0.5)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("size_mult")
+    ax.set_title("size_mult percentiles")
+    ax.set_yscale("log")
+    move_yaxis_right(ax)
+    set_log_ylim_with_floor(ax, values, floor=0.5, min_top=16)
+    ax.set_yticks(
+        [0.5, 1, 2, 4, 8, 16],
+        ["1/2", "1", "2", "4", "8", "16"],
+    )
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "size")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "size")
+
+
+def plot_balance_mult(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "balance_mult"
+    )
+    if not series:
+        raise SystemExit("no balance_mult data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+    percentile_series, values = adjust_log_series(percentile_series, floor=1 / 6)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("balance_mult")
+    ax.set_title("balance_mult percentiles")
+    ax.set_yscale("log")
+    move_yaxis_right(ax)
+    set_log_ylim_with_floor(ax, values, floor=1 / 6, min_top=6)
+    ax.set_yticks(
+        [1 / 6, 1 / 3, 1, 3, 6],
+        ["1/6", "1/3", "1", "3", "6"],
+    )
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "balance")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "balance")
+
+
+def plot_set_base(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "set_base"
+    )
+    if not series:
+        raise SystemExit("no advertised_base data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("advertised_base")
+    ax.set_title("advertised_base percentiles")
+    ax.set_yscale(
+        "symlog",
+        linthresh=FEE_SYMLOG_LINTHRESH,
+        linscale=FEE_SYMLOG_LINSCALE,
+    )
+    values = [value for band in percentile_series for value in band]
+    min_val = min(values)
+    set_symlog_ylim(ax, values, clamp_zero=min_val >= 0)
+    set_symlog_ticks(ax, FEE_SYMLOG_LINTHRESH, symmetric=min_val < 0)
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "advertised-base")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "advertised-base")
+
+
+def plot_set_ppm(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "set_ppm"
+    )
+    if not series:
+        raise SystemExit("no advertised_ppm data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("advertised_ppm")
+    ax.set_title("advertised_ppm percentiles")
+    ax.set_yscale(
+        "symlog",
+        linthresh=FEE_SYMLOG_LINTHRESH,
+        linscale=FEE_SYMLOG_LINSCALE,
+    )
+    values = [value for band in percentile_series for value in band]
+    min_val = min(values)
+    set_symlog_ylim(ax, values, clamp_zero=min_val >= 0)
+    set_symlog_ticks(ax, FEE_SYMLOG_LINTHRESH, symmetric=min_val < 0)
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "advertised-ppm")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "advertised-ppm")
+
+
+def plot_earnings(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    series, percentiles, labels = get_earnings_percentile_series(args)
+    if not series:
+        raise SystemExit("no earnings data in time range")
+
+    ts, percentile_series = split_percentile_series(series, percentiles)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    add_percentile_lines(ax, ts, percentile_series, labels)
+    ax.set_ylabel("daily net earnings (sat/day)")
+    ax.set_title("daily net earnings percentiles")
+    ax.set_yscale(
+        "symlog",
+        linthresh=EARNINGS_SYMLOG_LINTHRESH,
+        linscale=EARNINGS_SYMLOG_LINSCALE,
+    )
+    ax.axhline(0, color="black", linewidth=0.8, alpha=0.4)
+    values = [0.0] + [value for band in percentile_series for value in band]
+    set_linear_ylim(ax, values)
+    set_symlog_ticks(ax, EARNINGS_SYMLOG_LINTHRESH)
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "earnings")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+    write_csv(args, series, "earnings")
+
+
+def plot_combo(args):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise SystemExit("matplotlib is required to output graphs.")
+
+    price_series, percentiles, labels = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "price_level"
+    )
+    base_series, _, _ = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "baseline_base"
+    )
+    ppm_series, _, _ = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "baseline_ppm"
+    )
+    size_series, _, _ = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "size_mult"
+    )
+    balance_series, _, _ = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "balance_mult"
+    )
+    set_base_series, _, _ = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "set_base"
+    )
+    set_ppm_series, _, _ = get_percentile_series(
+        args.db, args.from_ts, args.to_ts, "set_ppm"
+    )
+    earnings_series, _, _ = get_earnings_percentile_series(args)
+    if (
+        not price_series
+        and not base_series
+        and not ppm_series
+        and not size_series
+        and not balance_series
+        and not set_base_series
+        and not set_ppm_series
+        and not earnings_series
+    ):
+        raise SystemExit("no aggregate data in time range")
+
+    fig, axes = plt.subplots(8, 1, figsize=(12, 24), sharex=True)
+    (
+        ax_base,
+        ax_ppm,
+        ax_size,
+        ax_balance,
+        ax_price,
+        ax_set_base,
+        ax_set_ppm,
+        ax_earnings,
+    ) = axes
+
+    if base_series:
+        ts, base_percentiles = split_percentile_series(base_series, percentiles)
+        add_percentile_lines(ax_base, ts, base_percentiles, labels)
+        ax_base.set_ylabel("baseline_base")
+        ax_base.set_title("baseline_base percentiles")
+        ax_base.set_yscale(
+            "symlog",
+            linthresh=FEE_SYMLOG_LINTHRESH,
+            linscale=FEE_SYMLOG_LINSCALE,
+        )
+        base_values = [value for band in base_percentiles for value in band]
+        min_val = min(base_values)
+        set_symlog_ylim(ax_base, base_values, clamp_zero=min_val >= 0)
+        set_symlog_ticks(ax_base, FEE_SYMLOG_LINTHRESH, symmetric=min_val < 0)
+    else:
+        ax_base.set_title("baseline_base percentiles (no data)")
+
+    if ppm_series:
+        ts, ppm_percentiles = split_percentile_series(ppm_series, percentiles)
+        add_percentile_lines(ax_ppm, ts, ppm_percentiles, labels)
+        ax_ppm.set_ylabel("baseline_ppm")
+        ax_ppm.set_title("baseline_ppm percentiles")
+        ax_ppm.set_yscale(
+            "symlog",
+            linthresh=FEE_SYMLOG_LINTHRESH,
+            linscale=FEE_SYMLOG_LINSCALE,
+        )
+        ppm_values = [value for band in ppm_percentiles for value in band]
+        min_val = min(ppm_values)
+        set_symlog_ylim(ax_ppm, ppm_values, clamp_zero=min_val >= 0)
+        set_symlog_ticks(ax_ppm, FEE_SYMLOG_LINTHRESH, symmetric=min_val < 0)
+    else:
+        ax_ppm.set_title("baseline_ppm percentiles (no data)")
+
+    if size_series:
+        ts, size_percentiles = split_percentile_series(size_series, percentiles)
+        size_percentiles, size_values = adjust_log_series(size_percentiles, floor=0.5)
+        add_percentile_lines(ax_size, ts, size_percentiles, labels)
+        ax_size.set_ylabel("size_mult")
+        ax_size.set_title("size_mult percentiles")
+        ax_size.set_yscale("log")
+        move_yaxis_right(ax_size)
+        set_log_ylim_with_floor(ax_size, size_values, floor=0.5, min_top=16)
+        ax_size.set_yticks(
+            [0.5, 1, 2, 4, 8, 16],
+            ["1/2", "1", "2", "4", "8", "16"],
+        )
+    else:
+        ax_size.set_title("size_mult percentiles (no data)")
+
+    if balance_series:
+        ts, balance_percentiles = split_percentile_series(balance_series, percentiles)
+        balance_percentiles, balance_values = adjust_log_series(balance_percentiles, floor=1 / 6)
+        add_percentile_lines(ax_balance, ts, balance_percentiles, labels)
+        ax_balance.set_ylabel("balance_mult")
+        ax_balance.set_title("balance_mult percentiles")
+        ax_balance.set_yscale("log")
+        move_yaxis_right(ax_balance)
+        set_log_ylim_with_floor(ax_balance, balance_values, floor=1 / 6, min_top=6)
+        ax_balance.set_yticks(
+            [1 / 6, 1 / 3, 1, 3, 6],
+            ["1/6", "1/3", "1", "3", "6"],
+        )
+    else:
+        ax_balance.set_title("balance_mult percentiles (no data)")
+
+    if price_series:
+        ts, price_percentiles = split_percentile_series(price_series, percentiles)
+        add_percentile_lines(ax_price, ts, price_percentiles, labels)
+        ax_price.set_ylabel("theory_level")
+        ax_price.set_title("theory_level percentiles")
+
+        ax_mult = ax_price.secondary_yaxis(
+            "right",
+            functions=(price_level_to_mult, price_mult_to_level),
+        )
+        ax_mult.set_ylabel("theory_mult")
+        min_level = min(price_percentiles[0])
+        max_level = max(price_percentiles[-1])
+        mult_min = price_level_to_mult(min_level)
+        mult_max = price_level_to_mult(max_level)
+        mult_ticks = nice_mult_ticks(mult_min, mult_max)
+        if mult_ticks:
+            ax_mult.set_yticks(mult_ticks)
+            ax_mult.set_yticklabels([format_mult_tick(v) for v in mult_ticks])
+    else:
+        ax_price.set_title("theory_level percentiles (no data)")
+
+    if set_base_series:
+        ts, set_base_percentiles = split_percentile_series(
+            set_base_series, percentiles
+        )
+        add_percentile_lines(ax_set_base, ts, set_base_percentiles, labels)
+        ax_set_base.set_ylabel("advertised_base")
+        ax_set_base.set_title("advertised_base percentiles")
+        ax_set_base.set_yscale(
+            "symlog",
+            linthresh=FEE_SYMLOG_LINTHRESH,
+            linscale=FEE_SYMLOG_LINSCALE,
+        )
+        set_base_values = [value for band in set_base_percentiles for value in band]
+        min_val = min(set_base_values)
+        set_symlog_ylim(ax_set_base, set_base_values, clamp_zero=min_val >= 0)
+        set_symlog_ticks(ax_set_base, FEE_SYMLOG_LINTHRESH, symmetric=min_val < 0)
+    else:
+        ax_set_base.set_title("advertised_base percentiles (no data)")
+
+    if set_ppm_series:
+        ts, set_ppm_percentiles = split_percentile_series(
+            set_ppm_series, percentiles
+        )
+        add_percentile_lines(ax_set_ppm, ts, set_ppm_percentiles, labels)
+        ax_set_ppm.set_ylabel("advertised_ppm")
+        ax_set_ppm.set_title("advertised_ppm percentiles")
+        ax_set_ppm.set_yscale(
+            "symlog",
+            linthresh=FEE_SYMLOG_LINTHRESH,
+            linscale=FEE_SYMLOG_LINSCALE,
+        )
+        set_ppm_values = [value for band in set_ppm_percentiles for value in band]
+        min_val = min(set_ppm_values)
+        set_symlog_ylim(ax_set_ppm, set_ppm_values, clamp_zero=min_val >= 0)
+        set_symlog_ticks(ax_set_ppm, FEE_SYMLOG_LINTHRESH, symmetric=min_val < 0)
+    else:
+        ax_set_ppm.set_title("advertised_ppm percentiles (no data)")
+
+    if earnings_series:
+        ts, earnings_percentiles = split_percentile_series(
+            earnings_series, percentiles
+        )
+        add_percentile_lines(ax_earnings, ts, earnings_percentiles, labels)
+        ax_earnings.set_ylabel("daily net earnings (sat/day)")
+        ax_earnings.set_title("daily net earnings percentiles")
+        ax_earnings.set_yscale(
+            "symlog",
+            linthresh=EARNINGS_SYMLOG_LINTHRESH,
+            linscale=EARNINGS_SYMLOG_LINSCALE,
+        )
+        ax_earnings.axhline(0, color="black", linewidth=0.8, alpha=0.4)
+        values = [0.0] + [value for band in earnings_percentiles for value in band]
+        set_linear_ylim(ax_earnings, values)
+        set_symlog_ticks(ax_earnings, EARNINGS_SYMLOG_LINTHRESH)
+    else:
+        ax_earnings.set_title("daily net earnings percentiles (no data)")
+
+    fig.tight_layout()
+
+    out_path = get_out_path(args, "combo")
+    if out_path:
+        plt.savefig(out_path, dpi=150)
+
+    if args.show:
+        plt.show()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Plot aggregated fee statistics from clboss fee logs."
+    )
+    parser.add_argument(
+        "--view",
+        required=True,
+        choices=[
+            "theory",
+            "baseline-base",
+            "baseline-ppm",
+            "size",
+            "balance",
+            "advertised-base",
+            "advertised-ppm",
+            "earnings",
+            "combo",
+        ],
+        help="Aggregate view to render.",
+    )
+    add_common_args(parser)
+    add_lightning_args(parser)
+
+    args = parser.parse_args()
+    args.from_ts = parse_time_arg(args.from_ts)
+    args.to_ts = parse_time_arg(args.to_ts)
+
+    if not args.png and not args.show and not args.csv:
+        raise SystemExit("use --png to save, --show to display, or --csv to export")
+
+    view_map = {
+        "theory": plot_price_level,
+        "baseline-base": plot_baseline_base,
+        "baseline-ppm": plot_baseline_ppm,
+        "size": plot_size_mult,
+        "balance": plot_balance_mult,
+        "advertised-base": plot_set_base,
+        "advertised-ppm": plot_set_ppm,
+        "earnings": plot_earnings,
+        "combo": plot_combo,
+    }
+    view_map[args.view](args)
+
+
+if __name__ == "__main__":
+    main()
