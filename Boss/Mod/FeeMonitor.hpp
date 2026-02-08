@@ -38,6 +38,7 @@ private:
 		std::optional<std::int64_t> price_level;
 		std::optional<double> price_mult;
 		std::optional<std::uint32_t> price_cards_left;
+		std::optional<std::int64_t> price_center;
 	};
 
 	S::Bus& bus;
