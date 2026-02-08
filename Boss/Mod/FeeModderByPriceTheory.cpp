@@ -229,6 +229,7 @@ private:
 		auto os = std::ostringstream();
 
 		auto price = get_price(tx, node, os);
+		auto center = get_center_price(tx, node);
 		auto cards_left = get_cards_left(tx, node);
 		tx.commit();
 
@@ -244,7 +245,7 @@ private:
 				  , os.str().c_str()
 				  );
 		// Don't use aggregate temporaries in a `co_await`, see docs/COROUTINE.md
-		Msg::MonitorFeeByTheory msg{node, price, mult, cards_left};
+		Msg::MonitorFeeByTheory msg{node, price, mult, center, cards_left};
 		co_await bus.raise(std::move(msg));
 		co_return mult;
 	}
@@ -286,6 +287,20 @@ private:
 		for (auto& r : fetch)
 			return r.get<std::uint64_t>(0);
 		return 0;
+	}
+	std::int64_t get_center_price(Sqlite3::Tx& tx, Ln::NodeId const& node) {
+		auto center = initial_price;
+		auto fetch = tx.query(R"QRY(
+		SELECT price FROM "FeeModderByPriceTheory_centerprice"
+		 WHERE node = :node
+		     ;
+		)QRY")
+			.bind(":node", std::string(node))
+			.execute()
+			;
+		for (auto& r : fetch)
+			center = r.get<std::int64_t>(0);
+		return center;
 	}
 	void draw_a_card( Sqlite3::Tx& tx, Ln::NodeId const& node
 			, std::ostringstream& msg

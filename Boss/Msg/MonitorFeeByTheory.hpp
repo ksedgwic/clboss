@@ -16,6 +16,7 @@ struct MonitorFeeByTheory {
 	Ln::NodeId node;
 	std::int64_t level;
 	double mult;
+	std::int64_t center;
 	std::optional<std::uint32_t> cards_left;
 };
 

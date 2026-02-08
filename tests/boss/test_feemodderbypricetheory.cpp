@@ -316,6 +316,8 @@ int main() {
 		);
 		assert(result["history"].size() == 1);
 		assert(double(result["history"][0]["set_base"]) == 1000.0);
+		assert(result["history"][0].has("price_center"));
+		assert(!result["history"][0]["price_center"].is_null());
 
 		return Ev::lift(0);
 	});
