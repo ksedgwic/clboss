@@ -73,7 +73,7 @@ Ev::Io<int> run() {
 	co_await bus.raise(std::move(msg_fee_size));
 	auto msg_fee_balance = Boss::Msg::MonitorFeeByBalance{A, 1.2, 1000, 2000};
 	co_await bus.raise(std::move(msg_fee_balance));
-	auto msg_fee_theory = Boss::Msg::MonitorFeeByTheory{A, 5, 1.3};
+	auto msg_fee_theory = Boss::Msg::MonitorFeeByTheory{A, 5, 1.3, 7};
 	co_await bus.raise(std::move(msg_fee_theory));
 	auto msg_set_a = Boss::Msg::MonitorFeeSetChannel{A, 1000, 10};
 	co_await bus.raise(std::move(msg_set_a));
@@ -98,6 +98,8 @@ Ev::Io<int> run() {
 	auto history = result["history"];
 	assert(history.size() == 1);
 	assert(double(history[0]["set_base"]) == 1000.0);
+	assert(history[0].has("price_center"));
+	assert(double(history[0]["price_center"]) == 7.0);
 
 	++req_id;
 	rsp = false;
@@ -198,6 +200,8 @@ Ev::Io<int> run() {
 	);
 	assert(result["history"].size() == 1);
 	assert(double(result["history"][0]["set_base"]) == 3000.0);
+	assert(result["history"][0].has("price_center"));
+	assert(result["history"][0]["price_center"].is_null());
 
 	++req_id;
 	rsp = false;

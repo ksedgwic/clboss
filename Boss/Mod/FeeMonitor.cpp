@@ -208,6 +208,8 @@ void FeeMonitor::start() {
 			       e.price_mult IS NULL,
 			       e.price_cards_left,
 			       e.price_cards_left IS NULL,
+			       e.price_center,
+			       e.price_center IS NULL,
 			       e.mult_product,
 			       e.mult_product IS NULL,
 			       e.est_base,
@@ -254,6 +256,7 @@ void FeeMonitor::start() {
 				add_optional_int(row, "price_level", r, idx);
 				add_optional_double(row, "price_mult", r, idx);
 				add_optional_int(row, "price_cards_left", r, idx);
+				add_optional_int(row, "price_center", r, idx);
 				add_optional_double(row, "mult_product", r, idx);
 				add_optional_int(row, "est_base", r, idx);
 				add_optional_int(row, "est_ppm", r, idx);
@@ -298,6 +301,7 @@ Ev::Io<void> FeeMonitor::initialize_db() {
 		price_level INTEGER,
 		price_mult REAL,
 		price_cards_left INTEGER,
+		price_center INTEGER,
 		mult_product REAL,
 		est_base INTEGER,
 		est_ppm INTEGER,
@@ -376,6 +380,7 @@ FeeMonitor::on_price(Msg::MonitorFeeByTheory const& m) {
 	info.price_level = m.level;
 	info.price_mult = m.mult;
 	info.price_cards_left = m.cards_left;
+	info.price_center = m.center;
 	co_return;
 }
 
@@ -428,6 +433,7 @@ FeeMonitor::on_set(Msg::MonitorFeeSetChannel const& m) {
 		price_level,
 		price_mult,
 		price_cards_left,
+		price_center,
 		mult_product,
 		est_base,
 		est_ppm
@@ -447,6 +453,7 @@ FeeMonitor::on_set(Msg::MonitorFeeSetChannel const& m) {
 		:price_level,
 		:price_mult,
 		:price_cards_left,
+		:price_center,
 		:mult_product,
 		:est_base,
 		:est_ppm
@@ -468,6 +475,7 @@ FeeMonitor::on_set(Msg::MonitorFeeSetChannel const& m) {
 	bind_optional(q, ":price_level", snapshot.price_level);
 	bind_optional(q, ":price_mult", snapshot.price_mult);
 	bind_optional(q, ":price_cards_left", snapshot.price_cards_left);
+	bind_optional(q, ":price_center", snapshot.price_center);
 	bind_optional(q, ":mult_product", mult_product);
 	bind_optional(q, ":est_base", est_base);
 	bind_optional(q, ":est_ppm", est_ppm);
