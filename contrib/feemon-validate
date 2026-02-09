@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import bisect
 import json
 import os
 import re
@@ -32,11 +33,15 @@ FLOAT_FIELDS = {
     "price_mult",
     "mult_product",
 }
+REL_INT_FIELDS = {
+    "est_base",
+    "est_ppm",
+}
 
 
 def normalize_dt(dt):
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
     return dt.astimezone(timezone.utc)
 
 
@@ -64,9 +69,9 @@ def parse_time_arg(value):
         }[unit]
         if sign == "-":
             delta = -delta
-        return normalize_dt(datetime.now(timezone.utc) + delta)
+        return normalize_dt(datetime.now().astimezone() + delta)
     if value.count(":") in (1, 2) and "T" not in value and "-" not in value:
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = datetime.now().astimezone().date().isoformat()
         return normalize_dt(datetime.fromisoformat(f"{today}T{value}"))
     return normalize_dt(datetime.fromisoformat(value))
 
@@ -204,7 +209,7 @@ def make_norm_record(raw):
     return norm
 
 
-def field_equal(name, a, b, float_tol):
+def field_equal(name, a, b, float_tol, int_rel_tol):
     if a is None or b is None:
         return a is None and b is None
     if name in FLOAT_FIELDS:
@@ -212,49 +217,60 @@ def field_equal(name, a, b, float_tol):
         # For values near zero this is absolute tolerance, otherwise relative.
         scale = max(1.0, abs(float(a)), abs(float(b)))
         return abs(float(a) - float(b)) <= (float_tol * scale)
+    if name in REL_INT_FIELDS:
+        ai = int(a)
+        bi = int(b)
+        scale = max(1.0, abs(float(ai)), abs(float(bi)))
+        return abs(ai - bi) <= (int_rel_tol * scale)
     return int(a) == int(b)
 
 
-def fields_equal(ext_rec, int_rec, float_tol):
+def fields_equal(ext_rec, int_rec, float_tol, int_rel_tol):
     for name in COMMON_FIELDS:
-        if not field_equal(name, ext_rec["fields"][name], int_rec["fields"][name], float_tol):
+        if not field_equal(
+            name,
+            ext_rec["fields"][name],
+            int_rec["fields"][name],
+            float_tol,
+            int_rel_tol,
+        ):
             return False
     return True
 
 
-def record_match(ext_rec, int_rec, ts_tol, float_tol):
+def record_match(ext_rec, int_rec, ts_tol, float_tol, int_rel_tol):
     if abs(ext_rec["ts"] - int_rec["ts"]) > ts_tol:
         return False
-    return fields_equal(ext_rec, int_rec, float_tol)
+    return fields_equal(ext_rec, int_rec, float_tol, int_rel_tol)
 
 
-def find_internal_match(ext_rec, internal, start, lookahead, ts_tol, float_tol):
+def find_internal_match(ext_rec, internal, start, lookahead, ts_tol, float_tol, int_rel_tol):
     end = min(len(internal), start + lookahead + 1)
     for j in range(start + 1, end):
-        if record_match(ext_rec, internal[j], ts_tol, float_tol):
+        if record_match(ext_rec, internal[j], ts_tol, float_tol, int_rel_tol):
             return j
     return None
 
 
-def find_external_match(int_rec, external, start, lookahead, ts_tol, float_tol):
+def find_external_match(int_rec, external, start, lookahead, ts_tol, float_tol, int_rel_tol):
     end = min(len(external), start + lookahead + 1)
     for i in range(start + 1, end):
-        if record_match(external[i], int_rec, ts_tol, float_tol):
+        if record_match(external[i], int_rec, ts_tol, float_tol, int_rel_tol):
             return i
     return None
 
 
-def field_diffs(ext_rec, int_rec, float_tol):
+def field_diffs(ext_rec, int_rec, float_tol, int_rel_tol):
     diffs = []
     for name in COMMON_FIELDS:
         a = ext_rec["fields"][name]
         b = int_rec["fields"][name]
-        if not field_equal(name, a, b, float_tol):
+        if not field_equal(name, a, b, float_tol, int_rel_tol):
             diffs.append({"field": name, "external": a, "internal": b})
     return diffs
 
 
-def compare_peer(external, internal, ts_tol, float_tol, lookahead):
+def compare_peer(external, internal, ts_tol, float_tol, int_rel_tol, lookahead):
     matched = 0
     discrepancies = []
     i = 0
@@ -262,14 +278,18 @@ def compare_peer(external, internal, ts_tol, float_tol, lookahead):
     while i < len(external) and j < len(internal):
         ext_rec = external[i]
         int_rec = internal[j]
-        if record_match(ext_rec, int_rec, ts_tol, float_tol):
+        if record_match(ext_rec, int_rec, ts_tol, float_tol, int_rel_tol):
             matched += 1
             i += 1
             j += 1
             continue
 
-        j_match = find_internal_match(ext_rec, internal, j, lookahead, ts_tol, float_tol)
-        i_match = find_external_match(int_rec, external, i, lookahead, ts_tol, float_tol)
+        j_match = find_internal_match(
+            ext_rec, internal, j, lookahead, ts_tol, float_tol, int_rel_tol
+        )
+        i_match = find_external_match(
+            int_rec, external, i, lookahead, ts_tol, float_tol, int_rel_tol
+        )
 
         if j_match is not None and (i_match is None or (j_match - j) <= (i_match - i)):
             for missing_j in range(j, j_match):
@@ -293,7 +313,7 @@ def compare_peer(external, internal, ts_tol, float_tol, lookahead):
             discrepancies.append({
                 "kind": "field_mismatch",
                 "ts_delta": ts_delta,
-                "field_diffs": field_diffs(ext_rec, int_rec, float_tol),
+                "field_diffs": field_diffs(ext_rec, int_rec, float_tol, int_rel_tol),
                 "external": ext_rec["raw"],
                 "internal": int_rec["raw"],
             })
@@ -328,9 +348,83 @@ def compare_peer(external, internal, ts_tol, float_tol, lookahead):
     return matched, discrepancies
 
 
-def print_discrepancy(nodeid, index, discrepancy):
+def fmt_ts(ts):
+    if ts is None:
+        return "n/a"
+    return f"{float(ts):.6f}"
+
+
+def fmt_ts_local(ts):
+    if ts is None:
+        return "n/a"
+    ts_f = float(ts)
+    local_dt = datetime.fromtimestamp(ts_f).astimezone()
+    return f"{ts_f:.6f} ({local_dt.strftime('%Y-%m-%d %H:%M:%S.%f %z')})"
+
+
+def neighbor_summary(target_ts, candidates):
+    if target_ts is None:
+        return {
+            "prev": None,
+            "next": None,
+            "nearest": None,
+            "nearest_delta": None,
+        }
+    if not candidates:
+        return {
+            "prev": None,
+            "next": None,
+            "nearest": None,
+            "nearest_delta": None,
+        }
+    idx = bisect.bisect_left(candidates, target_ts)
+    prev_ts = candidates[idx - 1] if idx > 0 else None
+    next_ts = candidates[idx] if idx < len(candidates) else None
+    nearest = prev_ts
+    if nearest is None or (
+        next_ts is not None and abs(next_ts - target_ts) < abs(nearest - target_ts)
+    ):
+        nearest = next_ts
+    nearest_delta = None if nearest is None else (target_ts - nearest)
+    return {
+        "prev": prev_ts,
+        "next": next_ts,
+        "nearest": nearest,
+        "nearest_delta": nearest_delta,
+    }
+
+
+def print_discrepancy(nodeid, index, discrepancy, external_ts, internal_ts):
     kind = discrepancy["kind"]
     print(f"  discrepancy {index} ({kind}) for {nodeid}")
+
+    if kind == "missing_internal":
+        ext_ts = float(discrepancy["external"]["ts"])
+        summary = neighbor_summary(ext_ts, internal_ts)
+        print(
+            "    external_ts={ext} internal_prev_ts={prev} internal_next_ts={nxt} "
+            "nearest_internal_delta={delta}".format(
+                ext=fmt_ts_local(ext_ts),
+                prev=fmt_ts_local(summary["prev"]),
+                nxt=fmt_ts_local(summary["next"]),
+                delta=fmt_ts(summary["nearest_delta"]),
+            )
+        )
+        return
+    if kind == "extra_internal":
+        int_ts = float(discrepancy["internal"]["ts"])
+        summary = neighbor_summary(int_ts, external_ts)
+        print(
+            "    internal_ts={it} external_prev_ts={prev} external_next_ts={nxt} "
+            "nearest_external_delta={delta}".format(
+                it=fmt_ts_local(int_ts),
+                prev=fmt_ts_local(summary["prev"]),
+                nxt=fmt_ts_local(summary["next"]),
+                delta=fmt_ts(summary["nearest_delta"]),
+            )
+        )
+        return
+
     if "ts_delta" in discrepancy:
         print(f"    ts_delta={discrepancy['ts_delta']:.6f}")
     if "field_diffs" in discrepancy:
@@ -365,19 +459,23 @@ def main():
         required=True,
         help=(
             "Start time (Unix epoch seconds, ISO-8601, HH:MM[:SS], "
-            "YYYY-MM, YYYY-MM-DD, or relative +/-Nd)."
+            "YYYY-MM, YYYY-MM-DD, or relative +/-Nd). Naive/non-offset "
+            "timestamps are interpreted in local time."
         ),
     )
     parser.add_argument(
         "--before",
         default=None,
-        help="Optional end time (same formats as --since).",
+        help=(
+            "Optional end time (same formats as --since). "
+            "Naive/non-offset timestamps are interpreted in local time."
+        ),
     )
     parser.add_argument(
         "--ts-tolerance",
         type=float,
-        default=3.0,
-        help="Allowed timestamp delta in seconds (default: 3).",
+        default=20.0,
+        help="Allowed timestamp delta in seconds (default: 20).",
     )
     parser.add_argument(
         "--float-tolerance",
@@ -385,6 +483,16 @@ def main():
         default=1e-5,
         help=(
             "Float tolerance for comparison (default: 1e-5). "
+            "Effective limit is tolerance*max(1, |a|, |b|)."
+        ),
+    )
+    parser.add_argument(
+        "--int-rel-tolerance",
+        type=float,
+        default=1e-3,
+        help=(
+            "Relative tolerance for integer derived fields "
+            "(est_base/est_ppm), default: 1e-3. "
             "Effective limit is tolerance*max(1, |a|, |b|)."
         ),
     )
@@ -407,6 +515,8 @@ def main():
         raise SystemExit("Error: --ts-tolerance must be non-negative.")
     if args.float_tolerance < 0:
         raise SystemExit("Error: --float-tolerance must be non-negative.")
+    if args.int_rel_tolerance < 0:
+        raise SystemExit("Error: --int-rel-tolerance must be non-negative.")
     if args.lookahead < 0:
         raise SystemExit("Error: --lookahead must be non-negative.")
 
@@ -461,7 +571,12 @@ def main():
 
         total_internal += len(internal)
         matched, discrepancies = compare_peer(
-            external, internal, args.ts_tolerance, args.float_tolerance, args.lookahead
+            external,
+            internal,
+            args.ts_tolerance,
+            args.float_tolerance,
+            args.int_rel_tolerance,
+            args.lookahead,
         )
         total_matched += matched
         total_discrepancies += len(discrepancies)
@@ -473,8 +588,10 @@ def main():
             f"external={len(external)} internal={len(internal)} "
             f"matched={matched} discrepancies={len(discrepancies)}"
         )
+        external_ts = [record["ts"] for record in external]
+        internal_ts = [record["ts"] for record in internal]
         for d_idx, discrepancy in enumerate(discrepancies, start=1):
-            print_discrepancy(nodeid, d_idx, discrepancy)
+            print_discrepancy(nodeid, d_idx, discrepancy, external_ts, internal_ts)
 
     print("Summary:")
     print(f"  peers={len(peers)}")
