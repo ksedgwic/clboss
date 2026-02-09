@@ -1,8 +1,12 @@
 #undef NDEBUG
 #include"Boss/Mod/FeeModderByPriceTheory.hpp"
+#include"Boss/Mod/FeeMonitor.hpp"
+#include"Boss/Msg/CommandRequest.hpp"
+#include"Boss/Msg/CommandResponse.hpp"
 #include"Boss/Msg/DbResource.hpp"
 #include"Boss/Msg/ForwardFee.hpp"
 #include"Boss/Msg/ListpeersAnalyzedResult.hpp"
+#include"Boss/Msg/MonitorFeeSetChannel.hpp"
 #include"Boss/Msg/ProvideChannelFeeModifier.hpp"
 #include"Boss/Msg/SolicitChannelFeeModifier.hpp"
 #include"Boss/random_engine.hpp"
@@ -10,6 +14,7 @@
 #include"Ev/foreach.hpp"
 #include"Ev/start.hpp"
 #include"Ev/yield.hpp"
+#include"Jsmn/Object.hpp"
 #include"Ln/NodeId.hpp"
 #include"S/Bus.hpp"
 #include"Sqlite3.hpp"
@@ -257,6 +262,7 @@ public:
 int main() {
 	auto bus = S::Bus();
 	auto module_under_test = Boss::Mod::FeeModderByPriceTheory(bus);
+	auto fee_monitor = Boss::Mod::FeeMonitor(bus);
 	auto tester = Tester(bus);
 
 	auto modder = std::function< Ev::Io<double>( Ln::NodeId
@@ -271,6 +277,15 @@ int main() {
 	});
 
 	auto db = Sqlite3::Db(":memory:");
+	auto req_id = std::uint64_t();
+	auto last_rsp = Boss::Msg::CommandResponse{};
+	auto rsp = false;
+	bus.subscribe<Boss::Msg::CommandResponse
+		     >([&](Boss::Msg::CommandResponse const& m) {
+		last_rsp = m;
+		rsp = true;
+		return Ev::yield();
+	});
 
 	auto code = Ev::lift().then([&]() {
 		return bus.raise(Boss::Msg::DbResource{
@@ -280,6 +295,29 @@ int main() {
 
 		return tester.run();
 	}).then([&]() {
+		return bus.raise(Boss::Msg::MonitorFeeSetChannel{
+			A, 1000, 10
+		});
+	}).then([&]() {
+		++req_id;
+		rsp = false;
+		return bus.raise(Boss::Msg::CommandRequest{
+			"clboss-feemon-history",
+			Jsmn::Object::parse_json(
+				"[\"020000000000000000000000000000000000000000000000000000000000000001\"]"
+			),
+			Ln::CommandId::left(req_id)
+		});
+	}).then([&]() {
+		assert(rsp);
+		assert(last_rsp.id == Ln::CommandId::left(req_id));
+		auto result = Jsmn::Object::parse_json(
+			last_rsp.response.output().c_str()
+		);
+		assert(result["history"].size() == 1);
+		assert(double(result["history"][0]["set_base"]) == 1000.0);
+		assert(result["history"][0].has("price_center"));
+		assert(!result["history"][0]["price_center"].is_null());
 
 		return Ev::lift(0);
 	});

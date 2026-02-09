@@ -1,5 +1,6 @@
 #include"Boss/Mod/FeeModderByPriceTheory.hpp"
 #include"Boss/Msg/DbResource.hpp"
+#include"Boss/Msg/MonitorFeeByTheory.hpp"
 #include"Boss/Msg/ForwardFee.hpp"
 #include"Boss/Msg/ListpeersAnalyzedResult.hpp"
 #include"Boss/Msg/ProvideChannelFeeModifier.hpp"
@@ -228,6 +229,8 @@ private:
 		auto os = std::ostringstream();
 
 		auto price = get_price(tx, node, os);
+		auto center = get_center_price(tx, node);
+		auto cards_left = get_cards_left(tx, node);
 		tx.commit();
 
 		mult = price_to_multiplier(price);
@@ -241,6 +244,9 @@ private:
 				  , mult
 				  , os.str().c_str()
 				  );
+		// Don't use aggregate temporaries in a `co_await`, see docs/COROUTINE.md
+		Msg::MonitorFeeByTheory msg{node, price, mult, center, cards_left};
+		co_await bus.raise(std::move(msg));
 		co_return mult;
 	}
 
@@ -266,6 +272,35 @@ private:
 		msg << "; ";
 		draw_a_card(tx, node, msg);
 		return get_price(tx, node, msg);
+	}
+	std::uint32_t get_cards_left(Sqlite3::Tx& tx, Ln::NodeId const& node) {
+		auto fetch = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "FeeModderByPriceTheory_cards"
+		 WHERE node = :node
+		   AND pos = :CardPos_Deck
+		     ;
+		)QRY")
+			.bind(":node", std::string(node))
+			.bind(":CardPos_Deck", int(CardPos_Deck))
+			.execute()
+			;
+		for (auto& r : fetch)
+			return r.get<std::uint64_t>(0);
+		return 0;
+	}
+	std::int64_t get_center_price(Sqlite3::Tx& tx, Ln::NodeId const& node) {
+		auto center = initial_price;
+		auto fetch = tx.query(R"QRY(
+		SELECT price FROM "FeeModderByPriceTheory_centerprice"
+		 WHERE node = :node
+		     ;
+		)QRY")
+			.bind(":node", std::string(node))
+			.execute()
+			;
+		for (auto& r : fetch)
+			center = r.get<std::int64_t>(0);
+		return center;
 	}
 	void draw_a_card( Sqlite3::Tx& tx, Ln::NodeId const& node
 			, std::ostringstream& msg
