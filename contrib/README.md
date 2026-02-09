@@ -83,14 +83,19 @@ how many days of earnings history are considered when ranking channels.
   history between optional `since`/`before` timestamps.
 - **`feemon-validate`** compares `fee-log-parser` sqlite history against
   `clboss-feemon-history` per peer over a requested time window. It reports
-  per-peer progress, prints full-record diagnostics for mismatches, and exits
+  per-peer progress, prints compact timestamp diagnostics for missing/extra
+  records, prints full-record diagnostics for field mismatches, and exits
   non-zero when discrepancies are found. Default external DB path is
-  `./clboss-fee-info.sqlite3` and default timestamp tolerance is 3 seconds.
+  `./clboss-fee-info.sqlite3` and default timestamp tolerance is 20 seconds.
   Default float tolerance is `1e-5` and is scaled by value magnitude
   (`tol * max(1, |a|, |b|)`) to avoid false mismatches from JSON float
   rendering precision (notably `mult_product`).
+  Derived integer fields `est_base` and `est_ppm` use a relative tolerance
+  with default `1e-3` (`--int-rel-tolerance`) so small rounding effects at
+  large magnitudes do not trigger mismatches.
   `--since`/`--before` accept Unix epoch seconds in addition to the existing
-  human-readable time formats.
+  human-readable time formats. Naive timestamps are interpreted in local time;
+  Unix epoch input is UTC; explicit timezone offsets are honored.
 - **`plot-fees`** plots fee-related time series from the `fee-log-parser` sqlite
   output. `--peer` accepts a nodeid, alias (via lightning-cli/listnodes), or
   SCID (via lightning-cli/listpeerchannels). The combo view includes a daily
