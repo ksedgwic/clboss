@@ -339,7 +339,7 @@ public:
 						proxy = std::string(cfg["proxy"]["value_str"]);
 				}
 				if (cfg.has("always-use-proxy")) {
-					auto flag = cfg["always-use-proxy"].has("value_bool)
+					auto flag = cfg["always-use-proxy"].has("value_bool")
 								? cfg["always-use-proxy"]["value_bool"]
 								: cfg["always-use-proxy"]
 								;
