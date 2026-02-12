@@ -17,6 +17,7 @@ COMMON_FIELDS = [
     "balance_our_msat",
     "balance_total_msat",
     "price_level",
+    "price_center",
     "price_mult",
     "mult_product",
     "est_base",
