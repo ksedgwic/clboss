@@ -285,8 +285,8 @@ def percentile_from_sorted(values, q):
 def add_common_args(parser):
     parser.add_argument(
         "--db",
-        default=os.path.expanduser("./clboss-fee-info.sqlite3"),
-        help="Path to sqlite database.",
+        default=None,
+        help="Path to legacy sqlite database (optional; default: API only).",
     )
     parser.add_argument(
         "--png",
@@ -1110,6 +1110,11 @@ def main():
     args.resolved_lightning_dir = resolve_lightning_dir(args)
     args.from_ts = parse_time_arg(args.from_ts)
     args.to_ts = parse_time_arg(args.to_ts)
+
+    if args.db is None and shutil.which("lightning-cli") is None:
+        raise SystemExit(
+            "no data source available: provide --db or ensure lightning-cli is in PATH"
+        )
 
     if not args.png and not args.show and not args.csv:
         raise SystemExit("use --png to save, --show to display, or --csv to export")

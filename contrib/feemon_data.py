@@ -205,6 +205,9 @@ def _fetch_external_peer_history(
 
 
 def list_external_node_ids(db_path, since_dt=None, before_dt=None):
+    if not db_path:
+        return []
+
     since_ts = _dt_to_epoch(since_dt)
     before_ts = _dt_to_epoch(before_dt)
     where = []
@@ -304,8 +307,21 @@ def load_merged_peer_records(
     since_ts = _dt_to_epoch(since_dt)
     before_ts = _dt_to_epoch(before_dt)
     api_enabled = shutil.which("lightning-cli") is not None
-    if not api_enabled:
+    if not api_enabled and not db_path:
+        _warn(warn, "no API and no external DB provided")
+        return []
+    if not api_enabled and db_path:
         _warn(warn, "lightning-cli not found; using external DB data only")
+    if not db_path:
+        return _fetch_api_peer_history(
+            node_id,
+            since_ts,
+            before_ts,
+            lightning_dir,
+            network_option,
+            warn,
+            api_enabled,
+        )
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -334,8 +350,33 @@ def load_merged_records_by_node(
     since_ts = _dt_to_epoch(since_dt)
     before_ts = _dt_to_epoch(before_dt)
     api_enabled = shutil.which("lightning-cli") is not None
-    if not api_enabled:
+    if not api_enabled and not db_path:
+        _warn(warn, "no API and no external DB provided")
+        return {}
+    if not api_enabled and db_path:
         _warn(warn, "lightning-cli not found; using external DB data only")
+
+    if not db_path:
+        out = {}
+        api_nodes = None
+        if api_node_ids is not None:
+            api_nodes = set(api_node_ids)
+        for node_id in sorted(set(node_ids)):
+            node_api_enabled = api_enabled
+            if api_nodes is not None and node_id not in api_nodes:
+                node_api_enabled = False
+            merged = _fetch_api_peer_history(
+                node_id,
+                since_ts,
+                before_ts,
+                lightning_dir,
+                network_option,
+                warn,
+                node_api_enabled,
+            )
+            if merged:
+                out[node_id] = merged
+        return out
 
     out = {}
     with sqlite3.connect(db_path) as conn:
