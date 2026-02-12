@@ -544,7 +544,7 @@ CSV_FIELDS = [
     "price_level",
     "price_mult",
 ]
-PRICE_LEVEL_FIELDS = ["price_level", "price_mult"]
+PRICE_LEVEL_FIELDS = ["price_level", "price_mult", "price_center"]
 BASE_PPM_FIELDS = ["set_base", "set_ppm"]
 BASELINE_FIELDS = ["baseline_base", "baseline_ppm"]
 SIZE_MULT_FIELDS = ["size_total_peers", "size_less_peers", "size_mult"]
@@ -629,10 +629,17 @@ def plot_price_level_on(ax_level, rows, peer):
     rows = [r for r in rows if r[1] is not None]
     ts_levels = []
     levels = []
-    for t, level, _ in rows:
+    centers = []
+    has_center = False
+    for t, level, _, center in rows:
         ts = parse_ts(t)
         ts_levels.append(ts)
         levels.append(level)
+        if center is None:
+            centers.append(float("nan"))
+        else:
+            has_center = True
+            centers.append(float(center))
 
     if not ts_levels:
         raise SystemExit("no theory_level data for peer in time range")
@@ -644,6 +651,16 @@ def plot_price_level_on(ax_level, rows, peer):
         label="theory_level",
         color="orange",
     )
+    center_line = None
+    if has_center:
+        center_line, = ax_level.plot(
+            ts_levels,
+            centers,
+            linewidth=PLOT_LINEWIDTH,
+            label="theory_center",
+            color="red",
+            alpha=0.85,
+        )
 
     ax_level.set_ylabel("theory_level")
     ax_mult = ax_level.secondary_yaxis(
@@ -651,10 +668,19 @@ def plot_price_level_on(ax_level, rows, peer):
         functions=(price_level_to_mult, price_mult_to_level),
     )
     ax_mult.set_ylabel("theory_mult")
-    ax_level.legend([level_line], ["theory_level"])
+    if center_line is None:
+        ax_level.legend([level_line], ["theory_level"])
+    else:
+        ax_level.legend(
+            [level_line, center_line],
+            ["theory_level", "theory_center"],
+        )
     pad_top(ax_level)
-    mult_min = price_level_to_mult(min(levels))
-    mult_max = price_level_to_mult(max(levels))
+    scale_levels = levels
+    if has_center:
+        scale_levels = levels + [v for v in centers if not math.isnan(v)]
+    mult_min = price_level_to_mult(min(scale_levels))
+    mult_max = price_level_to_mult(max(scale_levels))
     mult_ticks = nice_mult_ticks(mult_min, mult_max)
     if mult_ticks:
         ax_mult.set_yticks(mult_ticks)

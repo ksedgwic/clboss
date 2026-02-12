@@ -104,8 +104,10 @@ how many days of earnings history are considered when ranking channels.
   lightning-cli/listpeerchannels). The combo view includes a daily earnings
   panel (incoming/outgoing msat per day) when lightning-cli is available, and
   the `incoming-earnings`/`outgoing-earnings` views render those panels on
-  their own. Use `--title` to override the plot title (defaults to the peer
-  label; pass empty to omit).
+  their own. In the `theory` panel, a `theory_center` line is drawn only where
+  API records include `price_center`; legacy-only spans omit that line. Use
+  `--title` to override the plot title (defaults to the peer label; pass empty
+  to omit).
 - **`plot-aggregate`** plots aggregate percentile summaries from merged fee monitor
   data (API preferred over overlapping legacy sqlite history). Views include
   `baseline-base`, `baseline-ppm`, `size`, `balance`, `theory`,
