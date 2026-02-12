@@ -96,15 +96,18 @@ how many days of earnings history are considered when ranking channels.
   `--since`/`--before` accept Unix epoch seconds in addition to the existing
   human-readable time formats. Naive timestamps are interpreted in local time;
   Unix epoch input is UTC; explicit timezone offsets are honored.
-- **`plot-fees`** plots fee-related time series from the `fee-log-parser` sqlite
-  output. `--peer` accepts a nodeid, alias (via lightning-cli/listnodes), or
-  SCID (via lightning-cli/listpeerchannels). The combo view includes a daily
-  earnings panel (incoming/outgoing msat per day) when lightning-cli is
-  available, and the `incoming-earnings`/`outgoing-earnings` views render
-  those panels on their own. Use `--title` to override the plot title
-  (defaults to the peer label; pass empty to omit).
-- **`plot-aggregate`** plots aggregate percentile summaries from the
-  `fee-log-parser` sqlite output. Views include
+- **`plot-fees`** plots fee-related time series for a peer from merged fee monitor
+  data: API history (`clboss-feemon-history`) plus legacy sqlite history
+  (`fee-log-parser`). When both sources cover a period, API records are
+  preferred and sqlite is used only for earlier history. `--peer` accepts a
+  nodeid, alias (via lightning-cli/listnodes), or SCID (via
+  lightning-cli/listpeerchannels). The combo view includes a daily earnings
+  panel (incoming/outgoing msat per day) when lightning-cli is available, and
+  the `incoming-earnings`/`outgoing-earnings` views render those panels on
+  their own. Use `--title` to override the plot title (defaults to the peer
+  label; pass empty to omit).
+- **`plot-aggregate`** plots aggregate percentile summaries from merged fee monitor
+  data (API preferred over overlapping legacy sqlite history). Views include
   `baseline-base`, `baseline-ppm`, `size`, `balance`, `theory`,
   `advertised-base`, `advertised-ppm`, `earnings`, and a `combo` view. Each
   view shows daily

@@ -5,13 +5,13 @@ import json
 import math
 import os
 import re
-import sqlite3
 import subprocess
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 
 from clboss.alias_cache import is_nodeid, load_cache, lookup_alias, lookup_nodeid_by_alias
+from feemon_data import load_merged_peer_records, records_to_rows
 
 PLOT_LINEWIDTH = 1.5
 SCID_RE = re.compile(r"^\d+x\d+x\d+$")
@@ -403,8 +403,8 @@ def resolve_peer(args):
         return peer_input, peer_input
 
     cli_available = shutil.which("lightning-cli") is not None
-    network_option = resolve_network_option(args)
-    lightning_dir = resolve_lightning_dir(args)
+    network_option = args.network_option
+    lightning_dir = args.resolved_lightning_dir
 
     if is_scid(peer_input):
         if not cli_available:
@@ -464,8 +464,8 @@ def fetch_earnings_rows(args):
         print("warning: lightning-cli not found; skipping earnings plot", file=sys.stderr)
         return []
 
-    network_option = resolve_network_option(args)
-    lightning_dir = resolve_lightning_dir(args)
+    network_option = args.network_option
+    lightning_dir = args.resolved_lightning_dir
     data = run_lightning_cli_command(
         lightning_dir, network_option, "clboss-earnings-history", args.peer
     )
@@ -529,26 +529,56 @@ def write_csv(args, rows, suffix):
         writer.writerows(rows)
 
 
-CSV_QUERY = (
-    "SELECT f.ts, p.node_id, f.set_base, f.set_ppm, "
-    "f.baseline_base, f.baseline_ppm, f.size_mult, "
-    "f.size_total_peers, f.size_less_peers, f.balance_mult, "
-    "f.balance_our_msat, f.balance_total_msat, "
-    "f.price_level, f.price_mult "
-    "FROM fee_change_events f "
-    "JOIN peers p ON p.id = f.peer_id "
-    "WHERE p.node_id = ? ORDER BY f.ts"
-)
+CSV_FIELDS = [
+    "node_id",
+    "set_base",
+    "set_ppm",
+    "baseline_base",
+    "baseline_ppm",
+    "size_mult",
+    "size_total_peers",
+    "size_less_peers",
+    "balance_mult",
+    "balance_our_msat",
+    "balance_total_msat",
+    "price_level",
+    "price_mult",
+]
+PRICE_LEVEL_FIELDS = ["price_level", "price_mult"]
+BASE_PPM_FIELDS = ["set_base", "set_ppm"]
+BASELINE_FIELDS = ["baseline_base", "baseline_ppm"]
+SIZE_MULT_FIELDS = ["size_total_peers", "size_less_peers", "size_mult"]
+BALANCE_MULT_FIELDS = ["balance_our_msat", "balance_total_msat", "balance_mult"]
+WARNED_FEEMON_MESSAGES = set()
 
 
-def fetch_rows(db, query, peer):
-    with sqlite3.connect(db) as conn:
-        return conn.execute(query, (peer,)).fetchall()
+def warn_feemon_data(message):
+    if message in WARNED_FEEMON_MESSAGES:
+        return
+    WARNED_FEEMON_MESSAGES.add(message)
+    print(f"warning: {message}", file=sys.stderr)
+
+
+def get_fee_records(args):
+    if not hasattr(args, "_fee_records"):
+        args._fee_records = load_merged_peer_records(
+            args.db,
+            args.peer,
+            since_dt=args.from_ts,
+            before_dt=args.to_ts,
+            lightning_dir=args.resolved_lightning_dir,
+            network_option=args.network_option,
+            warn=warn_feemon_data,
+        )
+    return args._fee_records
+
+
+def fetch_rows(args, fields):
+    return records_to_rows(get_fee_records(args), fields)
 
 
 def fetch_csv_rows(args):
-    rows = fetch_rows(args.db, CSV_QUERY, args.peer)
-    return filter_by_time(rows, args.from_ts, args.to_ts)
+    return fetch_rows(args, CSV_FIELDS)
 
 
 def make_single_axes(plt):
@@ -563,7 +593,7 @@ def make_twin_axes(plt):
 
 
 def plot_single_view(
-    args, suffix, rows_query, axes_factory, plotter, use_plt_tight_layout=False
+    args, suffix, row_fields, axes_factory, plotter, use_plt_tight_layout=False
 ):
     try:
         import matplotlib.pyplot as plt
@@ -574,8 +604,7 @@ def plot_single_view(
 
         mpl.rcParams["timezone"] = "UTC"
 
-    rows = fetch_rows(args.db, rows_query, args.peer)
-    rows = filter_by_time(rows, args.from_ts, args.to_ts)
+    rows = fetch_rows(args, row_fields)
     csv_rows = fetch_csv_rows(args)
 
     fig, primary_ax, plot_axes = axes_factory(plt)
@@ -962,41 +991,11 @@ def plot_earnings_single_on(ax, rows, direction):
     ax.legend(handles=[bars], labels=[f"earnings (sat/day) {label}"])
 
 
-PRICE_LEVEL_QUERY = (
-    "SELECT f.ts, f.price_level, f.price_mult "
-    "FROM fee_change_events f "
-    "JOIN peers p ON p.id = f.peer_id "
-    "WHERE p.node_id = ? ORDER BY f.ts"
-)
-BASE_PPM_QUERY = (
-    "SELECT f.ts, f.set_base, f.set_ppm FROM fee_change_events f "
-    "JOIN peers p ON p.id = f.peer_id "
-    "WHERE p.node_id = ? ORDER BY f.ts"
-)
-BASELINE_QUERY = (
-    "SELECT f.ts, f.baseline_base, f.baseline_ppm FROM fee_change_events f "
-    "JOIN peers p ON p.id = f.peer_id "
-    "WHERE p.node_id = ? ORDER BY f.ts"
-)
-SIZE_MULT_QUERY = (
-    "SELECT f.ts, f.size_total_peers, f.size_less_peers, f.size_mult "
-    "FROM fee_change_events f "
-    "JOIN peers p ON p.id = f.peer_id "
-    "WHERE p.node_id = ? ORDER BY f.ts"
-)
-BALANCE_MULT_QUERY = (
-    "SELECT f.ts, f.balance_our_msat, f.balance_total_msat, f.balance_mult "
-    "FROM fee_change_events f "
-    "JOIN peers p ON p.id = f.peer_id "
-    "WHERE p.node_id = ? ORDER BY f.ts"
-)
-
-
 def plot_price_level(args):
     plot_single_view(
         args,
         "theory",
-        PRICE_LEVEL_QUERY,
+        PRICE_LEVEL_FIELDS,
         make_single_axes,
         plot_price_level_on,
     )
@@ -1006,7 +1005,7 @@ def plot_base_ppm(args):
     plot_single_view(
         args,
         "baseppm",
-        BASE_PPM_QUERY,
+        BASE_PPM_FIELDS,
         make_twin_axes,
     plot_base_ppm_on,
     )
@@ -1017,7 +1016,7 @@ def plot_baseline(args):
     plot_single_view(
         args,
         "baseline",
-        BASELINE_QUERY,
+        BASELINE_FIELDS,
         make_twin_axes,
     plot_baseline_on,
     )
@@ -1028,7 +1027,7 @@ def plot_size_mult(args):
     plot_single_view(
         args,
         "size",
-        SIZE_MULT_QUERY,
+        SIZE_MULT_FIELDS,
         make_twin_axes,
         plot_size_mult_on,
         use_plt_tight_layout=True,
@@ -1039,7 +1038,7 @@ def plot_balance_mult(args):
     plot_single_view(
         args,
         "balance",
-        BALANCE_MULT_QUERY,
+        BALANCE_MULT_FIELDS,
         make_twin_axes,
         plot_balance_mult_on,
         use_plt_tight_layout=True,
@@ -1066,20 +1065,13 @@ def plot_combo(args):
             if end_pad:
                 acc.append(ts + end_pad)
 
-    size_rows = fetch_rows(args.db, SIZE_MULT_QUERY, args.peer)
-    baseline_rows = fetch_rows(args.db, BASELINE_QUERY, args.peer)
-    balance_rows = fetch_rows(args.db, BALANCE_MULT_QUERY, args.peer)
-    price_rows = fetch_rows(args.db, PRICE_LEVEL_QUERY, args.peer)
-    base_rows = fetch_rows(args.db, BASE_PPM_QUERY, args.peer)
-    csv_rows = fetch_rows(args.db, CSV_QUERY, args.peer)
+    size_rows = fetch_rows(args, SIZE_MULT_FIELDS)
+    baseline_rows = fetch_rows(args, BASELINE_FIELDS)
+    balance_rows = fetch_rows(args, BALANCE_MULT_FIELDS)
+    price_rows = fetch_rows(args, PRICE_LEVEL_FIELDS)
+    base_rows = fetch_rows(args, BASE_PPM_FIELDS)
+    csv_rows = fetch_rows(args, CSV_FIELDS)
     earnings_rows = fetch_earnings_rows(args)
-
-    size_rows = filter_by_time(size_rows, args.from_ts, args.to_ts)
-    baseline_rows = filter_by_time(baseline_rows, args.from_ts, args.to_ts)
-    balance_rows = filter_by_time(balance_rows, args.from_ts, args.to_ts)
-    price_rows = filter_by_time(price_rows, args.from_ts, args.to_ts)
-    base_rows = filter_by_time(base_rows, args.from_ts, args.to_ts)
-    csv_rows = filter_by_time(csv_rows, args.from_ts, args.to_ts)
     fig, axes = plt.subplots(7, 1, figsize=(12, 21), sharex=True)
     (
         ax_baseline,
@@ -1172,7 +1164,7 @@ def plot_earnings_outgoing(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot fee-related time series from clboss fee logs."
+        description="Plot fee-related time series from merged API and legacy fee history."
     )
     parser.add_argument(
         "--view",
@@ -1198,6 +1190,8 @@ def main():
     add_common_args(parser)
 
     args = parser.parse_args()
+    args.network_option = resolve_network_option(args)
+    args.resolved_lightning_dir = resolve_lightning_dir(args)
     args.peer_input = args.peer
     args.from_ts = parse_time_arg(args.from_ts)
     args.to_ts = parse_time_arg(args.to_ts)
