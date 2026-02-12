@@ -6,16 +6,22 @@ import math
 import os
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+
+from feemon_data import (
+    list_api_node_ids,
+    list_external_node_ids,
+    load_merged_records_by_node,
+)
 
 BUCKET_SECONDS = 24 * 60 * 60
 EARNINGS_SYMLOG_LINTHRESH = 1.0
 EARNINGS_SYMLOG_LINSCALE = 0.3
 FEE_SYMLOG_LINTHRESH = 1.0
 FEE_SYMLOG_LINSCALE = 0.3
+WARNED_FEEMON_MESSAGES = set()
 
 
 def local_tz():
@@ -398,24 +404,55 @@ def write_csv(args, rows, suffix):
         writer.writerows(rows)
 
 
-def fetch_field_values(db, from_ts, to_ts, field):
-    query = (
-        f"SELECT f.ts, f.{field}, p.node_id "
-        "FROM fee_change_events f "
-        "JOIN peers p ON p.id = f.peer_id "
-        f"WHERE f.{field} IS NOT NULL"
-    )
-    params = []
-    if from_ts:
-        query += " AND f.ts >= ?"
-        params.append(from_ts.timestamp())
-    if to_ts:
-        query += " AND f.ts <= ?"
-        params.append(to_ts.timestamp())
-    query += " ORDER BY f.ts"
+def warn_feemon_data(message):
+    if message in WARNED_FEEMON_MESSAGES:
+        return
+    WARNED_FEEMON_MESSAGES.add(message)
+    print(f"warning: {message}", file=sys.stderr)
 
-    with sqlite3.connect(db) as conn:
-        return conn.execute(query, params).fetchall()
+
+def get_fee_records_by_node(args):
+    if hasattr(args, "_fee_records_by_node"):
+        return args._fee_records_by_node
+
+    external_nodes = list_external_node_ids(
+        args.db,
+        since_dt=args.from_ts,
+        before_dt=args.to_ts,
+    )
+    api_nodes = list_api_node_ids(
+        args.resolved_lightning_dir,
+        args.network_option,
+        warn=warn_feemon_data,
+    )
+    node_ids = sorted(set(external_nodes) | set(api_nodes))
+    if not node_ids:
+        args._fee_records_by_node = {}
+        return args._fee_records_by_node
+
+    args._fee_records_by_node = load_merged_records_by_node(
+        args.db,
+        node_ids,
+        api_node_ids=api_nodes,
+        since_dt=args.from_ts,
+        before_dt=args.to_ts,
+        lightning_dir=args.resolved_lightning_dir,
+        network_option=args.network_option,
+        warn=warn_feemon_data,
+    )
+    return args._fee_records_by_node
+
+
+def fetch_field_values(args, field):
+    rows = []
+    for node_id, records in get_fee_records_by_node(args).items():
+        for record in records:
+            value = record["fields"].get(field)
+            if value is None:
+                continue
+            rows.append((record["ts"], value, node_id))
+    rows.sort(key=lambda row: (row[0], row[2]))
+    return rows
 
 
 def bucket_latest_by_node(rows):
@@ -441,8 +478,8 @@ def compute_percentile_series(buckets, percentiles):
     return series
 
 
-def get_percentile_series(db, from_ts, to_ts, field):
-    rows = fetch_field_values(db, from_ts, to_ts, field)
+def get_percentile_series(args, field):
+    rows = fetch_field_values(args, field)
     buckets = bucket_latest_by_node(rows)
     percentiles = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
     labels = ["p00", "p10", "p25", "p50", "p75", "p90", "p100"]
@@ -470,8 +507,8 @@ def fetch_earnings_history(args):
         print("warning: lightning-cli not found; skipping earnings data", file=sys.stderr)
         return []
 
-    network_option = resolve_network_option(args)
-    lightning_dir = resolve_lightning_dir(args)
+    network_option = args.network_option
+    lightning_dir = args.resolved_lightning_dir
     data = run_lightning_cli_command(
         lightning_dir, network_option, "clboss-earnings-history", "all"
     )
@@ -572,9 +609,7 @@ def plot_price_level(args):
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    series, percentiles, labels = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "price_level"
-    )
+    series, percentiles, labels = get_percentile_series(args, "price_level")
     if not series:
         raise SystemExit("no theory_level data in time range")
 
@@ -617,9 +652,7 @@ def plot_baseline_base(args):
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    series, percentiles, labels = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "baseline_base"
-    )
+    series, percentiles, labels = get_percentile_series(args, "baseline_base")
     if not series:
         raise SystemExit("no baseline_base data in time range")
 
@@ -654,9 +687,7 @@ def plot_baseline_ppm(args):
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    series, percentiles, labels = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "baseline_ppm"
-    )
+    series, percentiles, labels = get_percentile_series(args, "baseline_ppm")
     if not series:
         raise SystemExit("no baseline_ppm data in time range")
 
@@ -691,9 +722,7 @@ def plot_size_mult(args):
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    series, percentiles, labels = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "size_mult"
-    )
+    series, percentiles, labels = get_percentile_series(args, "size_mult")
     if not series:
         raise SystemExit("no size_mult data in time range")
 
@@ -727,9 +756,7 @@ def plot_balance_mult(args):
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    series, percentiles, labels = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "balance_mult"
-    )
+    series, percentiles, labels = get_percentile_series(args, "balance_mult")
     if not series:
         raise SystemExit("no balance_mult data in time range")
 
@@ -763,9 +790,7 @@ def plot_set_base(args):
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    series, percentiles, labels = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "set_base"
-    )
+    series, percentiles, labels = get_percentile_series(args, "set_base")
     if not series:
         raise SystemExit("no advertised_base data in time range")
 
@@ -800,9 +825,7 @@ def plot_set_ppm(args):
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    series, percentiles, labels = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "set_ppm"
-    )
+    series, percentiles, labels = get_percentile_series(args, "set_ppm")
     if not series:
         raise SystemExit("no advertised_ppm data in time range")
 
@@ -872,27 +895,13 @@ def plot_combo(args):
     except ImportError:
         raise SystemExit("matplotlib is required to output graphs.")
 
-    price_series, percentiles, labels = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "price_level"
-    )
-    base_series, _, _ = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "baseline_base"
-    )
-    ppm_series, _, _ = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "baseline_ppm"
-    )
-    size_series, _, _ = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "size_mult"
-    )
-    balance_series, _, _ = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "balance_mult"
-    )
-    set_base_series, _, _ = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "set_base"
-    )
-    set_ppm_series, _, _ = get_percentile_series(
-        args.db, args.from_ts, args.to_ts, "set_ppm"
-    )
+    price_series, percentiles, labels = get_percentile_series(args, "price_level")
+    base_series, _, _ = get_percentile_series(args, "baseline_base")
+    ppm_series, _, _ = get_percentile_series(args, "baseline_ppm")
+    size_series, _, _ = get_percentile_series(args, "size_mult")
+    balance_series, _, _ = get_percentile_series(args, "balance_mult")
+    set_base_series, _, _ = get_percentile_series(args, "set_base")
+    set_ppm_series, _, _ = get_percentile_series(args, "set_ppm")
     earnings_series, _, _ = get_earnings_percentile_series(args)
     if (
         not price_series
@@ -1075,7 +1084,7 @@ def plot_combo(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot aggregated fee statistics from clboss fee logs."
+        description="Plot aggregated fee statistics from merged API and legacy fee history."
     )
     parser.add_argument(
         "--view",
@@ -1097,6 +1106,8 @@ def main():
     add_lightning_args(parser)
 
     args = parser.parse_args()
+    args.network_option = resolve_network_option(args)
+    args.resolved_lightning_dir = resolve_lightning_dir(args)
     args.from_ts = parse_time_arg(args.from_ts)
     args.to_ts = parse_time_arg(args.to_ts)
 
