@@ -590,6 +590,7 @@ TESTS = \
 	tests/bitcoin/test_sighash \
 	tests/bitcoin/test_tx \
 	tests/boltz/test_match_lockscript \
+	tests/boltz/test_boltz_connection \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
 	tests/boss/channelcandidateinvestigator/test_secretary \
 	tests/boss/test_availablerpccommandsannouncer \
