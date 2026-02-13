@@ -295,7 +295,7 @@ be `low` or `high`.
 ### `clboss-externpay`
 
 If CLBOSS is managing a node for a custodial service, then you should
-`decodepay` the invoices provided by clients whose funds you are
+`decode` the invoices provided by clients whose funds you are
 custodying, and pass the `payment_hash` as the sole argument to
 `clboss-externpay`.
 
