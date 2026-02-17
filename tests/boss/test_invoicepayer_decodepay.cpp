@@ -109,17 +109,19 @@ private:
 		});
 	}
 
-	Ev::Io<void> write_all(std::string data) {
-		return Ev::yield().then([this, data]() {
+	Ev::Io<void> write_all(std::string data, std::size_t retries = 0) {
+		return Ev::yield().then([this, data, retries]() {
 			auto wr = ssize_t();
 			do {
 				wr = write(socket.get(), data.c_str(), data.size());
 			} while (wr < 0 && errno == EINTR);
 			if (wr < 0 && (errno == EWOULDBLOCK || errno == EAGAIN))
-				return write_all(data);
+				return write_all(data, retries + 1);
 			assert(wr >= 0);
+			assert(retries < 100000);
 			if (std::size_t(wr) < data.size())
-				return write_all(data.substr(std::size_t(wr)));
+				return write_all(data.substr(std::size_t(wr)),
+						retries + 1);
 			return Ev::lift();
 		});
 	}
@@ -162,8 +164,8 @@ public:
 			auto id = assert_method(req, "decode");
 			auto params = req["params"];
 			assert(params.is_object());
-			assert(params.has("bolt11"));
-			assert(std::string(params["bolt11"]) == invoice);
+			assert(params.has("string"));
+			assert(std::string(params["string"]) == invoice);
 			return reply_result(id, R"({
 			   "type": "bolt11 invoice",
 			   "currency": "tb",
@@ -212,12 +214,14 @@ public:
 	}
 };
 
-Ev::Io<void> wait_for_pay_reply(std::shared_ptr<bool> pay_replied) {
-	return Ev::lift().then([pay_replied]() {
+Ev::Io<void> wait_for_pay_reply(std::shared_ptr<bool> pay_replied,
+				std::size_t retries = 0) {
+	return Ev::lift().then([pay_replied, retries]() {
 		if (*pay_replied)
 			return Ev::lift();
-		return Ev::yield().then([pay_replied]() {
-			return wait_for_pay_reply(pay_replied);
+		assert(retries < 100000);
+		return Ev::yield().then([pay_replied, retries]() {
+			return wait_for_pay_reply(pay_replied, retries + 1);
 		});
 	});
 }
