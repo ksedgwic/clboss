@@ -69,7 +69,7 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 	}).then([this, inv]() {
 		auto parms = Json::Out()
 			.start_object()
-				.field("bolt11", *inv)
+				.field("string", *inv)
 			.end_object()
 			;
 		return rpc->command("decode", std::move(parms));
