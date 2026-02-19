@@ -323,15 +323,26 @@ public:
 				};
 				if (!cfg.is_object())
 					return invalid_cfg(std::move(cfg));
-				if ( cfg.has("proxy")
-				  && cfg["proxy"].is_string()
-				   ) {
-					proxy = std::string(
-						cfg["proxy"]
-					);
+				/* raw 'listconfigs' rpc call results
+				 * were deprecated in 23.08, and disabled
+				 * in 24.11. The new return format has
+				 * structured sub-objects that we use to
+				 * access config fields. */
+				if (cfg.has("configs"))
+					cfg = cfg["configs"];
+
+				if (cfg.has("proxy")) {
+					if (cfg["proxy"].is_string())
+						proxy = std::string(cfg["proxy"]);
+					else if ( cfg["proxy"].has("value_str") &&
+							  cfg["proxy"]["value_str"].is_string())
+						proxy = std::string(cfg["proxy"]["value_str"]);
 				}
 				if (cfg.has("always-use-proxy")) {
-					auto flag = cfg["always-use-proxy"];
+					auto flag = cfg["always-use-proxy"].has("value_bool")
+								? cfg["always-use-proxy"]["value_bool"]
+								: cfg["always-use-proxy"]
+								;
 					if (flag.is_boolean())
 						always_use_proxy = !!flag;
 					else if (flag.is_null())

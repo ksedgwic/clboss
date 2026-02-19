@@ -604,6 +604,7 @@ TESTS = \
 	tests/boss/test_getmanifest \
 	tests/boss/test_invoicepayer_decodepay \
 	tests/boss/test_initialrebalancer \
+	tests/boss/test_initiator_listconfigs_proxy \
 	tests/boss/test_jitrebalancer \
 	tests/boss/test_needsconnectsolicitor \
 	tests/boss/test_onchainfeemonitor_samples_init \
