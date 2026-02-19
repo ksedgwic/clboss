@@ -69,11 +69,20 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 	}).then([this, inv]() {
 		auto parms = Json::Out()
 			.start_object()
-				.field("bolt11", *inv)
+				.field("string", *inv)
 			.end_object()
 			;
-		return rpc->command("decodepay", std::move(parms));
+		return rpc->command("decode", std::move(parms));
 	}).then([this, inv](Jsmn::Object res) {
+		if (!res.has("type")
+		|| std::string(res["type"]) != "bolt11 invoice"
+		|| !res.has("valid")
+		|| !res["valid"].is_boolean()
+		|| !bool(res["valid"])
+		) {
+			throw Jsmn::TypeError();
+		}
+
 		/* Check the features and see if this is MPP-enabled.  */
 		auto is_mpp = false;
 		if (res.has("features")) {
@@ -115,7 +124,7 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 	}).catching<Jsmn::TypeError>([this, inv](Jsmn::TypeError const& _) {
 		return Boss::log( bus, Error
 				, "InvoicePayer: "
-				  "Unexpected decodepay result for invoice: %s"
+				  "Unexpected decode result for invoice: %s"
 				, inv->c_str()
 				);
 	}).catching<Util::Str::HexParseFailure>([this, inv](Util::Str::HexParseFailure const& _) {
