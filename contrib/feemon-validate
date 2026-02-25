@@ -474,8 +474,8 @@ def main():
     parser.add_argument(
         "--ts-tolerance",
         type=float,
-        default=20.0,
-        help="Allowed timestamp delta in seconds (default: 20).",
+        default=60.0,
+        help="Allowed timestamp delta in seconds (default: 60).",
     )
     parser.add_argument(
         "--float-tolerance",

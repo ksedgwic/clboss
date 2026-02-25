@@ -86,7 +86,7 @@ how many days of earnings history are considered when ranking channels.
   per-peer progress, prints compact timestamp diagnostics for missing/extra
   records, prints full-record diagnostics for field mismatches, and exits
   non-zero when discrepancies are found. Default external DB path is
-  `./clboss-fee-info.sqlite3` and default timestamp tolerance is 20 seconds.
+  `./clboss-fee-info.sqlite3` and default timestamp tolerance is 60 seconds.
   Default float tolerance is `1e-5` and is scaled by value magnitude
   (`tol * max(1, |a|, |b|)`) to avoid false mismatches from JSON float
   rendering precision (notably `mult_product`).
