@@ -48,6 +48,20 @@ std::string make_before_query(char const* nodeid, std::int64_t before) {
 	   << "{\"nodeid\":\"" << nodeid << "\",\"before\":" << before << "}";
 	return os.str();
 }
+
+std::string make_since_window_query(std::int64_t since) {
+	auto os = std::ostringstream();
+	os << std::setprecision(17)
+	   << "{\"since\":" << since << "}";
+	return os.str();
+}
+
+std::string make_before_window_query(std::int64_t before) {
+	auto os = std::ostringstream();
+	os << std::setprecision(17)
+	   << "{\"before\":" << before << "}";
+	return os.str();
+}
 }
 
 Ev::Io<int> run() {
@@ -82,6 +96,76 @@ Ev::Io<int> run() {
 
 	++req_id;
 	rsp = false;
+	auto req_peers_initial = Boss::Msg::CommandRequest{
+		"clboss-feemon-peers",
+		Jsmn::Object::parse_json("{}"),
+		Ln::CommandId::left(req_id)
+	};
+	co_await bus.raise(std::move(req_peers_initial));
+	assert(rsp);
+	assert(last_rsp.id == Ln::CommandId::left(req_id));
+	auto result = Jsmn::Object::parse_json(
+		last_rsp.response.output().c_str()
+	);
+	assert(result["peers"].size() == 2);
+	assert(std::string(result["peers"][0]) == std::string(A));
+	assert(std::string(result["peers"][1]) == std::string(B));
+
+	++req_id;
+	rsp = false;
+	auto req_peers_before_past = Boss::Msg::CommandRequest{
+		"clboss-feemon-peers",
+		Jsmn::Object::parse_json(
+			make_before_window_query(far_past).c_str()
+		),
+		Ln::CommandId::left(req_id)
+	};
+	co_await bus.raise(std::move(req_peers_before_past));
+	assert(rsp);
+	assert(last_rsp.id == Ln::CommandId::left(req_id));
+	result = Jsmn::Object::parse_json(
+		last_rsp.response.output().c_str()
+	);
+	assert(result["peers"].size() == 0);
+
+	++req_id;
+	rsp = false;
+	auto req_peers_since_future = Boss::Msg::CommandRequest{
+		"clboss-feemon-peers",
+		Jsmn::Object::parse_json(
+			make_since_window_query(far_future).c_str()
+		),
+		Ln::CommandId::left(req_id)
+	};
+	co_await bus.raise(std::move(req_peers_since_future));
+	assert(rsp);
+	assert(last_rsp.id == Ln::CommandId::left(req_id));
+	result = Jsmn::Object::parse_json(
+		last_rsp.response.output().c_str()
+	);
+	assert(result["peers"].size() == 0);
+
+	++req_id;
+	rsp = false;
+	auto req_peers_before_future = Boss::Msg::CommandRequest{
+		"clboss-feemon-peers",
+		Jsmn::Object::parse_json(
+			make_before_window_query(far_future).c_str()
+		),
+		Ln::CommandId::left(req_id)
+	};
+	co_await bus.raise(std::move(req_peers_before_future));
+	assert(rsp);
+	assert(last_rsp.id == Ln::CommandId::left(req_id));
+	result = Jsmn::Object::parse_json(
+		last_rsp.response.output().c_str()
+	);
+	assert(result["peers"].size() == 2);
+	assert(std::string(result["peers"][0]) == std::string(A));
+	assert(std::string(result["peers"][1]) == std::string(B));
+
+	++req_id;
+	rsp = false;
 	auto req_initial = Boss::Msg::CommandRequest{
 		"clboss-feemon-history",
 		Jsmn::Object::parse_json(
@@ -92,7 +176,7 @@ Ev::Io<int> run() {
 	co_await bus.raise(std::move(req_initial));
 	assert(rsp);
 	assert(last_rsp.id == Ln::CommandId::left(req_id));
-	auto result = Jsmn::Object::parse_json(
+	result = Jsmn::Object::parse_json(
 		last_rsp.response.output().c_str()
 	);
 	auto history = result["history"];

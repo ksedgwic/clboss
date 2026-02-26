@@ -81,6 +81,8 @@ how many days of earnings history are considered when ranking channels.
   `feemon_peers` and `feemon_change_events`) during normal operation.
 - **`clboss-feemon-history`** is a CLBOSS command that returns per-peer fee modifier
   history between optional `since`/`before` timestamps.
+- **`clboss-feemon-peers`** is a CLBOSS command that returns peer nodeids with fee
+  monitor history between optional `since`/`before` timestamps.
 - **`feemon-validate`** compares `fee-log-parser` sqlite history against
   `clboss-feemon-history` per peer over a requested time window. It reports
   per-peer progress, prints compact timestamp diagnostics for missing/extra

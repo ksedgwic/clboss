@@ -114,13 +114,15 @@ void FeeMonitor::start() {
 			"nodeid [since] [before]",
 			"Show fee modifier history for nodeid between since and before.",
 			false
+		}) + bus.raise(Msg::ManifestCommand{
+			"clboss-feemon-peers",
+			"[since] [before]",
+			"Show peer nodeids that have fee modifier history between since and before.",
+			false
 		});
 	});
 	bus.subscribe<Msg::CommandRequest
 		     >([this](Msg::CommandRequest const& req) {
-		if (req.command != "clboss-feemon-history")
-			return Ev::lift();
-
 		auto id = req.id;
 		auto paramfail = [this, id]() {
 			return bus.raise(Msg::CommandFail{
@@ -130,143 +132,208 @@ void FeeMonitor::start() {
 			});
 		};
 
-		auto nodeid_j = Jsmn::Object();
-		auto since_j = Jsmn::Object();
-		auto before_j = Jsmn::Object();
-		auto params = req.params;
-		if (params.is_object()) {
-			auto has_nodeid = params.has("nodeid");
-			auto has_since = params.has("since");
-			auto has_before = params.has("before");
-			if (!has_nodeid)
+		if (req.command == "clboss-feemon-history") {
+			auto nodeid_j = Jsmn::Object();
+			auto since_j = Jsmn::Object();
+			auto before_j = Jsmn::Object();
+			auto params = req.params;
+			if (params.is_object()) {
+				auto has_nodeid = params.has("nodeid");
+				auto has_since = params.has("since");
+				auto has_before = params.has("before");
+				if (!has_nodeid)
+					return paramfail();
+				if (params.size() != std::size_t(
+					has_nodeid + has_since + has_before
+				))
+					return paramfail();
+				nodeid_j = params["nodeid"];
+				if (has_since)
+					since_j = params["since"];
+				if (has_before)
+					before_j = params["before"];
+			} else if (params.is_array()) {
+				if (params.size() < 1 || params.size() > 3)
+					return paramfail();
+				nodeid_j = params[0];
+				if (params.size() >= 2)
+					since_j = params[1];
+				if (params.size() >= 3)
+					before_j = params[2];
+			} else {
 				return paramfail();
-			if (params.size() != std::size_t(
-				has_nodeid + has_since + has_before
-			))
+			}
+
+			if (!nodeid_j.is_string())
 				return paramfail();
-			nodeid_j = params["nodeid"];
-			if (has_since)
-				since_j = params["since"];
-			if (has_before)
-				before_j = params["before"];
-		} else if (params.is_array()) {
-			if (params.size() < 1 || params.size() > 3)
+			auto nodeid_s = std::string(nodeid_j);
+			if (!Ln::NodeId::valid_string(nodeid_s))
 				return paramfail();
-			nodeid_j = params[0];
-			if (params.size() >= 2)
-				since_j = params[1];
-			if (params.size() >= 3)
-				before_j = params[2];
-		} else {
-			return paramfail();
+			nodeid_s = std::string(Ln::NodeId(nodeid_s));
+
+			auto since = std::optional<double>();
+			auto before = std::optional<double>();
+			if (!parse_optional_number(since_j, since))
+				return paramfail();
+			if (!parse_optional_number(before_j, before))
+				return paramfail();
+			if (since && before && *since > *before)
+				return paramfail();
+
+			return db_transact().then([this, id, nodeid_s, since, before](Sqlite3::Tx tx) {
+				auto q = tx.query(R"QRY(
+				SELECT e.id,
+				       e.ts,
+				       e.peer_id,
+				       e.set_base,
+				       e.set_base IS NULL,
+				       e.set_ppm,
+				       e.set_ppm IS NULL,
+				       e.baseline_base,
+				       e.baseline_base IS NULL,
+				       e.baseline_ppm,
+				       e.baseline_ppm IS NULL,
+				       e.size_mult,
+				       e.size_mult IS NULL,
+				       e.size_total_peers,
+				       e.size_total_peers IS NULL,
+				       e.size_less_peers,
+				       e.size_less_peers IS NULL,
+				       e.balance_mult,
+				       e.balance_mult IS NULL,
+				       e.balance_our_msat,
+				       e.balance_our_msat IS NULL,
+				       e.balance_total_msat,
+				       e.balance_total_msat IS NULL,
+				       e.price_level,
+				       e.price_level IS NULL,
+				       e.price_mult,
+				       e.price_mult IS NULL,
+				       e.price_cards_left,
+				       e.price_cards_left IS NULL,
+				       e.price_center,
+				       e.price_center IS NULL,
+				       e.mult_product,
+				       e.mult_product IS NULL,
+				       e.est_base,
+				       e.est_base IS NULL,
+				       e.est_ppm,
+				       e.est_ppm IS NULL
+				  FROM feemon_change_events e
+				  JOIN feemon_peers p
+				    ON e.peer_id = p.id
+				 WHERE p.node_id = :node_id
+				   AND (:since IS NULL OR e.ts >= :since)
+				   AND (:before IS NULL OR e.ts <= :before)
+				 ORDER BY e.ts ASC;
+				)QRY");
+				q.bind(":node_id", nodeid_s);
+				bind_optional(q, ":since", since);
+				bind_optional(q, ":before", before);
+				auto fetch = q.execute();
+
+				auto out = Json::Out();
+				auto top = out.start_object();
+				top.field("nodeid", nodeid_s);
+				if (since)
+					top.field("since", *since);
+				if (before)
+					top.field("before", *before);
+				auto history = top.start_array("history");
+				for (auto& r : fetch) {
+					auto row = history.start_object();
+					auto idx = std::size_t(0);
+					row.field("id", r.get<std::uint64_t>(idx++));
+					row.field("ts", static_cast<std::uint64_t>(r.get<double>(idx++)));
+					row.field("peer_id", r.get<std::uint64_t>(idx++));
+					add_optional_int(row, "set_base", r, idx);
+					add_optional_int(row, "set_ppm", r, idx);
+					add_optional_int(row, "baseline_base", r, idx);
+					add_optional_int(row, "baseline_ppm", r, idx);
+					add_optional_double(row, "size_mult", r, idx);
+					add_optional_int(row, "size_total_peers", r, idx);
+					add_optional_int(row, "size_less_peers", r, idx);
+					add_optional_double(row, "balance_mult", r, idx);
+					add_optional_int(row, "balance_our_msat", r, idx);
+					add_optional_int(row, "balance_total_msat", r, idx);
+					add_optional_int(row, "price_level", r, idx);
+					add_optional_double(row, "price_mult", r, idx);
+					add_optional_int(row, "price_cards_left", r, idx);
+					add_optional_int(row, "price_center", r, idx);
+					add_optional_double(row, "mult_product", r, idx);
+					add_optional_int(row, "est_base", r, idx);
+					add_optional_int(row, "est_ppm", r, idx);
+					row.end_object();
+				}
+				history.end_array();
+				top.end_object();
+				tx.commit();
+				return bus.raise(Msg::CommandResponse{id, out});
+			});
+		} else if (req.command == "clboss-feemon-peers") {
+			auto since_j = Jsmn::Object();
+			auto before_j = Jsmn::Object();
+			auto params = req.params;
+			if (params.is_object()) {
+				auto has_since = params.has("since");
+				auto has_before = params.has("before");
+				if (params.size() != std::size_t(has_since + has_before))
+					return paramfail();
+				if (has_since)
+					since_j = params["since"];
+				if (has_before)
+					before_j = params["before"];
+			} else if (params.is_array()) {
+				if (params.size() > 2)
+					return paramfail();
+				if (params.size() >= 1)
+					since_j = params[0];
+				if (params.size() >= 2)
+					before_j = params[1];
+			} else if (!params.is_null()) {
+				return paramfail();
+			}
+
+			auto since = std::optional<double>();
+			auto before = std::optional<double>();
+			if (!parse_optional_number(since_j, since))
+				return paramfail();
+			if (!parse_optional_number(before_j, before))
+				return paramfail();
+			if (since && before && *since > *before)
+				return paramfail();
+
+			return db_transact().then([this, id, since, before](Sqlite3::Tx tx) {
+				auto q = tx.query(R"QRY(
+				SELECT DISTINCT p.node_id
+				  FROM feemon_change_events e
+				  JOIN feemon_peers p
+				    ON e.peer_id = p.id
+				 WHERE (:since IS NULL OR e.ts >= :since)
+				   AND (:before IS NULL OR e.ts <= :before)
+				 ORDER BY p.node_id ASC;
+				)QRY");
+				bind_optional(q, ":since", since);
+				bind_optional(q, ":before", before);
+				auto fetch = q.execute();
+
+				auto out = Json::Out();
+				auto top = out.start_object();
+				if (since)
+					top.field("since", *since);
+				if (before)
+					top.field("before", *before);
+				auto peers = top.start_array("peers");
+				for (auto& r : fetch)
+					peers.entry(r.get<std::string>(0));
+				peers.end_array();
+				top.end_object();
+				tx.commit();
+				return bus.raise(Msg::CommandResponse{id, out});
+			});
 		}
 
-		if (!nodeid_j.is_string())
-			return paramfail();
-		auto nodeid_s = std::string(nodeid_j);
-		if (!Ln::NodeId::valid_string(nodeid_s))
-			return paramfail();
-		nodeid_s = std::string(Ln::NodeId(nodeid_s));
-
-		auto since = std::optional<double>();
-		auto before = std::optional<double>();
-		if (!parse_optional_number(since_j, since))
-			return paramfail();
-		if (!parse_optional_number(before_j, before))
-			return paramfail();
-		if (since && before && *since > *before)
-			return paramfail();
-
-		return db_transact().then([this, id, nodeid_s, since, before](Sqlite3::Tx tx) {
-			auto q = tx.query(R"QRY(
-			SELECT e.id,
-			       e.ts,
-			       e.peer_id,
-			       e.set_base,
-			       e.set_base IS NULL,
-			       e.set_ppm,
-			       e.set_ppm IS NULL,
-			       e.baseline_base,
-			       e.baseline_base IS NULL,
-			       e.baseline_ppm,
-			       e.baseline_ppm IS NULL,
-			       e.size_mult,
-			       e.size_mult IS NULL,
-			       e.size_total_peers,
-			       e.size_total_peers IS NULL,
-			       e.size_less_peers,
-			       e.size_less_peers IS NULL,
-			       e.balance_mult,
-			       e.balance_mult IS NULL,
-			       e.balance_our_msat,
-			       e.balance_our_msat IS NULL,
-			       e.balance_total_msat,
-			       e.balance_total_msat IS NULL,
-			       e.price_level,
-			       e.price_level IS NULL,
-			       e.price_mult,
-			       e.price_mult IS NULL,
-			       e.price_cards_left,
-			       e.price_cards_left IS NULL,
-			       e.price_center,
-			       e.price_center IS NULL,
-			       e.mult_product,
-			       e.mult_product IS NULL,
-			       e.est_base,
-			       e.est_base IS NULL,
-			       e.est_ppm,
-			       e.est_ppm IS NULL
-			  FROM feemon_change_events e
-			  JOIN feemon_peers p
-			    ON e.peer_id = p.id
-			 WHERE p.node_id = :node_id
-			   AND (:since IS NULL OR e.ts >= :since)
-			   AND (:before IS NULL OR e.ts <= :before)
-			 ORDER BY e.ts ASC;
-			)QRY");
-			q.bind(":node_id", nodeid_s);
-			bind_optional(q, ":since", since);
-			bind_optional(q, ":before", before);
-			auto fetch = q.execute();
-
-			auto out = Json::Out();
-			auto top = out.start_object();
-			top.field("nodeid", nodeid_s);
-			if (since)
-				top.field("since", *since);
-			if (before)
-				top.field("before", *before);
-			auto history = top.start_array("history");
-			for (auto& r : fetch) {
-				auto row = history.start_object();
-				auto idx = std::size_t(0);
-				row.field("id", r.get<std::uint64_t>(idx++));
-				row.field("ts", static_cast<std::uint64_t>(r.get<double>(idx++)));
-				row.field("peer_id", r.get<std::uint64_t>(idx++));
-				add_optional_int(row, "set_base", r, idx);
-				add_optional_int(row, "set_ppm", r, idx);
-				add_optional_int(row, "baseline_base", r, idx);
-				add_optional_int(row, "baseline_ppm", r, idx);
-				add_optional_double(row, "size_mult", r, idx);
-				add_optional_int(row, "size_total_peers", r, idx);
-				add_optional_int(row, "size_less_peers", r, idx);
-				add_optional_double(row, "balance_mult", r, idx);
-				add_optional_int(row, "balance_our_msat", r, idx);
-				add_optional_int(row, "balance_total_msat", r, idx);
-				add_optional_int(row, "price_level", r, idx);
-				add_optional_double(row, "price_mult", r, idx);
-				add_optional_int(row, "price_cards_left", r, idx);
-				add_optional_int(row, "price_center", r, idx);
-				add_optional_double(row, "mult_product", r, idx);
-				add_optional_int(row, "est_base", r, idx);
-				add_optional_int(row, "est_ppm", r, idx);
-				row.end_object();
-			}
-			history.end_array();
-			top.end_object();
-			tx.commit();
-			return bus.raise(Msg::CommandResponse{id, out});
-		});
+		return Ev::lift();
 	});
 }
 
