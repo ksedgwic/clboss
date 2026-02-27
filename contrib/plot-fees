@@ -18,6 +18,11 @@ SCID_RE = re.compile(r"^\d+x\d+x\d+$")
 FEE_SYMLOG_LINTHRESH = 1.0
 FEE_SYMLOG_LINSCALE = 0.3
 
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
 
 def local_tz():
     return datetime.now().astimezone().tzinfo
@@ -112,7 +117,14 @@ def parse_time_arg(value):
 
 
 def price_level_to_mult(level):
-    import numpy as np
+    if np is None:
+        if isinstance(level, (int, float)):
+            if level < 0:
+                return math.pow(0.8, -level)
+            if level > 0:
+                return math.pow(1.2, level)
+            return 1.0
+        return [price_level_to_mult(v) for v in level]
 
     arr = np.asarray(level, dtype=float)
     mult = np.where(
@@ -126,7 +138,14 @@ def price_level_to_mult(level):
 
 
 def price_mult_to_level(mult):
-    import numpy as np
+    if np is None:
+        if isinstance(mult, (int, float)):
+            if mult < 1:
+                return -math.log(mult) / math.log(0.8)
+            if mult > 1:
+                return math.log(mult) / math.log(1.2)
+            return 0.0
+        return [price_mult_to_level(v) for v in mult]
 
     arr = np.asarray(mult, dtype=float)
     level = np.zeros_like(arr, dtype=float)
