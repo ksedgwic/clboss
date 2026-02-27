@@ -75,3 +75,20 @@ how many days of earnings history are considered when ranking channels.
   accepts the `--days` option.
 - **`recently-closed`** lists channels that closed within the last N days, also
   controlled via `--days`.
+- **`fee-log-parser`** is a parser that streams DEBUG-level logging and writes
+  a sqlite database containing fee algorithm information.
+- **`plot-fees`** plots fee-related time series from the `fee-log-parser` sqlite
+  output. `--peer` accepts a nodeid, alias (via lightning-cli/listnodes), or
+  SCID (via lightning-cli/listpeerchannels). The combo view includes a daily
+  earnings panel (incoming/outgoing msat per day) when lightning-cli is
+  available, and the `incoming-earnings`/`outgoing-earnings` views render
+  those panels on their own. Use `--title` to override the plot title
+  (defaults to the peer label; pass empty to omit).
+- **`plot-aggregate`** plots aggregate percentile summaries from the
+  `fee-log-parser` sqlite output. Views include
+  `baseline-base`, `baseline-ppm`, `size`, `balance`, `theory`,
+  `advertised-base`, `advertised-ppm`, `earnings`, and a `combo` view. Each
+  view shows daily
+  p00/p10/p25/p50/p75/p90/p100 percentiles across nodes. The `earnings`
+  view uses `clboss-earnings-history all` to compute net earnings
+  percentiles (sat/day).
