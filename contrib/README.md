@@ -119,4 +119,6 @@ how many days of earnings history are considered when ranking channels.
   view shows daily
   p00/p10/p25/p50/p75/p90/p100 percentiles across nodes. The `earnings`
   view uses `clboss-earnings-history all` to compute net earnings
-  percentiles (sat/day).
+  percentiles (sat/day). In API mode, peer discovery uses
+  `clboss-feemon-peers [since] [before]` so windowed aggregate plots include
+  peers that were active during the selected period (even if currently closed).

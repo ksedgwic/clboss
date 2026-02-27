@@ -423,6 +423,8 @@ def get_fee_records_by_node(args):
     api_nodes = list_api_node_ids(
         args.resolved_lightning_dir,
         args.network_option,
+        since_dt=args.from_ts,
+        before_dt=args.to_ts,
         warn=warn_feemon_data,
     )
     node_ids = sorted(set(external_nodes) | set(api_nodes))

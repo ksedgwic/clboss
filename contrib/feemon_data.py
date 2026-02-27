@@ -233,10 +233,56 @@ def list_external_node_ids(db_path, since_dt=None, before_dt=None):
         return [row[0] for row in conn.execute(sql, binds)]
 
 
-def list_api_node_ids(lightning_dir, network_option, warn=None):
+def _extract_peer_ids_from_list(value):
+    if not isinstance(value, list):
+        return None
+    peers = set()
+    for item in value:
+        if isinstance(item, str) and item:
+            peers.add(item)
+    return sorted(peers)
+
+
+def list_api_node_ids(
+    lightning_dir, network_option, since_dt=None, before_dt=None, warn=None
+):
     if shutil.which("lightning-cli") is None:
         _warn(warn, "lightning-cli not found; using external DB data only")
         return []
+
+    since_ts = _dt_to_epoch(since_dt)
+    before_ts = _dt_to_epoch(before_dt)
+    args = []
+    if since_ts is not None:
+        args.append(epoch_arg(since_ts))
+    if before_ts is not None:
+        args.append(epoch_arg(before_ts))
+
+    try:
+        response = run_lightning_cli_command(
+            lightning_dir, network_option, "clboss-feemon-peers", *args
+        )
+    except RuntimeError as e:
+        _warn(
+            warn,
+            f"unable to list peers from clboss-feemon-peers ({e}); "
+            "falling back to listpeerchannels",
+        )
+        response = None
+
+    if isinstance(response, dict):
+        peers = _extract_peer_ids_from_list(response.get("peers"))
+        if peers is not None:
+            return peers
+        _warn(
+            warn,
+            "unexpected clboss-feemon-peers response; falling back to listpeerchannels",
+        )
+    elif response is not None:
+        _warn(
+            warn,
+            "unexpected clboss-feemon-peers response; falling back to listpeerchannels",
+        )
 
     try:
         response = run_lightning_cli_command(
@@ -253,7 +299,6 @@ def list_api_node_ids(lightning_dir, network_option, warn=None):
     if not isinstance(channels, list):
         _warn(warn, "unexpected listpeerchannels response; using external DB data only")
         return []
-
     peers = set()
     for ch in channels:
         if not isinstance(ch, dict):
