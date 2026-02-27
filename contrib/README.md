@@ -76,19 +76,49 @@ how many days of earnings history are considered when ranking channels.
 - **`recently-closed`** lists channels that closed within the last N days, also
   controlled via `--days`.
 - **`fee-log-parser`** is a parser that streams DEBUG-level logging and writes
-  a sqlite database containing fee algorithm information.
-- **`plot-fees`** plots fee-related time series from the `fee-log-parser` sqlite
-  output. `--peer` accepts a nodeid, alias (via lightning-cli/listnodes), or
-  SCID (via lightning-cli/listpeerchannels). The combo view includes a daily
-  earnings panel (incoming/outgoing msat per day) when lightning-cli is
-  available, and the `incoming-earnings`/`outgoing-earnings` views render
-  those panels on their own. Use `--title` to override the plot title
-  (defaults to the peer label; pass empty to omit).
-- **`plot-aggregate`** plots aggregate percentile summaries from the
-  `fee-log-parser` sqlite output. Views include
+  a sqlite database containing fee algorithm information. CLBOSS now records
+  the same schema in its internal database (`data.clboss`, tables
+  `feemon_peers` and `feemon_change_events`) during normal operation.
+- **`clboss-feemon-history`** is a CLBOSS command that returns per-peer fee modifier
+  history between optional `since`/`before` timestamps.
+- **`clboss-feemon-peers`** is a CLBOSS command that returns peer nodeids with fee
+  monitor history between optional `since`/`before` timestamps.
+- **`feemon-validate`** compares `fee-log-parser` sqlite history against
+  `clboss-feemon-history` per peer over a requested time window. It reports
+  per-peer progress, prints compact timestamp diagnostics for missing/extra
+  records, prints full-record diagnostics for field mismatches, and exits
+  non-zero when discrepancies are found. Default external DB path is
+  `./clboss-fee-info.sqlite3` and default timestamp tolerance is 60 seconds.
+  Default float tolerance is `1e-5` and is scaled by value magnitude
+  (`tol * max(1, |a|, |b|)`) to avoid false mismatches from JSON float
+  rendering precision (notably `mult_product`).
+  Derived integer fields `est_base` and `est_ppm` use a relative tolerance
+  with default `1e-3` (`--int-rel-tolerance`) so small rounding effects at
+  large magnitudes do not trigger mismatches.
+  `--since`/`--before` accept Unix epoch seconds in addition to the existing
+  human-readable time formats. Naive timestamps are interpreted in local time;
+  Unix epoch input is UTC; explicit timezone offsets are honored.
+- **`plot-fees`** plots fee-related time series for a peer from merged fee monitor
+  data: API history (`clboss-feemon-history`) plus legacy sqlite history
+  (`fee-log-parser`). When both sources cover a period, API records are
+  preferred and sqlite is used only for earlier history. By default it uses API
+  data only; pass `--db` to include legacy sqlite history. `--peer` accepts a
+  nodeid, alias (via lightning-cli/listnodes), or SCID (via
+  lightning-cli/listpeerchannels). The combo view includes a daily earnings
+  panel (incoming/outgoing msat per day) when lightning-cli is available, and
+  the `incoming-earnings`/`outgoing-earnings` views render those panels on
+  their own. In the `theory` panel, a `theory_center` line is drawn only where
+  API records include `price_center`; legacy-only spans omit that line. Use
+  `--title` to override the plot title (defaults to the peer label; pass empty
+  to omit).
+- **`plot-aggregate`** plots aggregate percentile summaries from merged fee monitor
+  data (API preferred over overlapping legacy sqlite history). By default it
+  uses API data only; pass `--db` to include legacy sqlite history. Views include
   `baseline-base`, `baseline-ppm`, `size`, `balance`, `theory`,
   `advertised-base`, `advertised-ppm`, `earnings`, and a `combo` view. Each
   view shows daily
   p00/p10/p25/p50/p75/p90/p100 percentiles across nodes. The `earnings`
   view uses `clboss-earnings-history all` to compute net earnings
-  percentiles (sat/day).
+  percentiles (sat/day). In API mode, peer discovery uses
+  `clboss-feemon-peers [since] [before]` so windowed aggregate plots include
+  peers that were active during the selected period (even if currently closed).
