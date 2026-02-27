@@ -367,11 +367,11 @@ def run_lightning_cli_command(lightning_dir, network_option, subcommand, *args):
         result = subprocess.run(command, capture_output=True, text=True, check=True)
         return json.loads(result.stdout)
     except subprocess.CalledProcessError as e:
-        print(f"Command '{command}' failed with error: {e}")
+        print(f"Command '{command}' failed with error: {e}", file=sys.stderr)
     except FileNotFoundError:
-        print("lightning-cli not found in PATH.")
+        print("lightning-cli not found in PATH.", file=sys.stderr)
     except json.JSONDecodeError as e:
-        print(f"Failed to parse JSON from command '{command}': {e}")
+        print(f"Failed to parse JSON from command '{command}': {e}", file=sys.stderr)
     return None
 
 
