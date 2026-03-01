@@ -43,7 +43,7 @@ namespace Ev {
  */
 /* mapIO :: (a -> IO b) -> [a] -> IO [b] */
 template<typename f, typename a>
-Io<std::vector<typename Detail::IoInner<typename std::result_of<f(a)>::type>::type>>
+Io<std::vector<typename Detail::IoInner<std::invoke_result_t<f, a>>::type>>
 map(f func, std::vector<a> as);
 
 namespace Detail {
@@ -209,9 +209,9 @@ public:
 }
 
 template<typename f, typename a>
-Io<std::vector<typename Detail::IoInner<typename std::result_of<f(a)>::type>::type>>
+Io<std::vector<typename Detail::IoInner<std::invoke_result_t<f, a>>::type>>
 map(f func, std::vector<a> as) {
-	using b = typename Detail::IoInner<typename std::result_of<f(a)>::type>::type;
+	using b = typename Detail::IoInner<std::invoke_result_t<f, a>>::type;
 
 	/* Save the function into shared storage.  */
 	auto pfunc = std::make_shared<f>(std::move(func));
