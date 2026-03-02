@@ -15,7 +15,7 @@ config.h.in
 config.status
 config.h
 configure
-contrib/clboss/__pycache__/
+contrib/**/__pycache__/
 compile_commands.json
 *.log
 *.m4
