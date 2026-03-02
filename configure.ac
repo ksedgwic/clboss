@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([clboss], [0.15.1], [ken@bonsai.com])
+AC_INIT([clboss], [0.16.0], [ken@bonsai.com])
 AC_CONFIG_AUX_DIR([auxdir])
 AM_INIT_AUTOMAKE([subdir-objects tar-ustar])
 AC_CONFIG_SRCDIR([main.cpp])
