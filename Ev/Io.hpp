@@ -91,9 +91,9 @@ public:
 
 	/* (>>=) :: IO a -> (a -> IO b) -> IO b*/
 	template<typename f>
-	Io<typename Detail::IoInner<typename std::result_of<f(a)>::type>::type>
+	Io<typename Detail::IoInner<std::invoke_result_t<f, a>>::type>
 	then(f func)&& {
-		using b = typename Detail::IoInner<typename std::result_of<f(a)>::type>::type;
+		using b = typename Detail::IoInner<std::invoke_result_t<f, a>>::type;
 		auto pcore = std::make_shared<CoreFunc>(std::move(this->core));
 		auto pfunc = std::make_shared<f>(std::move(func));
 		/* Continuation Monad.  */
@@ -150,9 +150,9 @@ public:
 
 	/* (>>=) :: IO () -> (() -> IO b) -> IO b*/
 	template<typename f>
-	Io<typename Detail::IoInner<typename std::result_of<f()>::type>::type>
+	Io<typename Detail::IoInner<std::invoke_result_t<f>>::type>
 	then(f func)&& {
-		using b = typename Detail::IoInner<typename std::result_of<f()>::type>::type;
+		using b = typename Detail::IoInner<std::invoke_result_t<f>>::type;
 		auto pcore = std::make_shared<CoreFunc>(std::move(this->core));
 		auto pfunc = std::make_shared<f>(std::move(func));
 		/* Continuation Monad.  */
