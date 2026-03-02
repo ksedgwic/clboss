@@ -55,8 +55,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Credits
 
 Many thanks (!!) to contributors to this release:
-- @codepleb
 - @JosephGoulden
+- @lduchosal
+- @raphaellueckl
 - @smolting
 - @tank-welder
 - @ZmnSCPxj
