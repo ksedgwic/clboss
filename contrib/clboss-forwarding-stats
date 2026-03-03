@@ -8,15 +8,18 @@
 # The channels at the top of the list are good, the ones at the bottom are bad.
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 import subprocess
+import sys
 import time
 
 from tabulate import tabulate
 from wcwidth import wcswidth
 
 from clboss.alias_cache import lookup_alias
+from feemon_data import load_merged_records_by_node
 
 def now():
     now_ts = time.time()
@@ -123,6 +126,89 @@ def calculate_trcl(peer, channel, daystr):
     return epd_per_bal_per_day * 365 * 100 * 100
 
 
+def compute_time_weighted_avg_balance(records, window_start_ts, now_ts):
+    """Compute time-weighted average of balance_our_msat over [window_start_ts, now_ts].
+
+    Uses sample-and-hold: each balance value holds until the next record.
+    Records should be pre-filtered to the window period; any record at or
+    before window_start_ts is used as the boundary balance.
+
+    Returns (avg_msat_int, effective_start_ts) or (None, None) if no data.
+    """
+    if not records:
+        return (None, None)
+
+    # Extract (ts, balance) pairs, skipping records without balance data
+    points = []
+    for rec in records:
+        bal = rec["fields"].get("balance_our_msat")
+        if bal is not None:
+            points.append((rec["ts"], int(bal)))
+
+    if not points:
+        return (None, None)
+
+    # Find the boundary balance: last record at or before window_start_ts
+    boundary_balance = None
+    first_in_window_idx = None
+    for i, (ts, bal) in enumerate(points):
+        if ts <= window_start_ts:
+            boundary_balance = bal
+        else:
+            if first_in_window_idx is None:
+                first_in_window_idx = i
+
+    if boundary_balance is not None:
+        # We have data covering the window start
+        effective_start = window_start_ts
+        # Build the segments: start with boundary balance from window_start
+        segments = []
+        current_bal = boundary_balance
+        current_ts = window_start_ts
+
+        # Add segments for each point within the window
+        for ts, bal in points:
+            if ts <= window_start_ts:
+                continue
+            if ts >= now_ts:
+                break
+            segments.append((current_bal, ts - current_ts))
+            current_bal = bal
+            current_ts = ts
+
+        # Final segment to now
+        segments.append((current_bal, now_ts - current_ts))
+
+    elif first_in_window_idx is not None:
+        # No data before window start; average over [first_record_ts, now]
+        first_ts, first_bal = points[first_in_window_idx]
+        effective_start = first_ts
+        segments = []
+        current_bal = first_bal
+        current_ts = first_ts
+
+        for ts, bal in points[first_in_window_idx + 1:]:
+            if ts >= now_ts:
+                break
+            segments.append((current_bal, ts - current_ts))
+            current_bal = bal
+            current_ts = ts
+
+        segments.append((current_bal, now_ts - current_ts))
+    else:
+        # All points are after now_ts (shouldn't happen in practice)
+        return (None, None)
+
+    total_duration = sum(dur for _, dur in segments)
+    if total_duration <= 0:
+        # Single point at now_ts
+        return (int(points[-1][1]), effective_start)
+
+    integral = sum(bal * dur for bal, dur in segments)
+    avg = int(integral / total_duration)
+    return (avg, effective_start)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run lightning-cli with specified network"
@@ -138,6 +224,10 @@ def main():
         "--days",
         type=int,
         help="Number of days of history to use with clboss-recent-earnings",
+    )
+    parser.add_argument(
+        "--db", default=None,
+        help="Path to feemon sqlite database (optional; default: API only).",
     )
 
     args = parser.parse_args()
@@ -235,6 +325,35 @@ def main():
                 peers[id]["age"] = determine_peer_age(
                     lightning_dir, network_option, id, peer_metrics)
 
+    # Fetch feemon data and compute time-weighted average balances
+    now_ts = now()
+    peer_ids = list(peers.keys())
+    if args.days:
+        window_start_ts = now_ts - args.days * 86400
+    else:
+        window_start_ts = 0
+
+    if args.days:
+        since_dt = datetime.fromtimestamp(window_start_ts, tz=timezone.utc)
+    else:
+        since_dt = None
+
+    feemon_records_by_node = load_merged_records_by_node(
+        args.db, peer_ids, api_node_ids=peer_ids,
+        since_dt=since_dt, before_dt=None,
+        lightning_dir=lightning_dir,
+        network_option=network_option,
+    )
+
+    avg_to_us_by_peer = {}
+    for peer_id in peer_ids:
+        records = feemon_records_by_node.get(peer_id, [])
+        avg, _ = compute_time_weighted_avg_balance(
+            records, window_start_ts, now_ts
+        )
+        if avg is not None:
+            avg_to_us_by_peer[peer_id] = avg
+
     sorted_channels = sorted(
         channels.keys(),
         key=lambda cid: -calculate_peer_score(
@@ -262,6 +381,8 @@ def main():
         opener = "L" if channels[short_channel_id]["opener"] == "local" else "R"
         agestr = str(int(peer_age_days(peer)))
         to_us_msat = f"{channels[short_channel_id]['to_us_msat']:_}"
+        avg = avg_to_us_by_peer.get(peer_id)
+        avg_to_us_str = f"{avg:_}" if avg is not None else "-"
         forwarded = f"{fwded:_}"
         netearningsstr = f"{netearnings:_}"
         table_data.append(
@@ -270,6 +391,7 @@ def main():
                 short_channel_id,
                 opener,
                 to_us_msat,
+                avg_to_us_str,
                 agestr,
                 forwarded,
                 netearningsstr,
@@ -281,11 +403,11 @@ def main():
     # Print the table without grid
     table_str = tabulate(
         table_data,
-        headers=["Alias", "SCID", "O", "to us", "Age", "Forwarded", "NetEarn", "FPBPD", "TRCL*"],
+        headers=["Alias", "SCID", "O", "to us", "avg_to_us", "Age", "Forwarded", "NetEarn", "FPBPD", "TRCL*"],
         tablefmt="plain",
         stralign="left",
         numalign="right",
-        colalign=("left", "left", "left", "right", "right", "right", "right", "right", "right"),
+        colalign=("left", "left", "left", "right", "right", "right", "right", "right", "right", "right"),
         disable_numparse=True,
     )
 
