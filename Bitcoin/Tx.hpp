@@ -1,6 +1,7 @@
 #ifndef BITCOIN_TX_HPP
 #define BITCOIN_TX_HPP
 
+#include<cstdint>
 #include"Bitcoin/TxIn.hpp"
 #include"Bitcoin/TxOut.hpp"
 

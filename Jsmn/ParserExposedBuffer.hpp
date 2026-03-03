@@ -8,9 +8,8 @@
 #include<string>
 #include<utility>
 #include<vector>
+#include"Jsmn/Object.hpp"
 #include"Jsmn/ParseError.hpp"
-
-namespace Jsmn { class Object; }
 
 namespace Jsmn {
 

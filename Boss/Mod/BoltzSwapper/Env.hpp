@@ -1,6 +1,7 @@
 #ifndef BOSS_MOD_BOLTZSWAPPER_ENV_HPP
 #define BOSS_MOD_BOLTZSWAPPER_ENV_HPP
 
+#include<cstdint>
 #include"Boltz/EnvIF.hpp"
 
 namespace Boss { namespace Mod { class Rpc; }}

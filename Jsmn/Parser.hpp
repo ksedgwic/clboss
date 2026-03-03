@@ -4,8 +4,6 @@
 #include"Jsmn/ParserExposedBuffer.hpp"
 #include<algorithm>
 
-namespace Jsmn { class Object; }
-
 namespace Jsmn {
 
 /* A stateful jsmn-based parser.

@@ -2,6 +2,7 @@
 #define UTIL_BECH32_HPP
 
 #include "Compiler.hpp"
+#include<cstdint>
 #include<stdexcept>
 #include<string>
 #include<vector>

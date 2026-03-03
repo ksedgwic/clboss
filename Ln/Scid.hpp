@@ -3,6 +3,7 @@
 
 #include "Util/Compiler.hpp"
 #include<cstddef>
+#include<cstdint>
 #include<string>
 #include<iostream>
 

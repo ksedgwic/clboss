@@ -1,6 +1,7 @@
 #ifndef BOSS_MSG_SENDPAYRESULT_HPP
 #define BOSS_MSG_SENDPAYRESULT_HPP
 
+#include<cstdint>
 #include"Ln/NodeId.hpp"
 #include"Sha256/Hash.hpp"
 

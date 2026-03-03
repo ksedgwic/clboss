@@ -71,3 +71,33 @@ jobs:
       with:
         name: coverage-lcov
         path: coverage.info
+
+  build-clang:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install clang and build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          autoconf \
+          autoconf-archive \
+          automake \
+          build-essential \
+          clang \
+          curl \
+          git \
+          libcurl4-openssl-dev \
+          libev-dev \
+          libsqlite3-dev \
+          libtool \
+          libunwind-dev \
+          pkg-config
+    - name: Configure (clang)
+      run: |
+        autoreconf -fi
+        ./configure CC=clang CXX=clang++
+    - name: Build
+      run: make -j2
+    - name: Run unit tests
+      run: make -j2 check-TESTS

@@ -2,6 +2,7 @@
 #define NET_SOCKETFD_HPP
 
 #include<cstddef>
+#include<cstdint>
 #include<utility>
 #include<vector>
 #include"Net/Fd.hpp"
