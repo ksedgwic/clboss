@@ -92,34 +92,31 @@ def pad_string(s, width):
     return s + " " * pad
 
 
-def calculate_peer_score(peer, channel, daystr):
+def calculate_peer_score(peer, avg_to_us_msat, daystr):
+    if not avg_to_us_msat:
+        return None
+
     forwarded = peer.get("in_forwarded", 0) + peer.get("out_forwarded", 0)
-    to_us_msat = channel.get("to_us_msat", 0)
 
     age = peer_age_days(peer)
     window = peer_window(age, daystr)
 
-    if to_us_msat == 0:
-        return 0.0
-
-    fwd_per_bal = (float(forwarded) / float(to_us_msat))
+    fwd_per_bal = float(forwarded) / float(avg_to_us_msat)
     fwd_per_bal_per_day = fwd_per_bal / window
 
     return fwd_per_bal_per_day
 
 
-def calculate_trcl(peer, channel, daystr):
-    to_us_msat = channel.get("to_us_msat", 0)
+def calculate_trcl(peer, avg_to_us_msat, daystr):
+    if not avg_to_us_msat:
+        return None
 
     age = peer_age_days(peer)
     window = peer_window(age, daystr)
 
-    if to_us_msat == 0:
-        return 0.0
-
     netearnings = peer_net_earnings(peer)
 
-    epd_per_bal = (float(netearnings) / float(to_us_msat))
+    epd_per_bal = float(netearnings) / float(avg_to_us_msat)
     epd_per_bal_per_day = epd_per_bal / window
 
     # in basis points
@@ -356,11 +353,11 @@ def main():
 
     sorted_channels = sorted(
         channels.keys(),
-        key=lambda cid: -calculate_peer_score(
+        key=lambda cid: -(calculate_peer_score(
             peers[channels[cid]["peerid"]],
-            channels[cid],
+            avg_to_us_by_peer.get(channels[cid]["peerid"]),
             args.days
-        )
+        ) or 0)
     )
 
     # Prepare table data
@@ -371,17 +368,17 @@ def main():
     for short_channel_id in sorted_channels:
         peer_id = channels[short_channel_id]["peerid"]
         peer = peers[peer_id]
-        fpbpd = calculate_peer_score(peer, channels[short_channel_id], args.days)
-        fpbpdstr = f"{fpbpd:.5f}"
-        trcl = calculate_trcl(peer, channels[short_channel_id], args.days)
-        trclstr = f"{trcl:.3f}"
+        avg = avg_to_us_by_peer.get(peer_id)
+        fpbpd = calculate_peer_score(peer, avg, args.days)
+        fpbpdstr = f"{fpbpd:.5f}" if fpbpd is not None else "--"
+        trcl = calculate_trcl(peer, avg, args.days)
+        trclstr = f"{trcl:.3f}" if trcl is not None else "--"
         fwded = peer.get("in_forwarded", 0) + peer.get("out_forwarded", 0)
         netearnings = peer_net_earnings(peer)
         alias = pad_string(peer["alias"], max_alias_length)
         opener = "L" if channels[short_channel_id]["opener"] == "local" else "R"
         agestr = str(int(peer_age_days(peer)))
         to_us_msat = f"{channels[short_channel_id]['to_us_msat']:_}"
-        avg = avg_to_us_by_peer.get(peer_id)
         avg_to_us_str = f"{avg:_}" if avg is not None else "-"
         forwarded = f"{fwded:_}"
         netearningsstr = f"{netearnings:_}"
@@ -403,7 +400,7 @@ def main():
     # Print the table without grid
     table_str = tabulate(
         table_data,
-        headers=["Alias", "SCID", "O", "to us", "avg_to_us", "Age", "Forwarded", "NetEarn", "FPBPD", "TRCL*"],
+        headers=["Alias", "SCID", "O", "to us", "avg_to_us", "Age", "Forwarded", "NetEarn", "FPBPD", "TRAL*"],
         tablefmt="plain",
         stralign="left",
         numalign="right",
@@ -412,7 +409,7 @@ def main():
     )
 
     print(table_str)
-    print("* annualized Trailing Return on Current Liquidity in basis points")
+    print("* annualized Trailing Return on Average Liquidity in basis points")
 
 if __name__ == "__main__":
     main()
