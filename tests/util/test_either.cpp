@@ -80,7 +80,7 @@ int main() {
 		a.swap(b);
 		assert(b < a);
 		a = b;
-		a = a;
+		{ auto& ref = a; a = ref; } // Intentional self-assignment test
 		assert(a == b);
 
 		a = Example::left(0);

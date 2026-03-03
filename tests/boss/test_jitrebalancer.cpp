@@ -337,7 +337,7 @@ int main() {
 		auto res = Jsmn::Object::parse_json(listpeers_result);
 		auto peers = res["peers"];
 		return bus.raise(Boss::Msg::ListpeersResult{
-				std::move(Boss::Mod::convert_legacy_listpeers(peers)), true
+				Boss::Mod::convert_legacy_listpeers(peers), true
 		});
 	}).then([&]() {
 

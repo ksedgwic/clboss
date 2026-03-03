@@ -96,8 +96,8 @@ Ev::Io<void> listpeers_result(S::Bus& bus, std::string const& json) {
 	auto js = Jsmn::Object();
 	is >> js;
 
-	return bus.raise(ListpeersResult{std::move(
-				Boss::Mod::convert_legacy_listpeers(js)), false});
+	return bus.raise(ListpeersResult{
+				Boss::Mod::convert_legacy_listpeers(js), false});
 }
 
 Ev::Io<void> multiyield() {

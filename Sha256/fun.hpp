@@ -1,6 +1,7 @@
 #ifndef SHA256_FUN_HPP
 #define SHA256_FUN_HPP
 
+#include<cstdint>
 #include"Sha256/Hash.hpp"
 #include"Sha256/Hasher.hpp"
 

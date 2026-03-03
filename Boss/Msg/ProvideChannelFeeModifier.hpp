@@ -1,6 +1,7 @@
 #ifndef BOSS_MSG_PROVIDECHANNELFEEMODIFIER_HPP
 #define BOSS_MSG_PROVIDECHANNELFEEMODIFIER_HPP
 
+#include<cstdint>
 #include<functional>
 
 namespace Ev { template<typename a> class Io; }

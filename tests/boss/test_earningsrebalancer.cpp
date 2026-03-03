@@ -90,7 +90,7 @@ public:
 			auto js = Jsmn::Object();
 			is >> js;
 			return bus.raise(Boss::Msg::ListpeersResult{
-					std::move(Boss::Mod::convert_legacy_listpeers(js)), false
+					Boss::Mod::convert_legacy_listpeers(js), false
 			});
 		});
 	}

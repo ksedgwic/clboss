@@ -78,8 +78,9 @@ PKG_CHECK_MODULES([LIBUNWIND], [libunwind], [
 ])
 
 # https://github.com/ZmnSCPxj/clboss/issues/245
+# Alpine and FreeBSD need explicit -lexecinfo for backtrace_symbols
 case "$host_os" in
-  *alpine*)
+  *alpine*|*freebsd*)
     LDFLAGS="$LDFLAGS -lexecinfo"
     ;;
 esac

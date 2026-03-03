@@ -5,6 +5,7 @@
 #include"Boltz/Service.hpp"
 #include"Secp256k1/Random.hpp"
 #include"Sqlite3/Db.hpp"
+#include<cstdint>
 #include<functional>
 #include<memory>
 
