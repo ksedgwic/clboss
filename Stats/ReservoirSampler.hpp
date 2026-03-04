@@ -26,10 +26,10 @@ private:
 	Weight wsum;
 
 public:
-	ReservoirSampler() : max_selected(1) { }
+	ReservoirSampler() : max_selected(1), wsum(0) { }
 	explicit
 	ReservoirSampler(std::size_t max_selected_
-			) : max_selected(max_selected_) { }
+			) : max_selected(max_selected_), wsum(0) { }
 	ReservoirSampler(ReservoirSampler&&) =default;
 	ReservoirSampler(ReservoirSampler const&) =default;
 
