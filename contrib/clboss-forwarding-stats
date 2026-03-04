@@ -418,7 +418,7 @@ def main():
     # Print the table without grid
     table_str = tabulate(
         table_data,
-        headers=["Alias", "SCID", "O", "to us", "avg_to_us", "Age", "OpDays", "Forwarded", "NetEarn", "FPBPD", "TRAL*"],
+        headers=["Alias", "SCID", "O", "to us", "avg_to_us", "Age", "OpDays", "Forwarded", "NetEarn", "FPBPD**", "TRAL*"],
         tablefmt="plain",
         stralign="left",
         numalign="right",
@@ -427,6 +427,7 @@ def main():
     )
 
     print(table_str)
+    print("** Forwarded Per Balance Per Day (forwarded / avg balance / days)")
     print("* annualized Trailing Return on Average Liquidity in basis points")
 
 if __name__ == "__main__":
