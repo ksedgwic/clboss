@@ -123,6 +123,17 @@ def calculate_trcl(peer, avg_to_us_msat, daystr):
     return epd_per_bal_per_day * 365 * 100 * 100
 
 
+def compute_operational_days(records, window_start_ts, now_ts):
+    """Estimate operational days from feemon record count in the window.
+
+    Feemon records arrive roughly once per hour, so count / 24
+    gives the number of days the channel was operational.
+    """
+    count = sum(1 for rec in records
+                if window_start_ts <= rec["ts"] <= now_ts)
+    return count / 24.0
+
+
 def compute_time_weighted_avg_balance(records, window_start_ts, now_ts):
     """Compute time-weighted average of balance_our_msat over [window_start_ts, now_ts].
 
@@ -343,6 +354,7 @@ def main():
     )
 
     avg_to_us_by_peer = {}
+    op_days_by_peer = {}
     for peer_id in peer_ids:
         records = feemon_records_by_node.get(peer_id, [])
         avg, _ = compute_time_weighted_avg_balance(
@@ -350,6 +362,9 @@ def main():
         )
         if avg is not None:
             avg_to_us_by_peer[peer_id] = avg
+        op_days_by_peer[peer_id] = compute_operational_days(
+            records, window_start_ts, now_ts
+        )
 
     sorted_channels = sorted(
         channels.keys(),
@@ -378,6 +393,8 @@ def main():
         alias = pad_string(peer["alias"], max_alias_length)
         opener = "L" if channels[short_channel_id]["opener"] == "local" else "R"
         agestr = str(int(peer_age_days(peer)))
+        op_days = op_days_by_peer.get(peer_id, 0)
+        opdaysstr = f"{op_days:.1f}"
         to_us_msat = f"{channels[short_channel_id]['to_us_msat']:_}"
         avg_to_us_str = f"{avg:_}" if avg is not None else "-"
         forwarded = f"{fwded:_}"
@@ -390,6 +407,7 @@ def main():
                 to_us_msat,
                 avg_to_us_str,
                 agestr,
+                opdaysstr,
                 forwarded,
                 netearningsstr,
                 fpbpdstr,
@@ -400,11 +418,11 @@ def main():
     # Print the table without grid
     table_str = tabulate(
         table_data,
-        headers=["Alias", "SCID", "O", "to us", "avg_to_us", "Age", "Forwarded", "NetEarn", "FPBPD", "TRAL*"],
+        headers=["Alias", "SCID", "O", "to us", "avg_to_us", "Age", "OpDays", "Forwarded", "NetEarn", "FPBPD", "TRAL*"],
         tablefmt="plain",
         stralign="left",
         numalign="right",
-        colalign=("left", "left", "left", "right", "right", "right", "right", "right", "right", "right"),
+        colalign=("left", "left", "left", "right", "right", "right", "right", "right", "right", "right", "right"),
         disable_numparse=True,
     )
 
