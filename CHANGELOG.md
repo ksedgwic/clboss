@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `install-versioned` Makefile target for fast roll-forward/roll-back.
     ([#289])
   - Code coverage reporting in CI. ([#283])
+  - Clang C++20 build job in CI. ([#307])
   - Nix flake packaging improvements. ([#285])
 
 ### Changed
@@ -51,6 +52,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   ([#290])
 - Replaced deprecated `std::result_of` with `std::invoke_result_t` for
   C++20 compatibility (fixes build on FreeBSD 14+ / clang 18). ([#305])
+- Added missing `#include <cstdint>` for clang strict mode. ([#307])
+- Added `-lexecinfo` for FreeBSD in `configure.ac`. ([#307])
+- Fixed uninitialized `ReservoirSampler::wsum` warning at `-O2`.
 
 ### Credits
 
