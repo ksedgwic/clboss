@@ -81,46 +81,28 @@ def peer_net_earnings(peer):
     return earnings - expenditures
 
 
-def peer_window(age, daystr):
-    if daystr:
-        return min(age, int(daystr))
-    else:
-        return age
-
 def pad_string(s, width):
     pad = width - wcswidth(s)
     return s + " " * pad
 
 
-def calculate_peer_score(peer, avg_to_us_msat, daystr):
-    if not avg_to_us_msat:
+def calculate_fral(peer, avg_to_us_msat, op_days):
+    if not avg_to_us_msat or op_days < 1:
         return None
 
     forwarded = peer.get("in_forwarded", 0) + peer.get("out_forwarded", 0)
 
-    age = peer_age_days(peer)
-    window = peer_window(age, daystr)
-
-    fwd_per_bal = float(forwarded) / float(avg_to_us_msat)
-    fwd_per_bal_per_day = fwd_per_bal / window
-
-    return fwd_per_bal_per_day
+    return float(forwarded) / float(avg_to_us_msat) / op_days
 
 
-def calculate_trcl(peer, avg_to_us_msat, daystr):
-    if not avg_to_us_msat:
+def calculate_tral(peer, avg_to_us_msat, op_days):
+    if not avg_to_us_msat or op_days < 1:
         return None
-
-    age = peer_age_days(peer)
-    window = peer_window(age, daystr)
 
     netearnings = peer_net_earnings(peer)
 
-    epd_per_bal = float(netearnings) / float(avg_to_us_msat)
-    epd_per_bal_per_day = epd_per_bal / window
-
-    # in basis points
-    return epd_per_bal_per_day * 365 * 100 * 100
+    # annualized, in basis points
+    return float(netearnings) / float(avg_to_us_msat) / op_days * 365 * 100 * 100
 
 
 def compute_operational_days(records, window_start_ts, now_ts):
@@ -368,10 +350,10 @@ def main():
 
     sorted_channels = sorted(
         channels.keys(),
-        key=lambda cid: -(calculate_peer_score(
+        key=lambda cid: -(calculate_fral(
             peers[channels[cid]["peerid"]],
             avg_to_us_by_peer.get(channels[cid]["peerid"]),
-            args.days
+            op_days_by_peer.get(channels[cid]["peerid"], 0)
         ) or 0)
     )
 
@@ -384,16 +366,16 @@ def main():
         peer_id = channels[short_channel_id]["peerid"]
         peer = peers[peer_id]
         avg = avg_to_us_by_peer.get(peer_id)
-        fpbpd = calculate_peer_score(peer, avg, args.days)
-        fpbpdstr = f"{fpbpd:.5f}" if fpbpd is not None else "--"
-        trcl = calculate_trcl(peer, avg, args.days)
-        trclstr = f"{trcl:.3f}" if trcl is not None else "--"
+        op_days = op_days_by_peer.get(peer_id, 0)
+        fral = calculate_fral(peer, avg, op_days)
+        fralstr = f"{fral:.5f}" if fral is not None else "--"
+        tral = calculate_tral(peer, avg, op_days)
+        tralstr = f"{tral:.3f}" if tral is not None else "--"
         fwded = peer.get("in_forwarded", 0) + peer.get("out_forwarded", 0)
         netearnings = peer_net_earnings(peer)
         alias = pad_string(peer["alias"], max_alias_length)
         opener = "L" if channels[short_channel_id]["opener"] == "local" else "R"
         agestr = str(int(peer_age_days(peer)))
-        op_days = op_days_by_peer.get(peer_id, 0)
         opdaysstr = f"{op_days:.1f}"
         to_us_msat = f"{channels[short_channel_id]['to_us_msat']:_}"
         avg_to_us_str = f"{avg:_}" if avg is not None else "-"
@@ -410,15 +392,15 @@ def main():
                 opdaysstr,
                 forwarded,
                 netearningsstr,
-                fpbpdstr,
-                trclstr,
+                fralstr,
+                tralstr,
             ]
         )
 
     # Print the table without grid
     table_str = tabulate(
         table_data,
-        headers=["Alias", "SCID", "O", "to us", "avg_to_us", "Age", "OpDays", "Forwarded", "NetEarn", "FPBPD**", "TRAL*"],
+        headers=["Alias", "SCID", "O", "curr_to_us", "avg_to_us", "Age", "OpDays", "Forwarded", "NetEarn", "FRAL**", "TRAL*"],
         tablefmt="plain",
         stralign="left",
         numalign="right",
@@ -427,8 +409,8 @@ def main():
     )
 
     print(table_str)
-    print("** Forwarded Per Balance Per Day (forwarded / avg balance / days)")
-    print("* annualized Trailing Return on Average Liquidity in basis points")
+    print("** Forwarding Rate on Average Liquidity (forwarded / avg balance / op days)")
+    print("* Trailing Return on Average Liquidity in basis points, annualized")
 
 if __name__ == "__main__":
     main()
