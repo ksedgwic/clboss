@@ -8,15 +8,18 @@
 # The channels at the top of the list are good, the ones at the bottom are bad.
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 import subprocess
+import sys
 import time
 
 from tabulate import tabulate
 from wcwidth import wcswidth
 
 from clboss.alias_cache import lookup_alias
+from feemon_data import load_merged_records_by_node
 
 def now():
     now_ts = time.time()
@@ -78,49 +81,122 @@ def peer_net_earnings(peer):
     return earnings - expenditures
 
 
-def peer_window(age, daystr):
-    if daystr:
-        return min(age, int(daystr))
-    else:
-        return age
-
 def pad_string(s, width):
     pad = width - wcswidth(s)
     return s + " " * pad
 
 
-def calculate_peer_score(peer, channel, daystr):
+def calculate_fral(peer, avg_to_us_msat, op_days):
+    if not avg_to_us_msat or op_days < 1:
+        return None
+
     forwarded = peer.get("in_forwarded", 0) + peer.get("out_forwarded", 0)
-    to_us_msat = channel.get("to_us_msat", 0)
 
-    age = peer_age_days(peer)
-    window = peer_window(age, daystr)
-
-    if to_us_msat == 0:
-        return 0.0
-
-    fwd_per_bal = (float(forwarded) / float(to_us_msat))
-    fwd_per_bal_per_day = fwd_per_bal / window
-
-    return fwd_per_bal_per_day
+    return float(forwarded) / float(avg_to_us_msat) / op_days
 
 
-def calculate_trcl(peer, channel, daystr):
-    to_us_msat = channel.get("to_us_msat", 0)
-
-    age = peer_age_days(peer)
-    window = peer_window(age, daystr)
-
-    if to_us_msat == 0:
-        return 0.0
+def calculate_tral(peer, avg_to_us_msat, op_days):
+    if not avg_to_us_msat or op_days < 1:
+        return None
 
     netearnings = peer_net_earnings(peer)
 
-    epd_per_bal = (float(netearnings) / float(to_us_msat))
-    epd_per_bal_per_day = epd_per_bal / window
+    # annualized, in basis points
+    return float(netearnings) / float(avg_to_us_msat) / op_days * 365 * 100 * 100
 
-    # in basis points
-    return epd_per_bal_per_day * 365 * 100 * 100
+
+def compute_operational_days(records, window_start_ts, now_ts):
+    """Estimate operational days from feemon record count in the window.
+
+    Feemon records arrive roughly once per hour, so count / 24
+    gives the number of days the channel was operational.
+    """
+    count = sum(1 for rec in records
+                if window_start_ts <= rec["ts"] <= now_ts)
+    return count / 24.0
+
+
+def compute_time_weighted_avg_balance(records, window_start_ts, now_ts):
+    """Compute time-weighted average of balance_our_msat over [window_start_ts, now_ts].
+
+    Uses sample-and-hold: each balance value holds until the next record.
+    Records should be pre-filtered to the window period; any record at or
+    before window_start_ts is used as the boundary balance.
+
+    Returns (avg_msat_int, effective_start_ts) or (None, None) if no data.
+    """
+    if not records:
+        return (None, None)
+
+    # Extract (ts, balance) pairs, skipping records without balance data
+    points = []
+    for rec in records:
+        bal = rec["fields"].get("balance_our_msat")
+        if bal is not None:
+            points.append((rec["ts"], int(bal)))
+
+    if not points:
+        return (None, None)
+
+    # Find the boundary balance: last record at or before window_start_ts
+    boundary_balance = None
+    first_in_window_idx = None
+    for i, (ts, bal) in enumerate(points):
+        if ts <= window_start_ts:
+            boundary_balance = bal
+        else:
+            if first_in_window_idx is None:
+                first_in_window_idx = i
+
+    if boundary_balance is not None:
+        # We have data covering the window start
+        effective_start = window_start_ts
+        # Build the segments: start with boundary balance from window_start
+        segments = []
+        current_bal = boundary_balance
+        current_ts = window_start_ts
+
+        # Add segments for each point within the window
+        for ts, bal in points:
+            if ts <= window_start_ts:
+                continue
+            if ts >= now_ts:
+                break
+            segments.append((current_bal, ts - current_ts))
+            current_bal = bal
+            current_ts = ts
+
+        # Final segment to now
+        segments.append((current_bal, now_ts - current_ts))
+
+    elif first_in_window_idx is not None:
+        # No data before window start; average over [first_record_ts, now]
+        first_ts, first_bal = points[first_in_window_idx]
+        effective_start = first_ts
+        segments = []
+        current_bal = first_bal
+        current_ts = first_ts
+
+        for ts, bal in points[first_in_window_idx + 1:]:
+            if ts >= now_ts:
+                break
+            segments.append((current_bal, ts - current_ts))
+            current_bal = bal
+            current_ts = ts
+
+        segments.append((current_bal, now_ts - current_ts))
+    else:
+        # All points are after now_ts (shouldn't happen in practice)
+        return (None, None)
+
+    total_duration = sum(dur for _, dur in segments)
+    if total_duration <= 0:
+        # Single point at now_ts
+        return (int(points[-1][1]), effective_start)
+
+    integral = sum(bal * dur for bal, dur in segments)
+    avg = int(integral / total_duration)
+    return (avg, effective_start)
 
 
 def main():
@@ -139,8 +215,19 @@ def main():
         type=int,
         help="Number of days of history to use with clboss-recent-earnings",
     )
+    parser.add_argument(
+        "--db", default=None,
+        help="Path to feemon sqlite database (optional; default: API only).",
+    )
+    parser.add_argument(
+        "--min-op-days", type=float, default=10,
+        help="Minimum operational days for a channel to appear above the divider (default: 10).",
+    )
 
     args = parser.parse_args()
+
+    if args.days is not None and args.days <= 0:
+        parser.error("--days must be a positive integer")
 
     # Reconcile network option
     if args.network:
@@ -235,33 +322,74 @@ def main():
                 peers[id]["age"] = determine_peer_age(
                     lightning_dir, network_option, id, peer_metrics)
 
-    sorted_channels = sorted(
-        channels.keys(),
-        key=lambda cid: -calculate_peer_score(
-            peers[channels[cid]["peerid"]],
-            channels[cid],
-            args.days
-        )
+    # Fetch feemon data and compute time-weighted average balances
+    now_ts = now()
+    peer_ids = list(peers.keys())
+    if args.days:
+        window_start_ts = now_ts - args.days * 86400
+    else:
+        window_start_ts = 0
+
+    if args.days:
+        # Fetch one extra day so compute_time_weighted_avg_balance has a
+        # boundary record at or before window_start_ts.
+        since_dt = datetime.fromtimestamp(window_start_ts - 86400, tz=timezone.utc)
+    else:
+        since_dt = None
+
+    feemon_records_by_node = load_merged_records_by_node(
+        args.db, peer_ids, api_node_ids=peer_ids,
+        since_dt=since_dt, before_dt=None,
+        lightning_dir=lightning_dir,
+        network_option=network_option,
     )
+
+    avg_to_us_by_peer = {}
+    op_days_by_peer = {}
+    for peer_id in peer_ids:
+        records = feemon_records_by_node.get(peer_id, [])
+        avg, _ = compute_time_weighted_avg_balance(
+            records, window_start_ts, now_ts
+        )
+        if avg is not None:
+            avg_to_us_by_peer[peer_id] = avg
+        op_days_by_peer[peer_id] = compute_operational_days(
+            records, window_start_ts, now_ts
+        )
+
+    def channel_sort_key(cid):
+        peer_id = channels[cid]["peerid"]
+        op_days = op_days_by_peer.get(peer_id, 0)
+        fral = calculate_fral(peers[peer_id], avg_to_us_by_peer.get(peer_id), op_days) or 0
+        ineligible = 1 if op_days < args.min_op_days else 0
+        return (-fral, ineligible)
+
+    sorted_channels = sorted(channels.keys(), key=channel_sort_key)
 
     # Prepare table data
     table_data = []
+    op_days_per_row = []
     max_alias_length = max(
         [wcswidth(peer["alias"]) for peer in peers.values() if peer["alias"]] + [5]
     )  # 5 is the length of "Alias"
     for short_channel_id in sorted_channels:
         peer_id = channels[short_channel_id]["peerid"]
         peer = peers[peer_id]
-        fpbpd = calculate_peer_score(peer, channels[short_channel_id], args.days)
-        fpbpdstr = f"{fpbpd:.5f}"
-        trcl = calculate_trcl(peer, channels[short_channel_id], args.days)
-        trclstr = f"{trcl:.3f}"
+        avg = avg_to_us_by_peer.get(peer_id)
+        op_days = op_days_by_peer.get(peer_id, 0)
+        op_days_per_row.append(op_days)
+        fral = calculate_fral(peer, avg, op_days)
+        fralstr = f"{fral:.5f}" if fral is not None else "--"
+        tral = calculate_tral(peer, avg, op_days)
+        tralstr = f"{tral:.3f}" if tral is not None else "--"
         fwded = peer.get("in_forwarded", 0) + peer.get("out_forwarded", 0)
         netearnings = peer_net_earnings(peer)
         alias = pad_string(peer["alias"], max_alias_length)
         opener = "L" if channels[short_channel_id]["opener"] == "local" else "R"
         agestr = str(int(peer_age_days(peer)))
+        opdaysstr = f"{op_days:.1f}"
         to_us_msat = f"{channels[short_channel_id]['to_us_msat']:_}"
+        avg_to_us_str = f"{avg:_}" if avg is not None else "-"
         forwarded = f"{fwded:_}"
         netearningsstr = f"{netearnings:_}"
         table_data.append(
@@ -270,27 +398,39 @@ def main():
                 short_channel_id,
                 opener,
                 to_us_msat,
+                avg_to_us_str,
                 agestr,
+                opdaysstr,
                 forwarded,
                 netearningsstr,
-                fpbpdstr,
-                trclstr,
+                fralstr,
+                tralstr,
             ]
         )
+
+    # Insert divider after the last eligible row
+    last_eligible = -1
+    for i, od in enumerate(op_days_per_row):
+        if od >= args.min_op_days:
+            last_eligible = i
+    if last_eligible >= 0 and last_eligible < len(table_data) - 1:
+        num_cols = len(table_data[0])
+        table_data.insert(last_eligible + 1, ["======"] * num_cols)
 
     # Print the table without grid
     table_str = tabulate(
         table_data,
-        headers=["Alias", "SCID", "O", "to us", "Age", "Forwarded", "NetEarn", "FPBPD", "TRCL*"],
+        headers=["Alias", "SCID", "O", "curr_to_us", "avg_to_us", "Age", "OpDays", "Forwarded", "NetEarn", "FRAL**", "TRAL*"],
         tablefmt="plain",
         stralign="left",
         numalign="right",
-        colalign=("left", "left", "left", "right", "right", "right", "right", "right", "right"),
+        colalign=("left", "left", "left", "right", "right", "right", "right", "right", "right", "right", "right"),
         disable_numparse=True,
     )
 
     print(table_str)
-    print("* annualized Trailing Return on Current Liquidity in basis points")
+    print("** Forwarding Rate on Average Liquidity (forwarded / avg balance / op days)")
+    print("* Trailing Return on Average Liquidity in basis points, annualized")
 
 if __name__ == "__main__":
     main()
