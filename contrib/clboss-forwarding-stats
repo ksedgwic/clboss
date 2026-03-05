@@ -226,6 +226,9 @@ def main():
 
     args = parser.parse_args()
 
+    if args.days is not None and args.days <= 0:
+        parser.error("--days must be a positive integer")
+
     # Reconcile network option
     if args.network:
         network_option = f"--network={args.network}"
