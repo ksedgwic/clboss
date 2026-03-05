@@ -331,7 +331,9 @@ def main():
         window_start_ts = 0
 
     if args.days:
-        since_dt = datetime.fromtimestamp(window_start_ts, tz=timezone.utc)
+        # Fetch one extra day so compute_time_weighted_avg_balance has a
+        # boundary record at or before window_start_ts.
+        since_dt = datetime.fromtimestamp(window_start_ts - 86400, tz=timezone.utc)
     else:
         since_dt = None
 
