@@ -225,6 +225,12 @@ def main():
 
     args = parser.parse_args()
 
+    if args.days is not None and args.days <= 0:
+        parser.error("--days must be a positive integer")
+
+    if args.db is not None and not os.path.isfile(args.db):
+        parser.error(f"--db file not found: {args.db}")
+
     # Reconcile network option
     if args.network:
         network_option = f"--network={args.network}"
