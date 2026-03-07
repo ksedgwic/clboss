@@ -223,6 +223,10 @@ def main():
         "--min-op-days", type=float, default=10,
         help="Minimum operational days for a channel to appear above the divider (default: 10).",
     )
+    parser.add_argument(
+        "--sort", choices=["fral", "tral"], default="fral",
+        help="Column to sort by (default: fral).",
+    )
 
     args = parser.parse_args()
 
@@ -360,9 +364,14 @@ def main():
     def channel_sort_key(cid):
         peer_id = channels[cid]["peerid"]
         op_days = op_days_by_peer.get(peer_id, 0)
-        fral = calculate_fral(peers[peer_id], avg_to_us_by_peer.get(peer_id), op_days) or 0
+        avg = avg_to_us_by_peer.get(peer_id)
+        peer = peers[peer_id]
+        if args.sort == "tral":
+            val = calculate_tral(peer, avg, op_days) or 0
+        else:
+            val = calculate_fral(peer, avg, op_days) or 0
         ineligible = 1 if op_days < args.min_op_days else 0
-        return (-fral, ineligible)
+        return (-val, ineligible)
 
     sorted_channels = sorted(channels.keys(), key=channel_sort_key)
 
