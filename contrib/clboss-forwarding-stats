@@ -220,10 +220,6 @@ def main():
         help="Path to feemon sqlite database (optional; default: API only).",
     )
     parser.add_argument(
-        "--min-op-days", type=float, default=10,
-        help="Minimum operational days for a channel to appear above the divider (default: 10).",
-    )
-    parser.add_argument(
         "--sort", choices=["fral", "tral"], default="fral",
         help="Column to sort by (default: fral).",
     )
@@ -371,14 +367,12 @@ def main():
         else:
             val = calculate_fral(peer, avg, op_days)
         sort_val = val if val is not None else float('-inf')
-        ineligible = 1 if op_days < args.min_op_days else 0
-        return (-sort_val, ineligible)
+        return -sort_val
 
     sorted_channels = sorted(channels.keys(), key=channel_sort_key)
 
     # Prepare table data
     table_data = []
-    op_days_per_row = []
     max_alias_length = max(
         [wcswidth(peer["alias"]) for peer in peers.values() if peer["alias"]] + [5]
     )  # 5 is the length of "Alias"
@@ -387,7 +381,6 @@ def main():
         peer = peers[peer_id]
         avg = avg_to_us_by_peer.get(peer_id)
         op_days = op_days_by_peer.get(peer_id, 0)
-        op_days_per_row.append(op_days)
         fral = calculate_fral(peer, avg, op_days)
         fralstr = f"{fral:.5f}" if fral is not None else "--"
         tral = calculate_tral(peer, avg, op_days)
@@ -417,15 +410,6 @@ def main():
                 tralstr,
             ]
         )
-
-    # Insert divider after the last eligible row
-    last_eligible = -1
-    for i, od in enumerate(op_days_per_row):
-        if od >= args.min_op_days:
-            last_eligible = i
-    if last_eligible >= 0 and last_eligible < len(table_data) - 1:
-        num_cols = len(table_data[0])
-        table_data.insert(last_eligible + 1, ["======"] * num_cols)
 
     # Print the table without grid
     table_str = tabulate(
