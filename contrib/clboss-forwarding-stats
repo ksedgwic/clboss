@@ -367,11 +367,12 @@ def main():
         avg = avg_to_us_by_peer.get(peer_id)
         peer = peers[peer_id]
         if args.sort == "tral":
-            val = calculate_tral(peer, avg, op_days) or 0
+            val = calculate_tral(peer, avg, op_days)
         else:
-            val = calculate_fral(peer, avg, op_days) or 0
+            val = calculate_fral(peer, avg, op_days)
+        sort_val = val if val is not None else float('-inf')
         ineligible = 1 if op_days < args.min_op_days else 0
-        return (-val, ineligible)
+        return (-sort_val, ineligible)
 
     sorted_channels = sorted(channels.keys(), key=channel_sort_key)
 
