@@ -24,10 +24,14 @@ auto const all_dnsseeds =
 	std::map<Boss::Msg::Network, std::vector<std::pair< std::string
 							  , std::string
 							  >>>
-{ {Boss::Msg::Network_Bitcoin, { {"1.0.0.1", "lseed.bitcoinstats.com"}
-			       , {"8.8.8.8", "lseed.darosior.ninja"}
+{ {Boss::Msg::Network_Bitcoin, {
 			       }}
 };
+/* Both previous seeds are defunct as of 2026-03:
+ * - lseed.bitcoinstats.com — SERVFAIL
+ * - lseed.darosior.ninja — NXDOMAIN (confirmed by maintainer)
+ * See https://github.com/ksedgwic/clboss/issues/309
+ */
 /*
 <zmnscpxj> What other Lightning DNS seeds are there? lseed.darosior.ninja is not reliable from my connection, even with @1.1.1.1 or @8.8.8.8
 <zmnscpxj> lseed.bitcoinstats.com works with @1.1.1.1
