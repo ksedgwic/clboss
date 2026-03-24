@@ -55,6 +55,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Added missing `#include <cstdint>` for clang strict mode. ([#307])
 - Added `-lexecinfo` for FreeBSD in `configure.ac`. ([#307])
 - Fixed uninitialized `ReservoirSampler::wsum` warning at `-O2`.
+- Fixed crash on non-SRV DNS records (e.g. SOA) in `parse_dig_srv()`;
+  removed defunct DNS seeds `lseed.bitcoinstats.com` and
+  `lseed.darosior.ninja`. ([#309])
 
 ### Credits
 
