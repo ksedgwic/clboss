@@ -61,8 +61,6 @@ Ev::Io<std::vector<std::string>> get( std::string const& seed
 	/* Some ISPs have default resolvers which do not properly
 	 * handle SRV queries.
 	 * We thus require a resolver of some kind.
-	 * Generally this should be "1.0.0.1", but some DNS seeds
-	 * (darosior.ninja) need "8.8.8.8"
 	 */
 	auto at_resolver = std::string("@") + resolver;
 

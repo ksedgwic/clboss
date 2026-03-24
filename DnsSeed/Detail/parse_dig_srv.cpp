@@ -2,6 +2,7 @@
 #include"DnsSeed/Detail/parse_dig_srv.hpp"
 #include"Util/Str.hpp"
 #include<algorithm>
+#include<stdexcept>
 #include<sstream>
 
 namespace {
@@ -43,35 +44,50 @@ std::vector<Record> parse_dig_srv(std::string const& out) {
 		if (line[0] == ';')
 			continue;
 
-		auto fields = split_by_char(line, ' ');
+		/* Normalize tabs to spaces so field indices
+		 * are consistent across dig output formats.  */
+		auto normalized = line;
+		std::replace(normalized.begin(), normalized.end(), '\t', ' ');
+
+		auto fields = split_by_char(normalized, ' ');
 		fields.erase( std::remove( fields.begin(), fields.end()
 					 , ""
 					 )
 			    , fields.end()
 			    );
-		/* Skip abnormal lines.*/
-		if (fields.size() < 2)
+
+		/* SRV lines have at least 8 fields:
+		 * name TTL IN SRV priority weight port target.
+		 * Skip non-SRV records (e.g. SOA in AUTHORITY).  */
+		if (fields.size() < 8)
+			continue;
+		if (fields[3] != "SRV")
 			continue;
 
-		/* Extract port and host fields.  */
-		auto port_s = *(fields.end() - 2);
-		auto port = parse_port(port_s);
-		auto host = *(fields.end() - 1);
+		try {
+			/* Extract port and host fields.  */
+			auto port_s = *(fields.end() - 2);
+			auto port = parse_port(port_s);
+			auto host = *(fields.end() - 1);
 
-		/* Extract nodeid.  */
-		auto nodeid_s = std::string( host.begin()
-					   , std::find(host.begin(), host.end()
-						      , '.'
-						      )
-					   );
-		/* Parse it.  */
-		auto nodeid = decode_bech32_node(nodeid_s);
-		/* Print as hex.  */
-		auto nodeid_hex = Util::Str::hexdump( &nodeid[0]
-						    , nodeid.size()
-						    );
+			/* Extract nodeid.  */
+			auto nodeid_s = std::string(
+				  host.begin()
+				, std::find(host.begin(), host.end(), '.')
+			);
+			/* Parse it.  */
+			auto nodeid = decode_bech32_node(nodeid_s);
+			/* Print as hex.  */
+			auto nodeid_hex = Util::Str::hexdump(
+				  &nodeid[0]
+				, nodeid.size()
+			);
 
-		rv.push_back({nodeid_hex, port, host});
+			rv.push_back({nodeid_hex, port, host});
+		} catch (std::exception&) {
+			/* Skip records that fail to parse.  */
+			continue;
+		}
 	}
 
 	return rv;
