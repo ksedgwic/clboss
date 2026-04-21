@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.16.0] - 2026-03-02: "Darkness on the Edge of the Mempool"
+## [0.16.0] - 2026-04-21: "Darkness on the Edge of the Mempool"
 
 ### Added
 
