@@ -3,7 +3,9 @@
 #include"Boss/Msg/Block.hpp"
 #include"Boss/Msg/DbResource.hpp"
 #include"Boss/Msg/ProvideStatus.hpp"
+#include"Boss/Msg/RequestGetAutoSwapFlag.hpp"
 #include"Boss/Msg/RequestGetOnchainIgnoreFlag.hpp"
+#include"Boss/Msg/ResponseGetAutoSwapFlag.hpp"
 #include"Boss/Msg/ResponseGetOnchainIgnoreFlag.hpp"
 #include"Boss/Msg/SolicitStatus.hpp"
 #include"Boss/Msg/SwapRequest.hpp"
@@ -47,6 +49,10 @@ private:
 	       , Msg::ResponseGetOnchainIgnoreFlag
 	       > get_ignore_rr;
 
+        ModG::ReqResp< Msg::RequestGetAutoSwapFlag
+                     , Msg::ResponseGetAutoSwapFlag
+                     > get_auto_swap_rr;
+
 	std::string why;
 
 	Sqlite3::Db db;
@@ -58,6 +64,7 @@ public:
 	    , char const* statuskey_
 	    ) : bus(bus_), name(name_), statuskey(statuskey_)
 	      , get_ignore_rr(bus_)
+	      , get_auto_swap_rr(bus_)
 	      { start(); }
 
 private:
@@ -283,7 +290,20 @@ public:
 						, name.c_str()
 						, res.seconds
 						);
-			return continue_swap(ok);
+			return Ev::lift().then([this]() {
+				return get_auto_swap_rr.execute(Msg::RequestGetAutoSwapFlag{
+					nullptr
+				});
+			}).then([this, ok](
+					Msg::ResponseGetAutoSwapFlag res) {
+				if (!res.state)
+					return Boss::log( bus, Info
+						, "%s: %s. Will not send "
+						  "funds."
+						, name.c_str()
+						, res.comment.c_str());
+				return continue_swap(ok);
+			});
 		});
 	}
 private:
