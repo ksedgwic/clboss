@@ -68,8 +68,8 @@ private:
 	size_t write_cb(char* ptr, size_t size) {
 		if (parse_failed)
 			return 0;
-		auto str = std::string(ptr, size);
 		try {
+			auto str = std::string(ptr, size);
 			auto results = parser.feed(str);
 			if (results.size() > 0 && !has_result) {
 				has_result = true;
@@ -183,16 +183,10 @@ public:
 							   , api
 							   , pparams
 							   ]() {
-			try {
-				return EasyHandle::run( proxy
-						      , api_base + api
-						      , std::move(*pparams)
-						      );
-			} catch (Boltz::ApiError const&) {
-				throw;
-			} catch (std::exception const& e) {
-				throw Boltz::ApiError(e.what());
-			}
+			return EasyHandle::run( proxy
+					      , api_base + api
+					      , std::move(*pparams)
+					      );
 		});
 	}
 };
