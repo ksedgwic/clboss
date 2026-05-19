@@ -599,6 +599,7 @@ TESTS = \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
 	tests/boss/channelcandidateinvestigator/test_secretary \
 	tests/boss/test_availablerpccommandsannouncer \
+	tests/boss/test_channel_create_destroy_monitor_missing_old_state \
 	tests/boss/test_channelcreationdecider \
 	tests/boss/test_channelcreator_planner \
 	tests/boss/test_channelcreator_rearrangerbysize \
