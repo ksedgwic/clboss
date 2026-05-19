@@ -93,39 +93,73 @@ private:
 		auto target = std::move(guide.front());
 		guide.pop();
 
+		auto probe_amount = 2.0 * min_channel;
 		auto parms = Json::Out()
 			.start_object()
-				.field("id", std::string(target))
-				.field("fromid", std::string(proposal))
-				/* 2x because the dowser will halve the channel
-				 * capacity of the first hop.
+				.field("source", std::string(proposal))
+				.field("destination", std::string(target))
+				/* 2x min_channel because the dowser will
+				 * halve the channel capacity of the first
+				 * hop.
 				 */
-				.field("amount_msat", (2.0 * min_channel).to_msat())
-				/* No real idea how to think about
-				 * riskfactor.
+				.field("amount_msat", probe_amount.to_msat())
+				/* No layers: source is a remote node
+				 * (proposal), not us, so the
+				 * auto.localchans / auto.sourcefree
+				 * helpers do not apply -- they would
+				 * inject our private local channels and
+				 * zero out the source's outgoing fees,
+				 * either of which could make askrene
+				 * pick a patron that the proposal cannot
+				 * actually reach via public topology.
 				 */
-				.field("riskfactor", 10)
-				.field("fuzzpercent", 0)
+				.start_array("layers").end_array()
+				/* Generous max-fee tolerance for what is a
+				 * route-discovery probe, not an actual
+				 * payment.
+				 */
+				.field("maxfee_msat",
+				       (probe_amount * 0.01).to_msat())
+				.field("final_cltv", 14)
+				.field("maxparts", 1)
 			.end_object()
 			;
-		return rpc.command("getroute", std::move(parms)
+		return rpc.command("getroutes", std::move(parms)
 				  ).then([this](Jsmn::Object res) {
 			auto patron = Ln::NodeId();
 			try {
+				/* getroutes' path[K].node_id_out was added
+				 * v26.06; the deprecated old name is
+				 * next_node_id, kept through v27.06 except
+				 * when developer mode suppresses
+				 * deprecated outputs.  Prefer the new
+				 * name, fall back to the old.  TODO: drop
+				 * the fallback once v26.04 is no longer
+				 * supported.
+				 */
+				auto path0 = res["routes"][0]["path"][0];
 				patron = Ln::NodeId(std::string(
-					res["route"][0]["id"]
+					path0.has("node_id_out")
+						? path0["node_id_out"]
+						: path0["next_node_id"]
 				));
-			} catch (Jsmn::TypeError const&) {
+			} catch (std::exception const&) {
+				/* Jsmn::TypeError from the field access OR
+				 * std::range_error (via BacktraceException)
+				 * from Ln::NodeId on a malformed id -- both
+				 * mean an unexpected getroutes result; log and
+				 * route to the retry path rather than aborting
+				 * the run. */
 				auto os = std::ostringstream();
 				os << res;
 				return Boss::log( bus, Error
 						, "ChannelCandidateMatchmaker:"
 						  " Unexpected result from "
-						  "getroute: %s"
+						  "getroutes: %s"
 						, os.str().c_str()
 						).then([]()
 							-> Ev::Io<void>{
-					throw RpcError( "getroute"
+					throw RpcError( "getroutes"
 						      , Jsmn::Object()
 						      );
 				});
