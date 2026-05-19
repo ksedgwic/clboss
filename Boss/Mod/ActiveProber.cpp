@@ -215,11 +215,16 @@ private:
 		});
 	}
 
+	/* First hop after `peer`: the peer's neighbor that we probe
+	 * towards.  Extracted into typed values from getroutes' path[0]
+	 * so we can rebuild the sendpay hop later without keeping the
+	 * raw Jsmn::Object around.
+	 */
+	Ln::NodeId id1;
 	Ln::Scid chan1;
+	std::uint32_t direction1;
 	Ln::Amount amount1;
 	std::uint32_t delay1;
-	/* Route except for the 0th hop from us to peer.  */
-	Jsmn::Object route;
 
 	Ev::Io<void> getroute() {
 		if (to_try.empty())
@@ -233,38 +238,52 @@ private:
 
 			auto parms = Json::Out()
 				.start_object()
-					.field("fromid", std::string(peer))
-					.field("id", std::string(dest))
+					.field("source", std::string(peer))
+					.field("destination", std::string(dest))
 					.field("amount_msat", amount.to_msat())
-					/* I have written this many times,
-					 * but I never understood riskfactor.
-					 */
-					.field("riskfactor", 10)
-					.field("fuzzpercent", 95)
-					.field("cltv", 14)
-					.start_array("exclude")
-						.entry(std::string(self_id))
+					.start_array("layers")
+						.entry("auto.localchans")
+						.entry("auto.sourcefree")
 					.end_array()
+					/* Generous max-fee tolerance for a
+					 * probe; askrene optimizes for
+					 * cheaper paths anyway via its
+					 * probability scoring.
+					 */
+					.field("maxfee_msat",
+					       (amount * 0.01).to_msat())
+					.field("final_cltv", 14)
+					.field("maxparts", 1)
 				.end_object()
 				;
-			return rpc.command("getroute", std::move(parms));
+			return rpc.command("getroutes", std::move(parms));
 		}).then([this](Jsmn::Object res) {
 			try {
-				route = res["route"];
-				auto hop1 = route[0];
-				chan1 = Ln::Scid(std::string(
-					hop1["channel"]
+				auto path0 = res["routes"][0]["path"][0];
+				id1 = Ln::NodeId(std::string(
+					path0["node_id_out"]
+				));
+				/* short_channel_id_dir is "SCID/dir"; split
+				 * into the SCID and the direction.
+				 */
+				auto sdir = std::string(
+					path0["short_channel_id_dir"]
+				);
+				auto slash = sdir.find('/');
+				chan1 = Ln::Scid(sdir.substr(0, slash));
+				direction1 = std::uint32_t(std::stoul(
+					sdir.substr(slash + 1)
 				));
 				amount1 = Ln::Amount::object(
-					hop1["amount_msat"]
+					path0["amount_out_msat"]
 				);
 				delay1 = std::uint32_t(double(
-					hop1["delay"]
+					path0["cltv_out"]
 				));
 			} catch (Jsmn::TypeError const& _) {
 				return Boss::log( bus, Error
 						, "ActiveProber: Unexpected "
-						  "result from getroute: %s"
+						  "result from getroutes: %s"
 						, Util::stringify(res).c_str()
 						).then([]() {
 					return Ev::lift(false);
@@ -379,11 +398,7 @@ private:
 	Ev::Io<void> sendpay() {
 		return Ev::lift().then([this]() {
 			auto os = std::ostringstream();
-			os << chan0;
-			for (auto step : route) {
-				os << " " << std::string(step["channel"]);
-				break;
-			}
+			os << chan0 << " " << std::string(chan1);
 			return Boss::log( bus, Debug
 					, "ActiveProber: Probe %s by route %s."
 					, std::string(peer).c_str()
@@ -405,28 +420,26 @@ private:
 					.field("delay", delay0)
 					.field("style", "tlv")
 				.end_object();
-			/* Load the rest of the path.  */
-			for (auto step : route) {
-				routearr.entry(step);
-				/* Break after the first hop on the route,
-				 * so that we always probe with a short
-				 * two-hop route (hop 0 above, and the
-				 * first hop of the `route`).
-				 *
-				 * This gives the peer the "benefit of
-				 * the doubt", meaning we only probe the
-				 * peer and *its* direct peer for uptime
-				 * and capacity.
-				 *
-				 * Nevertheless, this is still somewhat
-				 * "realistic" since we are probing for
-				 * routes that go towards popular nodes
-				 * (or at least to nodes that CLBOSS
-				 * thinks are good to have capacity
-				 * towards).
-				 */
-				break;
-			}
+			/* Load the first hop after the peer, rebuilt from
+			 * the getroutes path[0] we extracted earlier.
+			 *
+			 * We always probe with a short two-hop route (hop
+			 * 0 above, and this hop 1).  This gives the peer
+			 * the "benefit of the doubt": we only probe the
+			 * peer and *its* direct peer for uptime and
+			 * capacity.  Still "realistic" since the
+			 * destinations were chosen as popular nodes (or
+			 * at least to nodes that CLBOSS thinks are good
+			 * to have capacity towards).
+			 */
+			routearr.start_object()
+					.field("id", std::string(id1))
+					.field("channel", std::string(chan1))
+					.field("direction", direction1)
+					.field("amount_msat", amount1.to_msat())
+					.field("delay", delay1)
+					.field("style", "tlv")
+				.end_object();
 			routearr.end_array();
 
 			auto label = label_prefix + std::string(hash);

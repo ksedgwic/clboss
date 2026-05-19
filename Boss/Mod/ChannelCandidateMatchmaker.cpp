@@ -93,27 +93,36 @@ private:
 		auto target = std::move(guide.front());
 		guide.pop();
 
+		auto probe_amount = 2.0 * min_channel;
 		auto parms = Json::Out()
 			.start_object()
-				.field("id", std::string(target))
-				.field("fromid", std::string(proposal))
-				/* 2x because the dowser will halve the channel
-				 * capacity of the first hop.
+				.field("source", std::string(proposal))
+				.field("destination", std::string(target))
+				/* 2x min_channel because the dowser will
+				 * halve the channel capacity of the first
+				 * hop.
 				 */
-				.field("amount_msat", (2.0 * min_channel).to_msat())
-				/* No real idea how to think about
-				 * riskfactor.
+				.field("amount_msat", probe_amount.to_msat())
+				.start_array("layers")
+					.entry("auto.localchans")
+					.entry("auto.sourcefree")
+				.end_array()
+				/* Generous max-fee tolerance for what is a
+				 * route-discovery probe, not an actual
+				 * payment.
 				 */
-				.field("riskfactor", 10)
-				.field("fuzzpercent", 0)
+				.field("maxfee_msat",
+				       (probe_amount * 0.01).to_msat())
+				.field("final_cltv", 14)
+				.field("maxparts", 1)
 			.end_object()
 			;
-		return rpc.command("getroute", std::move(parms)
+		return rpc.command("getroutes", std::move(parms)
 				  ).then([this](Jsmn::Object res) {
 			auto patron = Ln::NodeId();
 			try {
 				patron = Ln::NodeId(std::string(
-					res["route"][0]["id"]
+					res["routes"][0]["path"][0]["node_id_out"]
 				));
 			} catch (Jsmn::TypeError const&) {
 				auto os = std::ostringstream();
@@ -121,11 +130,11 @@ private:
 				return Boss::log( bus, Error
 						, "ChannelCandidateMatchmaker:"
 						  " Unexpected result from "
-						  "getroute: %s"
+						  "getroutes: %s"
 						, os.str().c_str()
 						).then([]()
 							-> Ev::Io<void>{
-					throw RpcError( "getroute"
+					throw RpcError( "getroutes"
 						      , Jsmn::Object()
 						      );
 				});
