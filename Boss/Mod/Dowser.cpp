@@ -12,18 +12,15 @@
 #include"Boss/concurrent.hpp"
 #include"Boss/log.hpp"
 #include"Ev/Io.hpp"
-#include"Ev/map.hpp"
 #include"Ev/yield.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
 #include"Ln/CommandId.hpp"
-#include"Ln/Scid.hpp"
 #include"S/Bus.hpp"
 #include"Util/make_unique.hpp"
 #include<assert.h>
 #include<memory>
 #include<string>
-#include<vector>
 
 namespace {
 
@@ -35,10 +32,37 @@ Ev::Io<void> wait_for_rpc(Boss::Mod::Rpc*& rpc) {
 	});
 }
 
-/* Maximum number of routes to try.  */
-auto const dowser_limit = std::size_t(10);
-/* Maximum length of routes.  */
-auto const route_limit = std::size_t(3);
+/* Probe amount used to ask askrene whether the destination has at
+ * least this much usable flow available from the source.  Chosen
+ * comfortably above clboss-min-channel's 500_000 sat floor so the
+ * Janitor's threshold check has margin.
+ */
+auto const probe_amount = Ln::Amount::sat(1000000);
+
+/* Maximum number of paths askrene may use to split the probe across.
+ * Mirrors the iteration count of the previous loop-and-exclude
+ * algorithm so an aggregate estimate similar in magnitude is plausible
+ * on well-connected networks.
+ */
+auto const probe_maxparts = std::uint32_t(10);
+
+/* Maximum fee tolerance for the probe.  We are not actually paying,
+ * but askrene refuses routes whose total cost exceeds this, so set
+ * it generously to avoid spurious 206 errors masking real route
+ * availability.
+ */
+auto const probe_maxfee = Ln::Amount::sat(5000);
+
+/* Final-cltv to pass to askrene.  Arbitrary low value; we are
+ * probing, not paying.
+ */
+auto const probe_final_cltv = std::uint32_t(14);
+
+/* Reserve factor applied to the dowsed delivered amount.  Preserved
+ * from the legacy algorithm: 1% channel reserve plus 0.5% default
+ * `maxfeepercent` headroom.
+ */
+auto const reserve_factor = double(0.985);
 
 }
 
@@ -52,11 +76,8 @@ private:
 	Ln::NodeId toid;
 
 	Boss::Mod::Rpc* rpc;
-	Ln::NodeId self_id;
 
-	std::vector<std::string> excludes;
 	Ln::Amount amount;
-	std::size_t tries;
 
 public:
 	Run( S::Bus& bus_
@@ -67,16 +88,14 @@ public:
 	     , requester(requester_)
 	     , fromid(fromid_)
 	     , toid(toid_)
+	     , amount(Ln::Amount::sat(0))
 	     { }
 
-	Ev::Io<void> run( Boss::Mod::Rpc& rpc_
-			, Ln::NodeId const& self_id_
-			) {
+	Ev::Io<void> run(Boss::Mod::Rpc& rpc_) {
 		rpc = &rpc_;
-		self_id = self_id_;
 		auto self = shared_from_this();
 		return Ev::lift().then([self]() {
-			return self->core_run();
+			return self->probe();
 		}).then([self]() {
 			return self->bus.raise(Msg::ResponseDowser{
 				self->requester, self->amount
@@ -85,175 +104,57 @@ public:
 	}
 
 private:
-	Ev::Io<void> core_run() {
-		return Ev::lift().then([this]() {
-			amount = Ln::Amount::sat(0);
-			tries = 0;
-			excludes.emplace_back(std::string(self_id));
-			return loop();
-		});
-	}
-	struct RouteStep {
-		Ln::Scid chan;
-		Ln::NodeId node;
-	};
-	Ev::Io<void> loop() {
-		return Ev::yield().then([this]() {
-			return getroute();
-		}).then([this](std::vector<RouteStep> route) {
-			if (route.empty())
-				/* Nothing to do now.  */
-				return Ev::lift();
-			add_exclude(route);
-			return get_capacity( std::move(route)
-					   ).then([this](Ln::Amount amt) {
-				/* Deduct 1.5% from the capacity, to
-				 * factor in 1% reserve and 0.5%
-				 * default `maxfeepercent`.
-				 */
-				amount += amt * 0.985;
-				++tries;
-				if (tries >= dowser_limit)
-					return Ev::lift();
-				return loop();
-			});
-		});
-	}
-	Ev::Io<std::vector<RouteStep>> getroute() {
-		auto exc = get_excludes();
+	/* Ask askrene whether `probe_amount` can flow from fromid to
+	 * toid; on success, the response's `routes` collectively deliver
+	 * that amount and we report it (less `reserve_factor`) as the
+	 * dowsed capacity.  Replaces the legacy 10-iteration
+	 * getroute+listchannels loop -- askrene's min-cost-flow solver
+	 * does multi-path enumeration natively (CLN >= v24.08, getroutes).
+	 */
+	Ev::Io<void> probe() {
 		auto params = Json::Out()
 			.start_object()
-				.field("id", std::string(toid))
-				.field("fromid", std::string(fromid))
-				.field("amount_msat", 1)
-				/* I never had a decent grasp of
-				 * riskfactor.  */
-				.field("riskfactor", 10.0)
-				.field("exclude", exc)
-				.field("fuzzpercent", 0.0)
-				.field("maxhops", route_limit)
+				.field("source", std::string(fromid))
+				.field("destination", std::string(toid))
+				.field("amount_msat", probe_amount.to_msat())
+				.start_array("layers")
+					.entry("auto.localchans")
+					.entry("auto.sourcefree")
+				.end_array()
+				.field("maxfee_msat", probe_maxfee.to_msat())
+				.field("final_cltv", probe_final_cltv)
+				.field("maxparts", probe_maxparts)
 			.end_object()
 			;
-		return rpc->command( "getroute"
+		return rpc->command( "getroutes"
 				   , std::move(params)
-				   ).then([](Jsmn::Object res) {
-			auto rv = std::vector<RouteStep>();
-			auto empty = std::vector<RouteStep>();
-
-			/* Parse result.  */
-			if (!res.is_object() || !res.has("route"))
-				return Ev::lift(empty);
-			auto route = res["route"];
-			if (!route.is_array())
-				return Ev::lift(empty);
-			for (auto step : route) {
-				if (!step.is_object())
-					return Ev::lift(empty);
-				if (!step.has("id"))
-					return Ev::lift(empty);
-				if (!step.has("channel"))
-					return Ev::lift(empty);
-
-				auto id_j = step["id"];
-				auto chan_j = step["channel"];
-				if (!id_j.is_string())
-					return Ev::lift(empty);
-				auto id_s = std::string(id_j);
-				if (!Ln::NodeId::valid_string(id_s))
-					return Ev::lift(empty);
-				auto id = Ln::NodeId(id_s);
-
-				if (!chan_j.is_string())
-					return Ev::lift(empty);
-				auto chan_s = std::string(chan_j);
-				if (!Ln::Scid::valid_string(chan_s))
-					return Ev::lift(empty);
-				auto chan = Ln::Scid(chan_s);
-
-				rv.emplace_back(RouteStep{chan, id});
+				   ).then([this](Jsmn::Object res) {
+			auto delivered = Ln::Amount::sat(0);
+			if (res.is_object() && res.has("routes")) {
+				auto routes = res["routes"];
+				if (routes.is_array()) {
+					for (auto r : routes) {
+						if ( !r.is_object()
+						  || !r.has("amount_msat")
+						   )
+							continue;
+						auto amt_j = r["amount_msat"];
+						if (!Ln::Amount::valid_object(amt_j))
+							continue;
+						delivered += Ln::Amount::object(amt_j);
+					}
+				}
 			}
-
-			return Ev::lift(std::move(rv));
-		}).catching<RpcError>([](RpcError const& _) {
-			/* Assume this is route-not-found.  */
-			return Ev::lift(std::vector<RouteStep>());
-		});
-	}
-	Json::Out get_excludes() {
-		auto json = Json::Out();
-		auto arr = json.start_array();
-		for (auto const& e : excludes)
-			arr.entry(e);
-		arr.end_array();
-		return json;
-	}
-
-	/* Given a route, adds an exclusion for the first part of
-	 * the route.  */
-	void add_exclude(std::vector<RouteStep> const& route) {
-		assert(!route.empty());
-		if (route.size() == 1) {
-			/* Exclude both directions of the first channel.  */
-			auto s = std::string(route[0].chan);
-			excludes.emplace_back(s + "/1");
-			excludes.emplace_back(s + "/0");
-		} else {
-			/* Exclude first node.  */
-			excludes.emplace_back(std::string(route[0].node));
-		}
-	}
-	/* Gets the capacity of a route.  */
-	Ev::Io<Ln::Amount> get_capacity(std::vector<RouteStep> route) {
-		assert(!route.empty());
-		using std::placeholders::_1;
-		return Ev::map( std::bind(&Run::get_1_capacity, this, _1)
-			      , route
-			      ).then([](std::vector<Ln::Amount> amounts) {
-			/* Get the smallest amount.  */
-			auto theoretical_capacity =
-				*std::min_element( amounts.begin()
-						 , amounts.end()
-						 );
-			/* Divide by number of hops + 1.  */
-			auto plausible_capacity =
-				theoretical_capacity / (amounts.size() + 1);
-			return Ev::lift(plausible_capacity);
-		});
-	}
-	/* Gets the capacity of a single route hop.  */
-	Ev::Io<Ln::Amount> get_1_capacity(RouteStep const& step) {
-		auto scid = std::string(step.chan);
-		return rpc->command( "listchannels"
-				   , Json::Out()
-					.start_object()
-						.field( "short_channel_id"
-						      , scid
-						      )
-					.end_object()
-				   ).then([](Jsmn::Object res) {
-			auto zero = Ln::Amount::sat(0);
-			if (!res.is_object() || !res.has("channels"))
-				return Ev::lift(zero);
-			auto chans = res["channels"];
-			if (!chans.is_array())
-				return Ev::lift(zero);
-			for (auto chan : chans) {
-				if ( !chan.is_object()
-				  || !chan.has("amount_msat")
-				   )
-					continue;
-				auto amt_j = chan["amount_msat"];
-				if (!Ln::Amount::valid_object(amt_j))
-					continue;
-				return Ev::lift(Ln::Amount::object(amt_j));
-			}
-
-			/* The channel *can* disappear between the time
-			 * we did `getroute` to the time we did
-			 * `listchannels`, so if we reach here, treat
-			 * this as 0-capacity.
+			amount = delivered * reserve_factor;
+			return Ev::lift();
+		}).catching<RpcError>([this](RpcError const& _) {
+			/* getroutes errors -- including 205 "Unable to
+			 * find a route" and 206 "Route too expensive" --
+			 * are the askrene way of saying "no flow"; map
+			 * them all to 0msat.
 			 */
-			return Ev::lift(zero);
+			amount = Ln::Amount::sat(0);
+			return Ev::lift();
 		});
 	}
 };
@@ -339,7 +240,6 @@ void Dowser::start() {
 	bus.subscribe<Msg::Init
 		     >([this](Msg::Init const& init) {
 		rpc = &init.rpc;
-		self_id = init.self_id;
 		return Ev::lift();
 	});
 	bus.subscribe<Msg::RequestDowser
@@ -350,7 +250,7 @@ void Dowser::start() {
 		return Ev::lift().then([this]() {
 			return wait_for_rpc(rpc);
 		}).then([this, run]() {
-			return Boss::concurrent(run->run(*rpc, self_id));
+			return Boss::concurrent(run->run(*rpc));
 		});
 	});
 
@@ -361,7 +261,6 @@ Dowser::~Dowser() =default;
 Dowser::Dowser(S::Bus& bus_
 	      ) : bus(bus_)
 		, rpc(nullptr)
-		, self_id()
 		{ start(); }
 
 }}
