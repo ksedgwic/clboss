@@ -8,28 +8,30 @@
 #include"Ev/foreach.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
+#include"Ln/Amount.hpp"
 #include"S/Bus.hpp"
-#include"Util/Str.hpp"
 #include<memory>
 
 namespace {
 
-/* The `maxfeepercent` setting to pass to `pay`.  */
-auto const nonmpp_maxfeepercent = 0.5;
-auto const mpp_maxfeepercent = 5.0;
-/* Wait, 5%??
- * Actually as of 0.9.0, 0.9.0-1, and 0.9.1, the MPP split
- * payment tends to badly mismanage the fee budget, and in
- * practice specifying 5% tends to lead to fees of less than
- * 1%.
- * But if you specify max fee of 1%, for badly-connected
- * nodes you have low chance of success since some of the
- * straggling payment parts are unable to reach the target
- * with the very minimal amount of budget they happened to
- * have gotten.
- * Until `lightningd` can fix the MPP budget handling, we
- * need to use this budget.
+/* Maximum routing fee we are willing to pay: 1% of the invoice
+ * amount, floored at 5000 msat for small invoices -- the same
+ * budget xpay would apply if maxfee were omitted, made explicit
+ * here so the policy is visible at the call site and in review.
+ * History: the legacy `pay` call used maxfeepercent=5.0 for
+ * MPP-capable invoices (all Boltz swap-out invoices are), with
+ * realized fees observed under 1%; an earlier xpay-migration pass
+ * carried over the 0.5% non-MPP cap instead -- the branch that
+ * never applied to these invoices -- which is 2x tighter than
+ * xpay's own default and strands swap payments from modestly-
+ * connected nodes.  A fee-capped failure on the sole PayInvoice
+ * producer (SwapManager swap-outs) just stalls inbound-liquidity
+ * acquisition, and SwapManager's amount-reduction retries cannot
+ * help against a proportional cap.  Integer math to avoid float
+ * rounding drift on larger invoices.
  */
+auto constexpr maxfee_divisor = std::uint64_t(100);
+auto constexpr maxfee_floor_msat = std::uint64_t(5000);
 
 }
 
@@ -79,25 +81,22 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 		|| !res.has("valid")
 		|| !res["valid"].is_boolean()
 		|| !bool(res["valid"])
+		|| !res.has("amount_msat")
 		) {
 			throw Jsmn::TypeError();
 		}
 
-		/* Check the features and see if this is MPP-enabled.  */
-		auto is_mpp = false;
-		if (res.has("features")) {
-			auto features_s = std::string(res["features"]);
-			auto features = Util::Str::hexread(features_s);
-			/* Basic MPP is bits 16 or 17.  */
-			if (features.size() >= 3) {
-				if (features[features.size() - 3] & 0x03)
-					is_mpp = true;
-			}
-		}
+		/* Compute an absolute maxfee from the invoice amount
+		 * (policy documented on maxfee_divisor above).  xpay's
+		 * MPP handling makes the legacy feature-bit-driven MPP
+		 * branch unnecessary: askrene + xpay manage the fee
+		 * budget across parts internally.
+		 */
+		auto amount = Ln::Amount::object(res["amount_msat"]);
+		auto maxfee_msat = amount.to_msat() / maxfee_divisor;
+		if (maxfee_msat < maxfee_floor_msat)
+			maxfee_msat = maxfee_floor_msat;
 
-		auto maxfeepercent =
-			(is_mpp) ?	mpp_maxfeepercent :
-			/*otherwise*/	nonmpp_maxfeepercent ;
 		/* TODO: Get created_at and expiry, add them, then determine
 		 * current time and subtract, to get retry_for.
 		 */
@@ -105,12 +104,12 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 
 		auto parms = Json::Out()
 			.start_object()
-				.field("bolt11", *inv)
+				.field("invstring", *inv)
 				.field("retry_for", retry_for)
-				.field("maxfeepercent", maxfeepercent)
+				.field("maxfee", maxfee_msat)
 			.end_object()
 			;
-		return rpc->command("pay", std::move(parms));
+		return rpc->command("xpay", std::move(parms));
 	}).then([this, inv](Jsmn::Object _) {
 		return Boss::log( bus, Debug
 				, "InvoicePayer: Paid: %s"
@@ -125,12 +124,6 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 		return Boss::log( bus, Error
 				, "InvoicePayer: "
 				  "Unexpected decode result for invoice: %s"
-				, inv->c_str()
-				);
-	}).catching<Util::Str::HexParseFailure>([this, inv](Util::Str::HexParseFailure const& _) {
-		return Boss::log( bus, Error
-				, "InvoicePayer: "
-				  "Unexpected 'features' for invoice: %s"
 				, inv->c_str()
 				);
 	});
