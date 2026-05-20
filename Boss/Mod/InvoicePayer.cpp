@@ -8,28 +8,22 @@
 #include"Ev/foreach.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
+#include"Ln/Amount.hpp"
 #include"S/Bus.hpp"
-#include"Util/Str.hpp"
 #include<memory>
 
 namespace {
 
-/* The `maxfeepercent` setting to pass to `pay`.  */
-auto const nonmpp_maxfeepercent = 0.5;
-auto const mpp_maxfeepercent = 5.0;
-/* Wait, 5%??
- * Actually as of 0.9.0, 0.9.0-1, and 0.9.1, the MPP split
- * payment tends to badly mismanage the fee budget, and in
- * practice specifying 5% tends to lead to fees of less than
- * 1%.
- * But if you specify max fee of 1%, for badly-connected
- * nodes you have low chance of success since some of the
- * straggling payment parts are unable to reach the target
- * with the very minimal amount of budget they happened to
- * have gotten.
- * Until `lightningd` can fix the MPP budget handling, we
- * need to use this budget.
+/* Maximum routing fee we are willing to pay, expressed as a
+ * divisor of the invoice amount.  200 = 0.5% cap, preserving the
+ * historical pre-xpay `pay` non-MPP behaviour (xpay's own default
+ * would be 1%).  Integer math: maxfee_msat = amount_msat / 200,
+ * avoiding the rounding drift a 0.005 floating-point multiplication
+ * would introduce on larger invoices.  The only producer of
+ * Msg::PayInvoice is SwapManager paying a Boltz swap-out invoice,
+ * so tight fee discipline matters here.
  */
+auto constexpr maxfee_divisor = std::uint64_t(200);
 
 }
 
@@ -79,25 +73,20 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 		|| !res.has("valid")
 		|| !res["valid"].is_boolean()
 		|| !bool(res["valid"])
+		|| !res.has("amount_msat")
 		) {
 			throw Jsmn::TypeError();
 		}
 
-		/* Check the features and see if this is MPP-enabled.  */
-		auto is_mpp = false;
-		if (res.has("features")) {
-			auto features_s = std::string(res["features"]);
-			auto features = Util::Str::hexread(features_s);
-			/* Basic MPP is bits 16 or 17.  */
-			if (features.size() >= 3) {
-				if (features[features.size() - 3] & 0x03)
-					is_mpp = true;
-			}
-		}
+		/* Compute an absolute maxfee from the invoice amount,
+		 * preserving the historical 0.5% cap via integer
+		 * division.  xpay's MPP handling makes the legacy
+		 * feature-bit-driven MPP branch unnecessary: askrene
+		 * + xpay manage the fee budget across parts internally.
+		 */
+		auto amount = Ln::Amount::object(res["amount_msat"]);
+		auto maxfee_msat = amount.to_msat() / maxfee_divisor;
 
-		auto maxfeepercent =
-			(is_mpp) ?	mpp_maxfeepercent :
-			/*otherwise*/	nonmpp_maxfeepercent ;
 		/* TODO: Get created_at and expiry, add them, then determine
 		 * current time and subtract, to get retry_for.
 		 */
@@ -105,12 +94,12 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 
 		auto parms = Json::Out()
 			.start_object()
-				.field("bolt11", *inv)
+				.field("invstring", *inv)
 				.field("retry_for", retry_for)
-				.field("maxfeepercent", maxfeepercent)
+				.field("maxfee", maxfee_msat)
 			.end_object()
 			;
-		return rpc->command("pay", std::move(parms));
+		return rpc->command("xpay", std::move(parms));
 	}).then([this, inv](Jsmn::Object _) {
 		return Boss::log( bus, Debug
 				, "InvoicePayer: Paid: %s"
@@ -125,12 +114,6 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 		return Boss::log( bus, Error
 				, "InvoicePayer: "
 				  "Unexpected decode result for invoice: %s"
-				, inv->c_str()
-				);
-	}).catching<Util::Str::HexParseFailure>([this, inv](Util::Str::HexParseFailure const& _) {
-		return Boss::log( bus, Error
-				, "InvoicePayer: "
-				  "Unexpected 'features' for invoice: %s"
 				, inv->c_str()
 				);
 	});

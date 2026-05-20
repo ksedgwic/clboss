@@ -194,17 +194,17 @@ public:
 			})");
 		}).then([this, invoice]() {
 			return read_request().then([this, invoice](Jsmn::Object req) {
-				auto id = assert_method(req, "pay");
+				auto id = assert_method(req, "xpay");
 				auto params = req["params"];
 				assert(params.is_object());
-				assert(params.has("bolt11"));
-				assert(std::string(params["bolt11"]) == invoice);
+				assert(params.has("invstring"));
+				assert(std::string(params["invstring"]) == invoice);
 				assert(params.has("retry_for"));
 				assert(params["retry_for"].is_number());
 				assert(double(params["retry_for"]) == 1000.0);
-				assert(params.has("maxfeepercent"));
-				assert(params["maxfeepercent"].is_number());
-				assert(double(params["maxfeepercent"]) == 5.0);
+				assert(params.has("maxfee"));
+				assert(params["maxfee"].is_number());
+				assert(double(params["maxfee"]) == 5000.0);
 				return reply_result(id, "{}");
 			}).then([this]() {
 				*pay_replied = true;
