@@ -2,7 +2,6 @@
 #include"Boss/Mod/FundsMover/create_label.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/log.hpp"
-#include"Boss/random_engine.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/yield.hpp"
 #include"Jsmn/Object.hpp"
@@ -14,14 +13,22 @@
 #include"Sha256/Hash.hpp"
 #include"Util/stringify.hpp"
 #include<assert.h>
-#include<random>
 #include<string>
 #include<vector>
 
 namespace {
 
-auto initial_fuzzpercent = double(11.0);
-auto step_fuzzpercent = double(11.0);
+/* Name of the persistent askrene layer that holds CLBOSS's
+ * failure-feedback knowledge -- channel capacity constraints
+ * (askrene-inform-channel) and node-level exclusions
+ * (askrene-disable-node) accumulated across attempts.  Created
+ * idempotently at startup by Boss::Mod::FundsMover::Main.
+ *
+ * Naming follows the convention established by plugins/xpay
+ * (which uses "xpay"): the persistent shared-knowledge layer is
+ * named after the plugin that owns it.
+ */
+auto const clboss_layer = std::string("clboss");
 
 }
 
@@ -50,16 +57,24 @@ private:
 
 	bool ok;
 
-	double fuzzpercent;
-	std::vector<std::string> excludes;
 	Ln::Amount dest_amount;
 	Ln::Amount source_amount;
 	std::uint32_t source_delay;
 
 	/* Route from source to destination, not including the
-	 * us->source and destination->us hops.
+	 * us->source and destination->us hops.  Populated from
+	 * getroutes' `path[]` array, with each hop translated into the
+	 * sendpay-compatible shape (id, scid, direction, amount_msat,
+	 * delay).
 	 */
-	Jsmn::Object route;
+	struct Hop {
+		Ln::NodeId id;
+		Ln::Scid scid;
+		std::uint32_t direction;
+		Ln::Amount amount_msat;
+		std::uint32_t delay;
+	};
+	std::vector<Hop> route;
 
 	/* The fee we currently have.  */
 	Ln::Amount our_fee;
@@ -107,99 +122,203 @@ public:
 private:
 	Ev::Io<void> core_run() {
 		return Ev::lift().then([this]() {
-			/* Initialize.  */
-			excludes.push_back(std::string(self_id));
+			/* dest_amount is the amount destination should
+			 * receive on its incoming channel from us.  Old
+			 * comment is preserved because the math is the
+			 * same -- the legacy code used this in getroute's
+			 * amount_msat; we now use it as getroutes'
+			 * amount_msat (the amount delivered to the
+			 * destination peer of askrene's request).
+			 */
 			dest_amount = amount + base_fee
 				    + (amount * ( double(proportional_fee)
 						/ 1000000
 						))
 				    + Ln::Amount::msat(1)
 				    ;
-			fuzzpercent = initial_fuzzpercent;
-
 			return getroute();
 		});
 	}
 	Ev::Io<void> getroute() {
 		return Ev::yield().then([this]() {
+			/* Prorate our share of the global fee budget and
+			 * pass it to askrene as a hard maxfee_msat cap.
+			 * The prorated budget covers our TOTAL fee
+			 * (source_amount - amount), but askrene's
+			 * maxfee_msat only constrains the middle-route
+			 * portion (source_amount - dest_amount).  The
+			 * destination's outgoing-channel fee
+			 * (dest_amount - amount) is a fixed cost we
+			 * already know, so subtract it from the budget
+			 * before handing it to askrene.  If the
+			 * destination's last-hop fee alone exceeds our
+			 * budget, we cannot proceed; askrene will
+			 * return 206 even faster than we would compute
+			 * it locally.  No fuzz-ladder retry analogue in
+			 * askrene's probability-based cost model.
+			 */
+			assert(amount <= *remaining_amount);
+			auto prorata = amount / *remaining_amount;
+			auto prorated_fee_budget = *fee_budget * prorata;
+			auto dest_hop_fee = dest_amount - amount;
+			auto route_maxfee = prorated_fee_budget > dest_hop_fee
+					  ? prorated_fee_budget - dest_hop_fee
+					  : Ln::Amount::sat(0);
+
 			auto parms = Json::Out()
 				.start_object()
-					.field("id", std::string(destination))
-					.field("amount_msat", dest_amount.to_msat())
-					.field("riskfactor", 10)
-					.field("cltv", cltv_delta + 14)
-					.field("fromid", std::string(source))
-					.field("fuzzpercent", fuzzpercent)
-					.field("exclude", make_excludes())
+					.field("source", std::string(source))
+					.field("destination",
+					       std::string(destination))
+					.field("amount_msat",
+					       dest_amount.to_msat())
+					.start_array("layers")
+						.entry("auto.localchans")
+						.entry("auto.sourcefree")
+						.entry(clboss_layer)
+					.end_array()
+					.field("maxfee_msat",
+					       route_maxfee.to_msat())
+					.field("final_cltv",
+					       cltv_delta + 14)
+					.field("maxparts", 1)
 				.end_object()
 				;
-			return rpc.command("getroute", std::move(parms));
+			return rpc.command("getroutes", std::move(parms));
 		}).then([this](Jsmn::Object res) {
-			if (!res.is_object() || !res.has("route"))
-				return Ev::lift(false);
-			route = res["route"];
-			return Ev::lift(true);
-		}).catching<RpcError>([](RpcError const&) {
-			return Ev::lift(false);
-		}).then([this](bool ok) {
-			if (!ok)
-				/* Maybe lowering the fuzzpercent will work
-				 * this time?  */
-				return fee_failed();
-			return compute_source_amount();
-		});
-	}
-	Json::Out make_excludes() {
-		auto rv = Json::Out();
-		auto arr = rv.start_array();
-		for (auto const& s : excludes)
-			arr.entry(s);
-		arr.end_array();
-		return rv;
-	}
-	Ev::Io<void> compute_source_amount() {
-		struct Fail { };
-		auto hop1_amount = std::make_shared<Ln::Amount>();
-		auto hop1_delay = std::make_shared<std::uint32_t>();
-
-		return Ev::lift().then([this, hop1_amount, hop1_delay]() {
-			auto hop1 = Ln::Scid();
 			try {
-				auto hop1_data = route[0];
-				hop1 = Ln::Scid(std::string(
-					hop1_data["channel"]
-				));
-				*hop1_amount = Ln::Amount::object(
-					hop1_data["amount_msat"]
-				);
-				*hop1_delay = std::uint32_t(double(
-					hop1_data["delay"]
-				));
-			} catch (Jsmn::TypeError const& ) {
+				auto routes = res["routes"];
+				if (!routes.is_array() || routes.size() == 0)
+					throw Jsmn::TypeError();
+				auto r0 = routes[0];
+				auto path = r0["path"];
+				if (!path.is_array() || path.size() == 0)
+					throw Jsmn::TypeError();
+
+				/* getroutes path[] hop fields were renamed
+				 * in CLN v26.06.  Which set of names
+				 * actually appears in the response
+				 * depends on the CLN version AND whether
+				 * the node runs with developer mode
+				 * (which suppresses deprecated outputs):
+				 *
+				 *   v26.04                  -> old only
+				 *   v26.06+ no developer    -> both emitted
+				 *   v26.06+ developer=true  -> new only
+				 *
+				 * Bridge by preferring the new name,
+				 * falling back to the old.  TODO: drop
+				 * the fallback once CLN v26.04 is no
+				 * longer supported and the old names are
+				 * removed in v27.06.
+				 *
+				 * short_channel_id_dir is older (v24.11)
+				 * and is emitted unconditionally.
+				 */
+				route.clear();
+				for (auto hop_j : path) {
+					Hop hop;
+					hop.id = Ln::NodeId(std::string(
+						hop_j.has("node_id_out")
+							? hop_j["node_id_out"]
+							: hop_j["next_node_id"]
+					));
+					auto sdir = std::string(
+						hop_j["short_channel_id_dir"]
+					);
+					auto slash = sdir.find('/');
+					if (slash == std::string::npos)
+						throw Jsmn::TypeError();
+					hop.scid = Ln::Scid(
+						sdir.substr(0, slash)
+					);
+					hop.direction = std::uint32_t(
+						std::stoul(sdir.substr(slash + 1))
+					);
+					hop.amount_msat = Ln::Amount::object(
+						hop_j.has("amount_out_msat")
+							? hop_j["amount_out_msat"]
+							: hop_j["amount_msat"]
+					);
+					hop.delay = std::uint32_t(double(
+						hop_j.has("cltv_out")
+							? hop_j["cltv_out"]
+							: hop_j["delay"]
+					));
+					route.push_back(hop);
+				}
+			} catch (std::exception const&) {
+				/* Broaden catch to std::exception so we
+				 * also handle std::invalid_argument and
+				 * std::out_of_range from std::stoul on a
+				 * malformed short_channel_id_dir tail.
+				 * The other accesses in this block only
+				 * raise Jsmn::TypeError (subclass of
+				 * std::exception), so they remain caught.
+				 * Matches the same fix in
+				 * ActiveProber.cpp's parse block.
+				 */
 				return Boss::log( bus, Error
 						, "FundsMover: Unexpected "
-						  "route from getroute: %s"
-						, Util::stringify(route)
+						  "getroutes response: %s"
+						, Util::stringify(res)
 							.c_str()
 						).then([]() {
-					throw Fail();
-					return Ev::lift(Jsmn::Object());
+					return Ev::lift(false);
 				});
 			}
+			return Ev::lift(true);
+		}).catching<RpcError>([this](RpcError const& e) {
+			/* Errors 205 ("Unable to find a route"), 206
+			 * ("Route too expensive"), and any others mean
+			 * we cannot proceed.  No retry: askrene already
+			 * considered our maxfee_msat budget and the
+			 * accumulated failure-feedback layer.
+			 */
+			return Boss::log( bus, Debug
+					, "FundsMover: getroutes failed "
+					  "(%s); giving up attempt to "
+					  "move %s from %s to %s."
+					, Util::stringify(e.error).c_str()
+					, std::string(amount).c_str()
+					, std::string(source).c_str()
+					, std::string(destination).c_str()
+					).then([]() {
+				return Ev::lift(false);
+			});
+		}).then([this](bool ok) {
+			if (ok)
+				return compute_source_amount();
+			return Ev::lift();
+		});
+	}
+
+	/* Compute source_amount (what we send to source) and
+	 * source_delay (initial CLTV) from the first hop of the route
+	 * plus a listchannels round-trip to learn the source's
+	 * outgoing-channel fees.
+	 *
+	 * Once CLN v26.04 is no longer supported, this can be folded
+	 * back into getroute(): getroutes' new path[0].amount_in_msat
+	 * and path[0].cltv_in (both added v26.06) give these values
+	 * directly without the listchannels call.
+	 */
+	Ev::Io<void> compute_source_amount() {
+		return Ev::lift().then([this]() {
 			auto parms = Json::Out()
 				.start_object()
 					.field( "short_channel_id"
-					      , std::string(hop1)
+					      , std::string(route[0].scid)
 					      )
 				.end_object()
 				;
 			return rpc.command("listchannels", std::move(parms));
-		}).then([this, hop1_amount, hop1_delay](Jsmn::Object res) {
-			auto base_fee = Ln::Amount();
-			auto prop_fee = std::uint32_t();
-			auto cltv_delta = std::uint32_t();
+		}).then([this](Jsmn::Object res) {
+			auto found = false;
+			auto src_base_fee = Ln::Amount::sat(0);
+			auto src_prop_fee = std::uint32_t(0);
+			auto src_cltv_delta = std::uint32_t(0);
 			try {
-				auto found = false;
 				auto cs = res["channels"];
 				for (auto c : cs) {
 					auto csrc = Ln::NodeId(std::string(
@@ -207,61 +326,127 @@ private:
 					));
 					if (csrc != source)
 						continue;
-					found = true;
-					base_fee = Ln::Amount::msat(double(
+					src_base_fee = Ln::Amount::msat(double(
 						c["base_fee_millisatoshi"]
 					));
-					prop_fee = std::uint32_t(double(
+					src_prop_fee = std::uint32_t(double(
 						c["fee_per_millionth"]
 					));
-					cltv_delta = std::uint32_t(double(
+					src_cltv_delta = std::uint32_t(double(
 						c["delay"]
 					));
+					found = true;
 				}
-				if (!found)
-					throw Jsmn::TypeError();
 			} catch (Jsmn::TypeError const&) {
 				return Boss::log( bus, Error
 						, "FundsMover: Unexpected "
-						  "result from listchannels: "
-						  "%s"
+						  "listchannels response: %s"
 						, Util::stringify(res)
 							.c_str()
-						).then([]() {
-					return Ev::lift(false);
-				});
+						);
 			}
-			source_amount = *hop1_amount + base_fee
-				      + (*hop1_amount * ( double(prop_fee)
-							/ 1000000
-							))
+			if (!found)
+				return Boss::log( bus, Debug
+						, "FundsMover: listchannels "
+						  "did not include the "
+						  "source's outgoing channel "
+						  "%s; giving up attempt."
+						, std::string(route[0].scid)
+							.c_str()
+						);
+
+			source_amount = route[0].amount_msat + src_base_fee
+				      + (route[0].amount_msat
+					 * ( double(src_prop_fee)
+					   / 1000000
+					   ))
 				      + Ln::Amount::msat(1)
 				      ;
-			source_delay = *hop1_delay + cltv_delta;
+			source_delay = route[0].delay + src_cltv_delta;
 			our_fee = source_amount - amount;
 
+			/* Defensive: askrene's maxfee_msat constrains
+			 * the middle-route portion of our_fee.  If
+			 * gossip drift or rounding has produced a
+			 * route whose actual fee exceeds our prorated
+			 * budget, bail rather than overspend.
+			 */
 			assert(amount <= *remaining_amount);
-
-			/* Make our fee budget proportional to how large we are.  */
 			auto prorata = amount / *remaining_amount;
 			auto prorated_fee_budget = *fee_budget * prorata;
-
 			if (our_fee > prorated_fee_budget)
-				return Ev::lift(false);
+				return Boss::log( bus, Debug
+						, "FundsMover: our_fee %s "
+						  "exceeds prorated budget "
+						  "%s; giving up attempt."
+						, std::string(our_fee).c_str()
+						, std::string(
+							prorated_fee_budget
+						  ).c_str()
+						);
+
 			*fee_budget -= our_fee;
 			*remaining_amount -= amount;
-			return Ev::lift(true);
-		}).catching<RpcError>([](RpcError const&) {
-			return Ev::lift(false);
-		}).catching<Fail>([](Fail const&) {
-			return Ev::lift(false);
-		}).then([this](bool success) {
-			if (!success)
-				return fee_failed();
-			/* At this point we have deducted our fee from the
-			 * fee budget.
-			 */
 			return sendpay();
+		}).catching<RpcError>([this](RpcError const& e) {
+			return Boss::log( bus, Debug
+					, "FundsMover: listchannels failed "
+					  "(%s); giving up attempt."
+					, Util::stringify(e.error).c_str()
+					);
+		});
+	}
+
+	/* Tell askrene about a failed-channel constraint so future
+	 * getroutes calls steer around it.  Recorded into the
+	 * persistent "clboss" layer; benefits all subsequent attempts
+	 * and (when they migrate to consume the same layer) other
+	 * CLBOSS subsystems too.
+	 */
+	Ev::Io<void> inform_channel_constrained( Ln::Scid scid
+					       , int dir
+					       , Ln::Amount at
+					       ) {
+		auto sdir = std::string(scid) + "/" + Util::stringify(dir);
+		auto parms = Json::Out()
+			.start_object()
+				.field("layer", clboss_layer)
+				.field("short_channel_id_dir", sdir)
+				.field("amount_msat", at.to_msat())
+				.field("inform", "constrained")
+			.end_object()
+			;
+		return rpc.command( "askrene-inform-channel"
+				  , std::move(parms)
+				  ).then([](Jsmn::Object _) {
+			return Ev::lift();
+		}).catching<RpcError>([](RpcError const&) {
+			/* Non-fatal -- if the layer is missing
+			 * (e.g. layer-create failed at startup on a
+			 * CLN < v24.11), subsequent getroutes calls
+			 * simply will not benefit from the constraint.
+			 */
+			return Ev::lift();
+		});
+	}
+
+	/* Tell askrene to avoid a node entirely; same persistent
+	 * layer.  Used for NODE-level onion failures (failcode bit
+	 * 0x2000) and for unparsable-onion fallback.
+	 */
+	Ev::Io<void> disable_node(Ln::NodeId node) {
+		auto parms = Json::Out()
+			.start_object()
+				.field("layer", clboss_layer)
+				.field("node", std::string(node))
+			.end_object()
+			;
+		return rpc.command( "askrene-disable-node"
+				  , std::move(parms)
+				  ).then([](Jsmn::Object _) {
+			return Ev::lift();
+		}).catching<RpcError>([](RpcError const&) {
+			return Ev::lift();
 		});
 	}
 
@@ -382,6 +567,14 @@ private:
 						  "advance further."
 						);
 
+			/* feedback: action recorded into the persistent
+			 * "clboss" askrene layer, so the subsequent
+			 * getroute() retry routes around the failure.
+			 * Empty if the failure mode means we should
+			 * stop entirely.
+			 */
+			auto feedback = Ev::lift();
+
 			if (code == 204) {
 				act += Boss::log( bus, Debug
 						, "FundsMover: code 204, "
@@ -419,35 +612,70 @@ private:
 					     ;
 				/* 0x2000 == NODE level error.  */
 				if ((fail & 0x2000))
-					excludes.push_back(std::string(
-						enode
-					));
+					feedback = disable_node(enode);
 				else
-					excludes.push_back(
-						std::string(echan) + "/" +
-						Util::stringify(edir)
+					/* The amount to pass to askrene-inform-channel
+					 * is the HTLC amount attempted on the specific
+					 * failing channel, not the downstream destination
+					 * amount.  eidx indexes [hop0, route..., hoplast];
+					 * we have already returned early for eidx == 0
+					 * and eidx == route.size() + 1, so eidx is in
+					 * [1, route.size()] here and route[eidx - 1]
+					 * describes the failing channel.
+					 */
+					feedback = inform_channel_constrained(
+						echan, edir,
+						route[eidx - 1].amount_msat
 					);
 			} else {
-				/* Unparsable onion, exclude any node.  */
-				auto dist = std::uniform_int_distribution<std::size_t>(
-					0, route.size() - 2
-				);
-				auto hop = route[dist(Boss::random_engine)];
-				excludes.push_back(std::string(
-					hop["id"]
-				));
+				/* Unparsable onion (code 202): we cannot pin
+				 * the failure to a specific channel.  The
+				 * legacy excludes-vector code disabled a
+				 * random middle hop locally for the remainder
+				 * of the rebalance attempt, but doing the
+				 * same via the persistent clboss askrene
+				 * layer would blacklist a healthy random node
+				 * across all future attempts and restarts
+				 * after a single ambiguous failure.  We drop
+				 * the write entirely and rely on askrene's
+				 * natural route diversity to pick a different
+				 * path on retry; the route.size() <= 1
+				 * guard above already bails out when there
+				 * is no diversity available.
+				 */
+				act += Boss::log( bus, Debug
+						, "FundsMover: code 202, "
+						  "unparsable onion; no per-"
+						  "channel feedback, relying "
+						  "on askrene route diversity "
+						  "for retry."
+						);
 			}
 
-			return std::move(act) + getroute();
+			return std::move(act)
+			     + std::move(feedback)
+			     + getroute();
 		});
 	}
-	/* Splice the us->source and destination->us hops.  */
+	/* Splice the us->source and destination->us hops with the
+	 * source->destination middle hops we got from getroutes.
+	 */
 	Json::Out make_route() {
 		auto ret = Json::Out();
 		auto arr = ret.start_array();
 		arr.entry(make_hop0());
-		for (auto step : route)
-			arr.entry(step);
+		for (auto const& hop : route) {
+			arr.start_object()
+					.field("id", std::string(hop.id))
+					.field("channel",
+					       std::string(hop.scid))
+					.field("direction", hop.direction)
+					.field("amount_msat",
+					       hop.amount_msat.to_msat())
+					.field("delay", hop.delay)
+					.field("style", "tlv")
+				.end_object();
+		}
 		arr.entry(make_hoplast());
 		arr.end_array();
 		return ret;
@@ -529,21 +757,6 @@ private:
 		});
 	}
 
-	Ev::Io<void> fee_failed() {
-		if (fuzzpercent > 0) {
-			fuzzpercent -= step_fuzzpercent;
-			if (fuzzpercent < 0)
-				fuzzpercent = 0;
-			return getroute();
-		}
-		return Boss::log( bus, Debug
-				, "FundsMover: Giving up attempt to move "
-				  "%s from %s to %s."
-				, std::string(amount).c_str()
-				, std::string(source).c_str()
-				, std::string(destination).c_str()
-				);
-	}
 };
 
 Ev::Io<bool>
