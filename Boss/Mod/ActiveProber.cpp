@@ -1,4 +1,5 @@
 #include"Boss/Mod/ActiveProber.hpp"
+#include"Boss/Mod/AskreneLayer.hpp"
 #include"Boss/Mod/ChannelCandidateInvestigator/Main.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/Init.hpp"
@@ -448,6 +449,138 @@ private:
 		return sendpay();
 	}
 
+	/* Parse waitsendpay's error data and return whether the probe
+	 * should be considered successful.  Side effect: on real
+	 * route failures, write to the persistent clboss askrene
+	 * layer so future getroutes calls steer around the failing
+	 * channel/node.
+	 *
+	 * Probe-success outcome: the final hop (id1) replied with
+	 * WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS (failcode
+	 * 0x400F), which is the expected failure given our
+	 * bit-flipped random payment_hash and proves the route
+	 * worked all the way through to id1.
+	 *
+	 * Failure outcomes that feed the layer:
+	 *   - Code 202 (unparsable onion): cannot pin a specific
+	 *     channel; disable id1 as the best-guess culprit on
+	 *     this 2-hop route.
+	 *   - NODE-level failcode (bit 0x2000 set): disable the
+	 *     erring_node.
+	 *   - CHANNEL-level failcode on a non-chan0 channel
+	 *     (= chan1): inform_channel_constrained at amount1.
+	 *
+	 * Failures we DO NOT feed:
+	 *   - echan == chan0: our local outgoing channel had the
+	 *     issue.  CLBOSS already has authoritative knowledge of
+	 *     local channel state via listpeerchannels; no need to
+	 *     re-record into the shared layer.
+	 *   - Unparseable error data: don't guess.
+	 */
+	Ev::Io<bool> record_failure(RpcError const& err) {
+		auto code = int();
+		auto eidx = std::size_t();
+		auto echan = Ln::Scid();
+		auto edir = std::uint32_t();
+		auto enode = Ln::NodeId();
+		auto fail = std::uint16_t();
+		auto parsed = false;
+		try {
+			auto& error = err.error;
+			code = int(double(error["code"]));
+			/* Both codes carry the same data shape but
+			 * different origin signal:
+			 *   203 = destination permanently failed
+			 *         (e.g. final-hop responded with
+			 *         WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS,
+			 *         the expected probe-success outcome).
+			 *   204 = intermediate failure ("try another route").
+			 */
+			if (code == 203 || code == 204) {
+				auto data = error["data"];
+				eidx = std::size_t(double(
+					data["erring_index"]
+				));
+				echan = Ln::Scid(std::string(
+					data["erring_channel"]
+				));
+				edir = std::uint32_t(double(
+					data["erring_direction"]
+				));
+				enode = Ln::NodeId(std::string(
+					data["erring_node"]
+				));
+				fail = std::uint16_t(double(
+					data["failcode"]
+				));
+				parsed = true;
+			}
+		} catch (std::exception const&) {
+			/* Couldn't parse; treat as real failure with
+			 * no layer feedback.  Avoid acting on garbage.
+			 */
+			return Ev::lift(false);
+		}
+		(void) eidx;  /* Currently unused; relying on echan and
+			       * failcode to discriminate.  Future:
+			       * cross-check eidx against expected route
+			       * positions if discrepancies emerge.
+			       */
+
+		auto const& layer_name =
+			Boss::Mod::AskreneLayer::clboss_layer_name;
+
+		if (code == 202) {
+			/* Unparsable onion: best guess on a 2-hop
+			 * probe is that id1 is the culprit.
+			 */
+			return Boss::Mod::AskreneLayer::disable_node(
+				rpc, layer_name, id1
+			).then([]() {
+				return Ev::lift(false);
+			});
+		}
+
+		if (!parsed) {
+			/* Other error code, no actionable hop info.  */
+			return Ev::lift(false);
+		}
+
+		/* WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS at the
+		 * destination is the expected probe outcome: id1
+		 * received the HTLC and rejected it because the
+		 * random bit-flipped payment_hash matches no
+		 * invoice.  The route was viable all the way.
+		 */
+		auto const WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS
+			= std::uint16_t(0x400F);
+		if (fail == WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS)
+			return Ev::lift(true);
+
+		/* Don't record local-channel failures.  */
+		if (echan == chan0)
+			return Ev::lift(false);
+
+		/* NODE-level: 0x2000 bit set.  */
+		if (fail & 0x2000) {
+			return Boss::Mod::AskreneLayer::disable_node(
+				rpc, layer_name, enode
+			).then([]() {
+				return Ev::lift(false);
+			});
+		}
+
+		/* CHANNEL-level failure on a non-chan0 channel
+		 * (= chan1).  Record an upper-bound constraint at
+		 * the amount that failed to push through.
+		 */
+		return Boss::Mod::AskreneLayer::inform_channel_constrained(
+			rpc, layer_name, echan, edir, amount1
+		).then([]() {
+			return Ev::lift(false);
+		});
+	}
+
 	Ev::Io<void> sendpay() {
 		return Ev::lift().then([this]() {
 			auto os = std::ostringstream();
@@ -523,9 +656,30 @@ private:
 			 * Should not happen though.
 			 */
 			return Ev::lift(true);
-		}).catching<RpcError>([](RpcError const& _) {
-			/* Oh no, we failed, as expected.  */
-			return Ev::lift(false);
+		}).catching<RpcError>([this](RpcError const& err) {
+			/* Inspect the error to determine: was this a
+			 * successful probe (id1 received the HTLC and
+			 * rejected it with
+			 * WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS as
+			 * expected given our bit-flipped random
+			 * payment_hash) or a real route failure?  Real
+			 * failures are recorded into the persistent
+			 * clboss askrene layer so future getroutes
+			 * calls steer around the failing channel/node.
+			 *
+			 * record_failure returns whether the probe was
+			 * useful (reached destination), but the bool
+			 * we hand downstream tracks sendpay-completion,
+			 * not probe-usefulness.  We are in the
+			 * RpcError handler, so the sendpay failed in
+			 * CLN's view regardless of how useful the
+			 * probe was -- delpay below must pass
+			 * status="failed" to match what CLN recorded.
+			 * Discard the probe-useful bit here.
+			 */
+			return record_failure(err).then([](bool) {
+				return Ev::lift(false);
+			});
 		}).then([this](bool success) {
 
 			auto status = std::string(
