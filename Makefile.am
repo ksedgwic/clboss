@@ -600,6 +600,7 @@ TESTS = \
 	tests/boltz/test_match_lockscript \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
 	tests/boss/channelcandidateinvestigator/test_secretary \
+	tests/boss/test_askrene_layer \
 	tests/boss/test_availablerpccommandsannouncer \
 	tests/boss/test_channel_create_destroy_monitor_missing_old_state \
 	tests/boss/test_channelcreationdecider \
