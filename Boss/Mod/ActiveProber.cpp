@@ -551,11 +551,38 @@ private:
 		 * received the HTLC and rejected it because the
 		 * random bit-flipped payment_hash matches no
 		 * invoice.  The route was viable all the way.
+		 *
+		 * Record a positive lower-bound observation on chan1:
+		 * we just proved this directed channel can push at
+		 * least amount1 right now.  askrene's
+		 * inform=unconstrained mode stores this as a
+		 * constraint with min=amount, max=NULL -- exactly
+		 * the lower-bound raise we want for future getroutes
+		 * calls to trust this channel more.
+		 *
+		 * (Askrene also has an inform=succeeded mode but that
+		 * branch is currently a no-op stub in askrene.c
+		 * "FIXME: We could do something useful here!" -- so
+		 * we follow xpay's convention of using
+		 * inform=unconstrained for the post-success
+		 * lower-bound-raise pattern.)
+		 *
+		 * We do NOT record a parallel observation on chan0
+		 * (our outbound channel to peer).  CLBOSS already
+		 * has authoritative knowledge of local channel state
+		 * via listpeerchannels; the shared askrene layer is
+		 * for cross-subsystem knowledge that isn't already
+		 * locally available.
 		 */
 		auto const WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS
 			= std::uint16_t(0x400F);
-		if (fail == WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS)
-			return Ev::lift(true);
+		if (fail == WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS) {
+			return Boss::Mod::AskreneLayer::inform_channel_unconstrained(
+				rpc, layer_name, chan1, direction1, amount1
+			).then([]() {
+				return Ev::lift(true);
+			});
+		}
 
 		/* Don't record local-channel failures.  */
 		if (echan == chan0)
