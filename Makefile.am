@@ -69,6 +69,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/ActiveProber.hpp \
 	Boss/Mod/AmountSettingsHandler.cpp \
 	Boss/Mod/AmountSettingsHandler.hpp \
+	Boss/Mod/AskreneLayer.cpp \
+	Boss/Mod/AskreneLayer.hpp \
 	Boss/Mod/AutoDisconnector.cpp \
 	Boss/Mod/AutoDisconnector.hpp \
 	Boss/Mod/AvailableRpcCommandsAnnouncer.cpp \

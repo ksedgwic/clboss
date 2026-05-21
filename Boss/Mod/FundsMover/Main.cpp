@@ -1,3 +1,4 @@
+#include"Boss/Mod/AskreneLayer.hpp"
 #include"Boss/Mod/FundsMover/Claimer.hpp"
 #include"Boss/Mod/FundsMover/Main.hpp"
 #include"Boss/Mod/FundsMover/Runner.hpp"
@@ -133,7 +134,8 @@ private:
 		return Ev::lift().then([this]() {
 			auto parms = Json::Out()
 				.start_object()
-					.field("layer", "clboss")
+					.field("layer",
+					       Boss::Mod::AskreneLayer::clboss_layer_name)
 					.field("persistent", true)
 				.end_object()
 				;

@@ -1,3 +1,4 @@
+#include"Boss/Mod/AskreneLayer.hpp"
 #include"Boss/Mod/FundsMover/Attempter.hpp"
 #include"Boss/Mod/FundsMover/create_label.hpp"
 #include"Boss/Mod/Rpc.hpp"
@@ -15,22 +16,6 @@
 #include<assert.h>
 #include<string>
 #include<vector>
-
-namespace {
-
-/* Name of the persistent askrene layer that holds CLBOSS's
- * failure-feedback knowledge -- channel capacity constraints
- * (askrene-inform-channel) and node-level exclusions
- * (askrene-disable-node) accumulated across attempts.  Created
- * idempotently at startup by Boss::Mod::FundsMover::Main.
- *
- * Naming follows the convention established by plugins/xpay
- * (which uses "xpay"): the persistent shared-knowledge layer is
- * named after the plugin that owns it.
- */
-auto const clboss_layer = std::string("clboss");
-
-}
 
 namespace Boss { namespace Mod { namespace FundsMover {
 
@@ -175,7 +160,7 @@ private:
 					.start_array("layers")
 						.entry("auto.localchans")
 						.entry("auto.sourcefree")
-						.entry(clboss_layer)
+						.entry(Boss::Mod::AskreneLayer::clboss_layer_name)
 					.end_array()
 					.field("maxfee_msat",
 					       route_maxfee.to_msat())
@@ -397,58 +382,6 @@ private:
 		});
 	}
 
-	/* Tell askrene about a failed-channel constraint so future
-	 * getroutes calls steer around it.  Recorded into the
-	 * persistent "clboss" layer; benefits all subsequent attempts
-	 * and (when they migrate to consume the same layer) other
-	 * CLBOSS subsystems too.
-	 */
-	Ev::Io<void> inform_channel_constrained( Ln::Scid scid
-					       , int dir
-					       , Ln::Amount at
-					       ) {
-		auto sdir = std::string(scid) + "/" + Util::stringify(dir);
-		auto parms = Json::Out()
-			.start_object()
-				.field("layer", clboss_layer)
-				.field("short_channel_id_dir", sdir)
-				.field("amount_msat", at.to_msat())
-				.field("inform", "constrained")
-			.end_object()
-			;
-		return rpc.command( "askrene-inform-channel"
-				  , std::move(parms)
-				  ).then([](Jsmn::Object _) {
-			return Ev::lift();
-		}).catching<RpcError>([](RpcError const&) {
-			/* Non-fatal -- if the layer is missing
-			 * (e.g. layer-create failed at startup on a
-			 * CLN < v24.11), subsequent getroutes calls
-			 * simply will not benefit from the constraint.
-			 */
-			return Ev::lift();
-		});
-	}
-
-	/* Tell askrene to avoid a node entirely; same persistent
-	 * layer.  Used for NODE-level onion failures (failcode bit
-	 * 0x2000) and for unparsable-onion fallback.
-	 */
-	Ev::Io<void> disable_node(Ln::NodeId node) {
-		auto parms = Json::Out()
-			.start_object()
-				.field("layer", clboss_layer)
-				.field("node", std::string(node))
-			.end_object()
-			;
-		return rpc.command( "askrene-disable-node"
-				  , std::move(parms)
-				  ).then([](Jsmn::Object _) {
-			return Ev::lift();
-		}).catching<RpcError>([](RpcError const&) {
-			return Ev::lift();
-		});
-	}
 
 	Ev::Io<void> sendpay() {
 		auto payment_hash = std::make_shared<Sha256::Hash>();
@@ -612,7 +545,11 @@ private:
 					     ;
 				/* 0x2000 == NODE level error.  */
 				if ((fail & 0x2000))
-					feedback = disable_node(enode);
+					feedback = Boss::Mod::AskreneLayer::disable_node(
+						rpc,
+						Boss::Mod::AskreneLayer::clboss_layer_name,
+						enode
+					);
 				else
 					/* The amount to pass to askrene-inform-channel
 					 * is the HTLC amount attempted on the specific
@@ -623,7 +560,9 @@ private:
 					 * [1, route.size()] here and route[eidx - 1]
 					 * describes the failing channel.
 					 */
-					feedback = inform_channel_constrained(
+					feedback = Boss::Mod::AskreneLayer::inform_channel_constrained(
+						rpc,
+						Boss::Mod::AskreneLayer::clboss_layer_name,
 						echan, edir,
 						route[eidx - 1].amount_msat
 					);
