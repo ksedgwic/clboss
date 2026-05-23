@@ -69,6 +69,50 @@ Ev::Io<void> disable_node( Boss::Mod::Rpc& rpc
 			 , Ln::NodeId node
 			 );
 
+/* Create a fresh non-persistent askrene layer scoped to a single
+ * caller (typically one FundsMover::Attempter run).  The layer's
+ * lifetime is the caller's responsibility -- pair with remove_layer
+ * at the end of the run.  Used to encode absolute within-run
+ * exclusions (e.g. failing channel-directions) that should NOT
+ * accumulate in the persistent clboss layer because:
+ *
+ *   - The failcode might not be a capacity issue (FEE_INSUFFICIENT,
+ *     CLTV problems, etc.) -- persistent max_msat would be the
+ *     wrong feedback and accumulate misinformation.
+ *   - Even when the failcode IS capacity-related, conditional
+ *     max_msat constraints in the persistent layer can be re-
+ *     selected at amount = max_msat - 1, producing a ratchet-
+ *     by-1-msat retry storm if askrene's gossmap hasn't refreshed
+ *     between failure and retry.  An absolute "channel disabled"
+ *     write in a transient layer dominates the conditional
+ *     max_msat (askrene takes the min of all max_msats across
+ *     layers, askrene/layer.c:1004-1009) and ends the storm.
+ *
+ * Layer name is "clboss-attempt-<uuid>" where uuid is a fresh
+ * 16-byte random value (Uuid::random()).  Returned name should be
+ * passed to subsequent inform_channel_constrained / disable_node
+ * calls (with this layer name instead of clboss_layer_name) and
+ * to remove_layer at the end.
+ *
+ * Non-fatal on RpcError: returns the would-be layer name even on
+ * failure so the caller can still attempt remove_layer (a no-op
+ * if create failed), and subsequent inform/disable writes will
+ * also fail silently in degraded-learning mode -- the
+ * within-attempter retry storm protection is lost but the
+ * Attempter itself continues to work.
+ */
+Ev::Io<std::string> create_transient_layer(Boss::Mod::Rpc& rpc);
+
+/* Remove the named layer.  Used to clean up a transient layer
+ * created by create_transient_layer at the end of the caller's
+ * lifetime.  Non-fatal on RpcError: a leaked transient layer is
+ * bounded (persistent=false means it does not survive plugin
+ * restart) but should be rare in practice.
+ */
+Ev::Io<void> remove_layer( Boss::Mod::Rpc& rpc
+			 , std::string const& layer
+			 );
+
 }}}
 
 #endif /* !defined(BOSS_MOD_ASKRENELAYER_HPP_) */

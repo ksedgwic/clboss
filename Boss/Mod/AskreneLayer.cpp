@@ -4,6 +4,7 @@
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
 #include"Util/stringify.hpp"
+#include"Uuid.hpp"
 #include<assert.h>
 
 namespace Boss { namespace Mod { namespace AskreneLayer {
@@ -95,6 +96,60 @@ disable_node( Boss::Mod::Rpc& rpc
 		.end_object()
 		;
 	return rpc.command( "askrene-disable-node"
+			  , std::move(parms)
+			  ).then([](Jsmn::Object _) {
+		return Ev::lift();
+	}).catching<RpcError>([](RpcError const&) {
+		return Ev::lift();
+	});
+}
+
+Ev::Io<std::string>
+create_transient_layer(Boss::Mod::Rpc& rpc) {
+	auto name = std::string("clboss-attempt-")
+		  + std::string(Uuid::random());
+	auto parms = Json::Out()
+		.start_object()
+			.field("layer", name)
+			.field("persistent", false)
+		.end_object()
+		;
+	return rpc.command( "askrene-create-layer"
+			  , std::move(parms)
+			  ).then([name](Jsmn::Object _) {
+		return Ev::lift(name);
+	}).catching<RpcError>([](RpcError const&) {
+		/* On failure (e.g. CLN < v24.11 where askrene-create-
+		 * layer does not exist), return empty so the caller
+		 * can detect we have no transient layer and degrade
+		 * gracefully -- crucially, NOT pass the would-be-name
+		 * to subsequent getroutes calls, since askrene's
+		 * param_layer_names validator (askrene.c) fails the
+		 * whole getroutes call with "unknown layer" if any
+		 * name in the layers array does not exist.
+		 */
+		return Ev::lift(std::string(""));
+	});
+}
+
+Ev::Io<void>
+remove_layer( Boss::Mod::Rpc& rpc
+	    , std::string const& layer
+	    ) {
+	/* Skip the RPC roundtrip if the layer name is empty (the
+	 * convention create_transient_layer uses on creation
+	 * failure).  askrene-remove-layer with an empty name would
+	 * error and we would swallow it, but the round-trip is
+	 * wasted.
+	 */
+	if (layer.empty())
+		return Ev::lift();
+	auto parms = Json::Out()
+		.start_object()
+			.field("layer", layer)
+		.end_object()
+		;
+	return rpc.command( "askrene-remove-layer"
 			  , std::move(parms)
 			  ).then([](Jsmn::Object _) {
 		return Ev::lift();

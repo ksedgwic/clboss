@@ -64,6 +64,19 @@ private:
 	/* The fee we currently have.  */
 	Ln::Amount our_fee;
 
+	/* Non-persistent askrene layer scoped to this single Attempter
+	 * run.  Created at the start of core_run(), used to record
+	 * absolute within-run exclusions for failing channel-directions
+	 * (independent of the persistent clboss layer's conditional
+	 * max_msat constraints), removed at the end of run().  See
+	 * AskreneLayer::create_transient_layer for the rationale.
+	 *
+	 * Empty until create_transient_layer resolves; remove_layer is
+	 * still safe to call on an empty name (the underlying helper
+	 * swallows RpcError).
+	 */
+	std::string transient_layer_name;
+
 public:
 	Impl( S::Bus& bus_
 	    , Boss::Mod::Rpc& rpc_
@@ -100,6 +113,18 @@ public:
 	Ev::Io<bool> run() {
 		auto self = shared_from_this();
 		return self->core_run().then([self]() {
+			/* Tear down the transient layer (if created)
+			 * before returning.  Fire-and-forget: the helper
+			 * swallows RpcError, and a leaked layer is bounded
+			 * (persistent=false means it does not survive
+			 * plugin restart).  Done as a then-chain rather
+			 * than a destructor because the cleanup requires
+			 * an async RPC call.
+			 */
+			return Boss::Mod::AskreneLayer::remove_layer(
+				self->rpc, self->transient_layer_name
+			);
+		}).then([self]() {
 			return Ev::lift(self->ok);
 		});
 	}
@@ -107,6 +132,17 @@ public:
 private:
 	Ev::Io<void> core_run() {
 		return Ev::lift().then([this]() {
+			/* Stand up the per-Attempter transient askrene
+			 * layer that records absolute within-run hop
+			 * exclusions.  See the layer's role in getroute()
+			 * and in the sendpay failure handler below.
+			 */
+			return Boss::Mod::AskreneLayer::create_transient_layer(
+				rpc
+			);
+		}).then([this](std::string name) {
+			transient_layer_name = std::move(name);
+
 			/* dest_amount is the amount destination should
 			 * receive on its incoming channel from us.  Old
 			 * comment is preserved because the math is the
@@ -150,26 +186,33 @@ private:
 					  ? prorated_fee_budget - dest_hop_fee
 					  : Ln::Amount::sat(0);
 
-			auto parms = Json::Out()
-				.start_object()
-					.field("source", std::string(source))
-					.field("destination",
-					       std::string(destination))
-					.field("amount_msat",
-					       dest_amount.to_msat())
-					.start_array("layers")
-						.entry("auto.localchans")
-						.entry("auto.sourcefree")
-						.entry(Boss::Mod::AskreneLayer::clboss_layer_name)
-					.end_array()
-					.field("maxfee_msat",
-					       route_maxfee.to_msat())
-					.field("final_cltv",
-					       cltv_delta + 14)
-					.field("maxparts", 1)
-				.end_object()
-				;
-			return rpc.command("getroutes", std::move(parms));
+			auto pj = Json::Out();
+			auto obj = pj.start_object();
+			obj.field("source", std::string(source));
+			obj.field("destination", std::string(destination));
+			obj.field("amount_msat", dest_amount.to_msat());
+			auto la = obj.start_array("layers");
+			la.entry("auto.localchans");
+			la.entry("auto.sourcefree");
+			la.entry(Boss::Mod::AskreneLayer::clboss_layer_name);
+			/* Within-Attempter absolute exclusions live in
+			 * the transient layer; dominates the persistent
+			 * clboss layer's conditional max_msat constraints
+			 * (askrene takes min across layers).  Empty name
+			 * means create_transient_layer failed at the
+			 * start of core_run() -- skip the entry rather
+			 * than pass a nonexistent name to askrene's
+			 * param_layer_names validator (which would fail
+			 * the whole getroutes call with "unknown layer").
+			 */
+			if (!transient_layer_name.empty())
+				la.entry(transient_layer_name);
+			la.end_array();
+			obj.field("maxfee_msat", route_maxfee.to_msat());
+			obj.field("final_cltv", cltv_delta + 14);
+			obj.field("maxparts", 1);
+			obj.end_object();
+			return rpc.command("getroutes", std::move(pj));
 		}).then([this](Jsmn::Object res) {
 			try {
 				auto routes = res["routes"];
@@ -586,28 +629,95 @@ private:
 							)
 					     ;
 				/* 0x2000 == NODE level error.  */
-				if ((fail & 0x2000))
+				if ((fail & 0x2000)) {
+					/* Persistent disable_node is correct
+					 * for NODE-level failures and is also
+					 * consulted by this Attempter's own
+					 * subsequent getroutes calls (the
+					 * clboss layer is in the layers
+					 * array), so no separate transient
+					 * write is needed for this case.
+					 */
 					feedback = Boss::Mod::AskreneLayer::disable_node(
 						rpc,
 						Boss::Mod::AskreneLayer::clboss_layer_name,
 						enode
 					);
-				else
-					/* The amount to pass to askrene-inform-channel
-					 * is the HTLC amount attempted on the specific
-					 * failing channel, not the downstream destination
-					 * amount.  eidx indexes [hop0, route..., hoplast];
-					 * we have already returned early for eidx == 0
-					 * and eidx == route.size() + 1, so eidx is in
-					 * [1, route.size()] here and route[eidx - 1]
-					 * describes the failing channel.
+				} else {
+					/* Record an absolute within-Attempter
+					 * exclusion in the transient layer
+					 * (when available; degraded mode if
+					 * create_transient_layer failed).
+					 * amount_msat=1 to inform=constrained
+					 * writes max_msat=0, which dominates
+					 * any persistent layer conditional and
+					 * prevents askrene from re-selecting
+					 * this channel-direction at amount-1
+					 * (the ratchet-by-1-msat retry storm).
+					 *
+					 * eidx indexes [hop0, route...,
+					 * hoplast]; we have already returned
+					 * early for eidx == 0 and eidx ==
+					 * route.size() + 1, so eidx is in
+					 * [1, route.size()] here and
+					 * route[eidx - 1] describes the
+					 * failing channel.
 					 */
-					feedback = Boss::Mod::AskreneLayer::inform_channel_constrained(
-						rpc,
-						Boss::Mod::AskreneLayer::clboss_layer_name,
-						echan, edir,
-						route[eidx - 1].amount_msat
-					);
+					if (!transient_layer_name.empty())
+						feedback = Boss::Mod::AskreneLayer::inform_channel_constrained(
+							rpc,
+							transient_layer_name,
+							echan, edir,
+							Ln::Amount::msat(1)
+						);
+					/* For genuine capacity failures
+					 * (0x1007 WIRE_TEMPORARY_CHANNEL_
+					 * FAILURE) only, additionally
+					 * record a conditional max_msat
+					 * constraint in the persistent
+					 * clboss layer.  This is the only
+					 * non-NODE failcode where capacity-
+					 * shaped feedback is semantically
+					 * correct: the channel really cannot
+					 * carry this amount right now, and
+					 * the constraint is useful across
+					 * subsequent Attempters (and other
+					 * CLBOSS subsystems consuming the
+					 * layer) for at least the few
+					 * minutes until liquidity shifts
+					 * again.
+					 *
+					 * For other non-NODE failcodes
+					 * (0x100c WIRE_FEE_INSUFFICIENT,
+					 * 0x100b WIRE_AMOUNT_BELOW_MINIMUM,
+					 * 0x100d WIRE_INCORRECT_CLTV_EXPIRY,
+					 * 0x100e WIRE_EXPIRY_TOO_SOON, etc.)
+					 * skip the persistent write.  Those
+					 * failures are HTLC-parameter
+					 * problems, not capacity problems;
+					 * writing max_msat for them would
+					 * store misinformation that
+					 * pollutes future getroutes calls
+					 * until the entry ages out.  The
+					 * transient exclusion above is
+					 * sufficient to prevent re-selection
+					 * within this Attempter, and CLN's
+					 * normal gossip update from the
+					 * channel_update embedded in those
+					 * errors will refresh the actual
+					 * fee/CLTV/min state for future
+					 * attempts.
+					 */
+					if (fail == 0x1007) {
+						feedback = std::move(feedback)
+							 + Boss::Mod::AskreneLayer::inform_channel_constrained(
+								rpc,
+								Boss::Mod::AskreneLayer::clboss_layer_name,
+								echan, edir,
+								route[eidx - 1].amount_msat
+							);
+					}
+				}
 			} else {
 				/* Unparsable onion (code 202): we cannot pin
 				 * the failure to a specific channel.  The
