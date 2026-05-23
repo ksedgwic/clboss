@@ -413,7 +413,42 @@ private:
 		}).then([this, payment_hash](Jsmn::Object _) {
 			/* Success?  Now we can stop.  */
 			ok = true;
+
+			/* Positive reinforcement: every middle hop in
+			 * this route just proved it can carry at least
+			 * the amount it actually carried.  Record those
+			 * lower-bound observations into the persistent
+			 * clboss askrene layer so future getroutes calls
+			 * see a balanced picture, not a monotonically
+			 * darkening one of only failure-driven upper
+			 * bounds.  Per-hop amount_msat is what that
+			 * specific channel carried (the amount shrinks
+			 * hop by hop as fees are subtracted along the
+			 * route).
+			 *
+			 * Us->source and destination->us hops are
+			 * skipped on the same rationale ActiveProber
+			 * applies to its chan0: local channel state is
+			 * already authoritative via listpeerchannels /
+			 * auto.localchans, so the shared askrene layer
+			 * is reserved for cross-subsystem knowledge.
+			 *
+			 * PR5's askrene-age sweep ages these entries on
+			 * the same 24h cadence as the failure entries.
+			 */
+			auto reinforcement = Ev::lift();
+			for (auto const& hop : route) {
+				reinforcement = std::move(reinforcement)
+					      + Boss::Mod::AskreneLayer::inform_channel_unconstrained(
+							rpc,
+							Boss::Mod::AskreneLayer::clboss_layer_name,
+							hop.scid, hop.direction,
+							hop.amount_msat
+						);
+			}
+
 			return delpay(payment_hash, true)
+			     + std::move(reinforcement)
 			     + Boss::log( bus, Info
 					, "FundsMover: Moved %s from %s, "
 					  "getting %s to %s, costing us "
@@ -423,6 +458,13 @@ private:
 					, std::string(amount).c_str()
 					, std::string(destination).c_str()
 					, std::string(our_fee).c_str()
+					)
+			     + Boss::log( bus, Debug
+					, "FundsMover: positive "
+					  "reinforcement: wrote min_msat "
+					  "for %zu middle hop(s) to clboss "
+					  "layer."
+					, route.size()
 					)
 			     ;
 		}).catching<RpcError>([ this
