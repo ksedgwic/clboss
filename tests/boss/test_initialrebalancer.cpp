@@ -1,5 +1,6 @@
 #undef NDEBUG
 #include"Boss/Mod/InitialRebalancer.hpp"
+#include"Boss/Mod/RebalanceModeManager.hpp"
 #include"Boss/Mod/RebalanceUnmanager.hpp"
 #include"Boss/Msg/JsonCout.hpp"
 #include"Boss/Msg/ListpeersResult.hpp"
@@ -125,6 +126,10 @@ int main() {
 	using Boss::Msg::ResponseMoveFunds;
 
 	auto bus = S::Bus();
+
+	/* Mode manager answers the InitialRebalancer's self-gate query;
+	 * default mode is classic, so the rebalancer runs as before.  */
+	Boss::Mod::RebalanceModeManager mode_manager(bus);
 
 	/* Unmanager mock.  */
 	Boss::Mod::RebalanceUnmanager unmanager(bus, {

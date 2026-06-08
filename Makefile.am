@@ -252,6 +252,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/Rpc.hpp \
 	Boss/Mod/RpcWrapper.cpp \
 	Boss/Mod/RpcWrapper.hpp \
+	Boss/Mod/RebalanceModeManager.cpp \
+	Boss/Mod/RebalanceModeManager.hpp \
 	Boss/Mod/RebalanceUnmanager.cpp \
 	Boss/Mod/RebalanceUnmanager.hpp \
 	Boss/Mod/SelfUptimeMonitor.cpp \
@@ -281,6 +283,7 @@ libclboss_la_SOURCES = \
 	Boss/ModG/ReqResp.hpp \
 	Boss/ModG/RpcProxy.cpp \
 	Boss/ModG/RpcProxy.hpp \
+	Boss/ModG/RebalanceModeProxy.hpp \
 	Boss/ModG/RebalanceUnmanagerProxy.hpp \
 	Boss/ModG/Swapper.cpp \
 	Boss/ModG/Swapper.hpp \
@@ -354,6 +357,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/RequestPeerFromScid.hpp \
 	Boss/Msg/RequestPeerMetrics.hpp \
 	Boss/Msg/RequestPeerStatistics.hpp \
+	Boss/Msg/RequestRebalanceMode.hpp \
 	Boss/Msg/RequestRebalanceUnmanaged.hpp \
 	Boss/Msg/RequestRpcCommand.hpp \
 	Boss/Msg/RequestSelfUptime.hpp \
@@ -367,6 +371,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/ResponsePeerFromScid.hpp \
 	Boss/Msg/ResponsePeerMetrics.hpp \
 	Boss/Msg/ResponsePeerStatistics.hpp \
+	Boss/Msg/ResponseRebalanceMode.hpp \
 	Boss/Msg/ResponseRebalanceUnmanaged.hpp \
 	Boss/Msg/ResponseRpcCommand.hpp \
 	Boss/Msg/ResponseSelfUptime.hpp \
@@ -392,6 +397,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/TimerRandomDaily.hpp \
 	Boss/Msg/TimerRandomHourly.hpp \
 	Boss/Msg/TimerTwiceDaily.hpp \
+	Boss/RebalanceMode.hpp \
 	Boss/Shutdown.hpp \
 	Boss/Signer.cpp \
 	Boss/Signer.hpp \
