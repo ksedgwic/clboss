@@ -3,6 +3,7 @@
 
 #include<cstdint>
 #include<memory>
+#include<string>
 
 namespace Boss { namespace Mod { class Rpc; }}
 namespace Ev { template<typename a> class Io; }
@@ -63,6 +64,20 @@ public:
 	   , std::uint32_t cltv_delta
 	   /* The channel from us to source.  */
 	   , Ln::Scid first_scid
+	   /* Snapshot of the Runner's original budget and original amount
+	    * at the time the Attempter is constructed.  Used together to
+	    * compute the per-Attempter absolute fee cap as
+	    * orig_budget * amount / orig_amount, which the Attempter
+	    * enforces alongside the existing prorata cap during the budget
+	    * check.  The pair is the rate (msat per msat) the Runner was
+	    * authorised to spend at; scaling to this Attempter's amount
+	    * gives the maximum fee we may pay regardless of how the pool
+	    * has drifted from sibling activity.  Snapshotted by value (not
+	    * shared) because these are set once at Runner construction and
+	    * never change.
+	    */
+	   , Ln::Amount orig_budget
+	   , Ln::Amount orig_amount
 	   );
 };
 
