@@ -90,6 +90,9 @@ void Manifester::start() {
 						.field( "description"
 						      , o.description
 						      )
+						.field( "dynamic"
+						      , o.dynamic
+						      )
 					.end_object()
 				);
 			}
