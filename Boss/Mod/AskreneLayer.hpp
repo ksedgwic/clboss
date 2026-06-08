@@ -30,6 +30,17 @@ namespace Boss { namespace Mod { namespace AskreneLayer {
  */
 extern std::string const clboss_layer_name;
 
+/* Name of the persistent askrene layer used by the xrebalance
+ * family of code paths (currently just the manual
+ * `clboss-xmovefunds` RPC; eventually shared with the periodic
+ * xrebalance Layer 3 and JIT xrebalance Layer 4 once they land).
+ *
+ * Distinct from clboss_layer_name so the two implementations'
+ * accumulated knowledge does not commingle while both run side
+ * by side during the FundsMover -> xrebalance transition.
+ */
+extern std::string const xrebalance_layer_name;
+
 /* Tell askrene that a directed channel could not push at least
  * the given amount recently.  Future getroutes calls that
  * include the clboss layer will treat this as an upper-bound
