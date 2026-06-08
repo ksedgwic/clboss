@@ -12,11 +12,17 @@ namespace Boss {
  * @desc
  *   - `classic`    : Track A, the original clboss rebalancer/funds-mover
  *                    ported to getroutes/askrene (heuristic, JIT-capable).
+ *   - `xrebalance` : Track B, the circular askrene min-cost-flow
+ *                    rebalancer (the XRebalancer driver on top of the
+ *                    XMoveFunds primitive -- "xpay, for rebalancing");
+ *                    deliberate, non-JIT.  Tuned by the clboss-xrebalance-*
+ *                    options.
  *   - `off`        : no autonomous rebalancing at all; also the supported
  *                    way to disable the rebalancer entirely.
  */
 enum class RebalanceMode {
 	classic,
+	xrebalance,
 	off
 };
 
@@ -27,6 +33,7 @@ inline
 char const* rebalance_mode_to_string(RebalanceMode m) {
 	switch (m) {
 	case RebalanceMode::classic:    return "classic";
+	case RebalanceMode::xrebalance: return "xrebalance";
 	case RebalanceMode::off:        return "off";
 	}
 	return "classic";
@@ -38,6 +45,10 @@ inline
 bool rebalance_mode_from_string(std::string const& s, RebalanceMode& out) {
 	if (s == "classic") {
 		out = RebalanceMode::classic;
+		return true;
+	}
+	if (s == "xrebalance") {
+		out = RebalanceMode::xrebalance;
 		return true;
 	}
 	if (s == "off") {
