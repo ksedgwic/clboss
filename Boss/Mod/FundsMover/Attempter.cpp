@@ -58,6 +58,11 @@ struct ChanUpdate {
 	std::uint32_t fee_base_msat;
 	std::uint32_t fee_proportional_millionths;
 	std::uint64_t htlc_maximum_msat;
+	/* bLIP-18 inbound fees (TLV 55555), signed.  has_inbound_fee
+	 * is false when the channel_update carries no such TLV. */
+	bool          has_inbound_fee                     = false;
+	std::int32_t  inbound_fee_base_msat               = 0;
+	std::int32_t  inbound_fee_proportional_millionths = 0;
 
 	bool operator==(ChanUpdate const& o) const {
 		return enabled == o.enabled
@@ -80,6 +85,32 @@ std::uint64_t read_be( std::uint8_t const* data
 	for (auto i = std::size_t(0); i < nbytes; ++i)
 		v = (v << 8) | std::uint64_t(data[offset + i]);
 	return v;
+}
+
+/* Read a BOLT 01 BigSize at `pos` in `data` (size `size`), advancing
+ * `pos` past it.  Returns false if truncated. */
+bool read_bigsize( std::uint8_t const* data
+		 , std::size_t size
+		 , std::size_t& pos
+		 , std::uint64_t& out
+		 ) {
+	if (pos >= size)
+		return false;
+	auto first = data[pos];
+	auto nbytes = std::size_t( first < 0xfd ? 0
+				 : first == 0xfd ? 2
+				 : first == 0xfe ? 4
+				 :                 8 );
+	if (nbytes == 0) {
+		out = first;
+		pos += 1;
+		return true;
+	}
+	if (pos + 1 + nbytes > size)
+		return false;
+	out = read_be(data, pos + 1, nbytes);
+	pos += 1 + nbytes;
+	return true;
 }
 
 /* Parse a BOLT 04 onion failure payload (the `raw_message` hex
@@ -159,6 +190,35 @@ bool parse_chan_update( std::string const& raw_message_hex
 	out.fee_base_msat               = std::uint32_t(read_be(cu, 120, 4));
 	out.fee_proportional_millionths = std::uint32_t(read_be(cu, 124, 4));
 	out.htlc_maximum_msat           = read_be(cu, 128, 8);
+
+	/* Scan the trailing TLV stream for bLIP-18 inbound fees
+	 * (type 55555): value is [i32 base][i32 prop], both signed. */
+	out.has_inbound_fee                     = false;
+	out.inbound_fee_base_msat               = 0;
+	out.inbound_fee_proportional_millionths = 0;
+	auto tpos = std::size_t(136);
+	while (tpos < cu_size) {
+		auto ttype = std::uint64_t(0);
+		auto tlen  = std::uint64_t(0);
+		if (!read_bigsize(cu, cu_size, tpos, ttype))
+			break;
+		if (!read_bigsize(cu, cu_size, tpos, tlen))
+			break;
+		/* Overflow-safe: tpos <= cu_size (guaranteed by
+		 * read_bigsize) so cu_size - tpos cannot underflow,
+		 * whereas tpos + tlen can wrap for an attacker-supplied
+		 * tlen and slip past a `> cu_size` check. */
+		if (tlen > std::uint64_t(cu_size - tpos))
+			break;
+		if (ttype == 55555 && tlen == 8) {
+			out.has_inbound_fee = true;
+			out.inbound_fee_base_msat =
+			    std::int32_t(std::uint32_t(read_be(cu, tpos, 4)));
+			out.inbound_fee_proportional_millionths =
+			    std::int32_t(std::uint32_t(read_be(cu, tpos + 4, 4)));
+		}
+		tpos += tlen;
+	}
 	return true;
 }
 
@@ -1342,7 +1402,50 @@ private:
 							auto key = std::string(echan) + "/"
 								 + std::to_string(edir);
 							auto prev = policy_overrides.find(key);
-							if ( prev != policy_overrides.end()
+							if ( cu.has_inbound_fee
+							  && ( cu.inbound_fee_base_msat > 0
+							    || cu.inbound_fee_proportional_millionths > 0 )
+							   ) {
+								/* Positive bLIP-18 inbound
+								 * fee.  Askrene has no
+								 * inbound-fee support, so it
+								 * prices this hop on the
+								 * outbound policy, picks it,
+								 * and underpays -- the sendpay
+								 * fails FEE_INSUFFICIENT and the
+								 * identical channel_update
+								 * returns forever.  Refreshing
+								 * the outbound policy cannot
+								 * correct an inbound charge, so
+								 * hard-exclude the channel-
+								 * direction instead (the same
+								 * max_msat=1 structural bound as
+								 * the repeat-update case below).
+								 * Negative inbound fees
+								 * (discounts) are left alone.
+								 */
+								feedback = std::move(feedback)
+									 + Boss::Mod::AskreneLayer::inform_channel_constrained(
+										rpc,
+										Boss::Mod::AskreneLayer::clboss_layer_name,
+										echan, edir,
+										Ln::Amount::msat(1)
+									)
+									+ Boss::log( bus, Debug
+										   , "FundsMover[%s]: "
+										     "feedback: clboss "
+										     "max_msat=0 on %s/%d "
+										     "(positive bLIP-18 "
+										     "inbound fee base=%dmsat "
+										     "prop=%dppm; askrene "
+										     "cannot price it)"
+										   , attempt_tag().c_str()
+										   , std::string(echan).c_str()
+										   , edir
+										   , int(cu.inbound_fee_base_msat)
+										   , int(cu.inbound_fee_proportional_millionths)
+										   );
+							} else if ( prev != policy_overrides.end()
 							  && prev->second == cu
 							   ) {
 								/* No-info refresh: the
