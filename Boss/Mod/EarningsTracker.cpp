@@ -11,6 +11,7 @@
 #include"Boss/Msg/ResponseEarningsInfo.hpp"
 #include"Boss/Msg/ResponseMoveFunds.hpp"
 #include"Boss/Msg/SolicitStatus.hpp"
+#include"Boss/Msg/XRebalanceAttribution.hpp"
 #include"Boss/concurrent.hpp"
 #include"Ev/Io.hpp"
 #include"Json/Out.hpp"
@@ -98,6 +99,10 @@ private:
 		bus.subscribe<Msg::ResponseMoveFunds
 			     >([this](Msg::ResponseMoveFunds const& rsp) {
 			return response_move_funds(rsp);
+		});
+		bus.subscribe<Msg::XRebalanceAttribution
+			     >([this](Msg::XRebalanceAttribution const& m) {
+			return xrebalance_attribution(m);
 		});
 		bus.subscribe<Msg::RequestEarningsInfo
 			     >([this](Msg::RequestEarningsInfo const& req) {
@@ -444,6 +449,67 @@ private:
 				.execute()
 				;
 
+			tx.commit();
+			return Ev::lift();
+		});
+	}
+
+	/* XMoveFunds-side analog of response_move_funds: the
+	 * caller (Boss::Mod::XMoveFunds) already identified the
+	 * (source_peer, dest_peer) for one successful sendpay part
+	 * and packaged the per-part amount_moved / fee_spent, so we
+	 * skip the pendings table entirely and run the same
+	 * symmetric DB update.  Same attribution rule as the
+	 * FundsMover path: source peer gets in_expenditures /
+	 * in_rebalanced (more inbound capacity), destination peer
+	 * gets out_expenditures / out_rebalanced (more outbound).
+	 *
+	 * One bus message per successful part (an MPP-split
+	 * clboss-xmovefunds invocation can produce several), so
+	 * fees are recorded per-part rather than aggregated at the
+	 * top-level call -- finer-grained, matches the per-part
+	 * routing reality. */
+	Ev::Io<void>
+	xrebalance_attribution(Boss::Msg::XRebalanceAttribution const& m) {
+		auto source = m.source;
+		auto destination = m.destination;
+		auto fee = m.fee_spent;
+		auto amount = m.amount_moved;
+		return db.transact().then(
+		    [this, source, destination, fee, amount]
+		    (Sqlite3::Tx tx) {
+			auto bucket = bucket_time(get_now());
+			ensure(tx, source, bucket);
+			ensure(tx, destination, bucket);
+
+			tx.query(R"QRY(
+			UPDATE "EarningsTracker"
+			   SET in_expenditures = in_expenditures + :fee,
+			       in_rebalanced = in_rebalanced + :amount
+			 WHERE node = :node
+			   AND time_bucket = :bucket
+			     ;
+			)QRY")
+				.bind(":node", std::string(source))
+				.bind(":bucket", bucket)
+				.bind(":fee", fee.to_msat())
+				.bind(":amount", amount.to_msat())
+				.execute()
+				;
+			tx.query(R"QRY(
+			UPDATE "EarningsTracker"
+			   SET out_expenditures = out_expenditures + :fee,
+			       out_rebalanced = out_rebalanced + :amount
+			 WHERE node = :node
+			   AND time_bucket = :bucket
+			     ;
+			)QRY")
+				.bind(":node", std::string(destination))
+				.bind(":bucket", bucket)
+				.bind(":fee", fee.to_msat())
+				.bind(":amount", amount.to_msat())
+				.execute()
+				;
 			tx.commit();
 			return Ev::lift();
 		});
