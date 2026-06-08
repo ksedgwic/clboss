@@ -12,6 +12,7 @@
 namespace Boss { namespace Mod { namespace AskreneLayer {
 
 std::string const clboss_layer_name = "clboss";
+std::string const xrebalance_layer_name = "clboss-xrebalance";
 
 namespace {
 

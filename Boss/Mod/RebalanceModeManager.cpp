@@ -44,7 +44,9 @@ private:
 					)
 				)),
 				"Rebalancer mode: \"classic\" (the original "
-				"rebalancer) or \"off\" (disable rebalancing). "
+				"rebalancer), \"xrebalance\" (the circular askrene "
+				"rebalancer, tuned by clboss-xrebalance-*), or "
+				"\"off\" (disable rebalancing). "
 				" Set in the config for the startup default or "
 				"at runtime with "
 				"`setconfig clboss-rebalance-mode <mode>`.",
