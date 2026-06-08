@@ -258,6 +258,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/SelfUptimeMonitor.hpp \
 	Boss/Mod/SendpayResultMonitor.cpp \
 	Boss/Mod/SendpayResultMonitor.hpp \
+	Boss/Mod/SetConfigHandler.cpp \
+	Boss/Mod/SetConfigHandler.hpp \
 	Boss/Mod/StatusCommand.cpp \
 	Boss/Mod/StatusCommand.hpp \
 	Boss/Mod/SwapManager.cpp \
