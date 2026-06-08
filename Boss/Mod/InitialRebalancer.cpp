@@ -1,4 +1,5 @@
 #include"Boss/Mod/InitialRebalancer.hpp"
+#include"Boss/ModG/RebalanceModeProxy.hpp"
 #include"Boss/ModG/RebalanceUnmanagerProxy.hpp"
 #include"Boss/ModG/ReqResp.hpp"
 #include"Boss/Msg/ListpeersResult.hpp"
@@ -63,6 +64,7 @@ private:
 	ExpenseRR expense_rr;
 	/* Interface to the rebalance unmanager.  */
 	ModG::RebalanceUnmanagerProxy unmanager;
+	ModG::RebalanceModeProxy mode_proxy;
 
 	/* Peers currently being rebalanced.  */
 	std::set<Ln::NodeId> current_sources;
@@ -103,19 +105,25 @@ private:
 	Ev::Io<void>
 	run(Boss::Mod::ConstructedListpeers const& peers) {
 		auto ppeers = std::make_shared<Boss::Mod::ConstructedListpeers>(peers);
-		return Ev::lift().then([this]() {
-			return unmanager.get_unmanaged();
-		}).then([ this
-			, ppeers
-			](std::set<Ln::NodeId> const* unmanagedp) {
-			return Boss::concurrent( Run( bus
-						    , *ppeers
-						    , move_rr
-						    , expense_rr
-						    , current_sources
-						    , *unmanagedp
-						    ).run()
-					       );
+		return mode_proxy.get_mode().then([this, ppeers](RebalanceMode m) {
+			/* Self-gate on the rebalance mode: only the "classic"
+			 * track runs the InitialRebalancer.  */
+			if (m != RebalanceMode::classic)
+				return Ev::lift();
+			return Ev::lift().then([this]() {
+				return unmanager.get_unmanaged();
+			}).then([ this
+				, ppeers
+				](std::set<Ln::NodeId> const* unmanagedp) {
+				return Boss::concurrent( Run( bus
+							    , *ppeers
+							    , move_rr
+							    , expense_rr
+							    , current_sources
+							    , *unmanagedp
+							    ).run()
+						       );
+			});
 		});
 	}
 
@@ -130,6 +138,7 @@ public:
 	      , move_rr(bus_)
 	      , expense_rr(bus_)
 	      , unmanager(bus_)
+	      , mode_proxy(bus_)
 	      { start(); }
 };
 

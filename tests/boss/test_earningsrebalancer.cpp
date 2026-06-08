@@ -1,6 +1,7 @@
 #undef NDEBUG
 #include"Boss/Mod/JsonOutputter.hpp"
 #include"Boss/Mod/EarningsRebalancer.hpp"
+#include"Boss/Mod/RebalanceModeManager.hpp"
 #include"Boss/Mod/RebalanceUnmanager.hpp"
 #include"Boss/Msg/CommandRequest.hpp"
 #include"Boss/Mod/ConstructedListpeers.hpp"
@@ -113,6 +114,10 @@ auto const Z = Ln::NodeId("02000000000000000000000000000000000000000000000000000
 
 int main() {
 	auto bus = S::Bus();
+
+	/* Mode manager answers the EarningsRebalancer's self-gate query;
+	 * default mode is classic, so the rebalancer runs as before.  */
+	Boss::Mod::RebalanceModeManager mode_manager(bus);
 
 	/* Utility outputter.  */
 	Boss::Mod::JsonOutputter cout(std::cout, bus);
