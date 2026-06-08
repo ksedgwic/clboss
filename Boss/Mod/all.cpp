@@ -66,6 +66,7 @@
 #include"Boss/Mod/RpcWrapper.hpp"
 #include"Boss/Mod/SelfUptimeMonitor.hpp"
 #include"Boss/Mod/SendpayResultMonitor.hpp"
+#include"Boss/Mod/SetConfigHandler.hpp"
 #include"Boss/Mod/StatusCommand.hpp"
 #include"Boss/Mod/SwapManager.hpp"
 #include"Boss/Mod/SwapReporter.hpp"
@@ -119,6 +120,7 @@ std::shared_ptr<void> all( std::ostream& cout
 	/* Startup.  */
 	all->install<Manifester>(bus);
 	all->install<Initiator>(bus, threadpool, std::move(open_rpc_socket));
+	all->install<SetConfigHandler>(bus);
 
 	/* General settings.  */
 	all->install<AmountSettingsHandler>(bus);
