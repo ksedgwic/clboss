@@ -6,6 +6,7 @@
 #include"Ln/Scid.hpp"
 #include<cstdint>
 #include<memory>
+#include<string>
 
 namespace Boss { namespace Mod { namespace FundsMover { class Attempter; }}}
 namespace Boss { namespace Mod { namespace FundsMover { class Claimer; }}}
