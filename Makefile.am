@@ -69,6 +69,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/ActiveProber.hpp \
 	Boss/Mod/AmountSettingsHandler.cpp \
 	Boss/Mod/AmountSettingsHandler.hpp \
+	Boss/Mod/AskreneLayer.cpp \
+	Boss/Mod/AskreneLayer.hpp \
 	Boss/Mod/AutoDisconnector.cpp \
 	Boss/Mod/AutoDisconnector.hpp \
 	Boss/Mod/AvailableRpcCommandsAnnouncer.cpp \
@@ -598,6 +600,7 @@ TESTS = \
 	tests/boltz/test_match_lockscript \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
 	tests/boss/channelcandidateinvestigator/test_secretary \
+	tests/boss/test_askrene_layer \
 	tests/boss/test_availablerpccommandsannouncer \
 	tests/boss/test_channel_create_destroy_monitor_missing_old_state \
 	tests/boss/test_channelcreationdecider \
