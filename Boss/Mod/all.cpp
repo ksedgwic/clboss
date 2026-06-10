@@ -78,6 +78,7 @@
 #include"Boss/Mod/Waiter.hpp"
 #include"Boss/Mod/XMoveFunds/Main.hpp"
 #include"Boss/Mod/XRebalanceHistory.hpp"
+#include"Boss/Mod/XRebalancePredictor.hpp"
 #include"Boss/Mod/XRebalancer.hpp"
 #include"Boss/Mod/all.hpp"
 #include<vector>
@@ -217,6 +218,7 @@ std::shared_ptr<void> all( std::ostream& cout
 	all->install<FundsMover::Main>(bus);
 	all->install<XMoveFunds::Main>(bus);
 	all->install<XRebalanceHistory>(bus);
+	all->install<XRebalancePredictor>(bus);
 	all->install<XRebalancer>(bus, *waiter);
 	all->install<MoveFundsCommand>(bus);
 	all->install<EarningsTracker>(bus);
