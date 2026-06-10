@@ -105,6 +105,12 @@ Result predict( std::vector<Bound> bounds
 	      , Params const& params
 	      );
 
+/* Map a stored observation kind (the TEXT values of the
+ * XRebalanceHistory table: success / liquidity_fail / policy_fail /
+ * node_fail) to its bound side.  Returns false for kinds that are
+ * not per-channel liquidity bounds (node_fail).  */
+bool kind_is_bound(std::string const& kind, bool& is_fail);
+
 }}}
 
 #endif /* !defined(BOSS_MOD_XREBALANCEPREDICT_HPP) */

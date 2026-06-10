@@ -12,6 +12,7 @@
 #include"Boss/Msg/Option.hpp"
 #include"Boss/Msg/TimerRandomHourly.hpp"
 #include"Boss/Msg/XRebalanceAttribution.hpp"
+#include"Boss/Msg/XRebalanceLayerAged.hpp"
 #include"Boss/Msg/XRebalanceObservation.hpp"
 #include"Boss/concurrent.hpp"
 #include"Boss/log.hpp"
@@ -610,9 +611,10 @@ private:
 	 * channel_update payload (gossmap_local_updatechan merges).
 	 */
 	Ev::Io<void> age_xrebalance_layer() {
-		return Ev::lift().then([this]() {
-			auto cutoff = std::uint64_t(std::time(nullptr))
-				    - aging_window_secs;
+		auto aged_time = std::make_shared<std::uint64_t>(0);
+		return Ev::lift().then([this, aged_time]() {
+			*aged_time = std::uint64_t(std::time(nullptr));
+			auto cutoff = *aged_time - aging_window_secs;
 			auto parms = Json::Out()
 				.start_object()
 					.field( "layer"
@@ -659,6 +661,18 @@ private:
 						  "until next successful "
 						  "aging pass)."
 					);
+		}).then([this, aged_time]() {
+			/* End-of-expiration-cycle hook: the persistence
+			 * forecaster (XRebalancePredictor) re-asserts
+			 * durable knowledge for directions the trim just
+			 * left without live evidence.  Raised on the
+			 * failure path too -- a skipped trim only means
+			 * stale entries remain, which is safe for
+			 * subscribers.  */
+			auto m = Msg::XRebalanceLayerAged{
+				*aged_time,
+				*aged_time - aging_window_secs};
+			return bus.raise(std::move(m));
 		});
 	}
 
