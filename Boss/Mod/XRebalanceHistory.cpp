@@ -391,21 +391,6 @@ private:
 		po.end_object();
 	}
 
-	/* Map a stored observation kind to its bound side; returns
-	 * false for kinds that are not per-channel liquidity bounds
-	 * (node_fail).  */
-	static bool kind_is_bound(std::string const& kind, bool& is_fail) {
-		if (kind == "success") {
-			is_fail = false;
-			return true;
-		}
-		if (kind == "liquidity_fail" || kind == "policy_fail") {
-			is_fail = true;
-			return true;
-		}
-		return false;
-	}
-
 	Ev::Io<void> report(Msg::CommandRequest const& req) {
 		auto id = req.id;
 		auto paramfail = [this, id]() {
@@ -553,7 +538,8 @@ private:
 
 				if (want_predictions) {
 					auto is_fail = false;
-					if (kind_is_bound(kind, is_fail))
+					if (XRebalancePredict::kind_is_bound(
+						kind, is_fail))
 						bounds_by_dir[dir].push_back(
 						    {time, is_fail, amount});
 				}
@@ -664,7 +650,8 @@ private:
 				 * (with decline reasons).  */
 				auto& bounds = groups[{row_scid, dir}];
 				auto is_fail = false;
-				if (kind_is_bound(kind, is_fail))
+				if (XRebalancePredict::kind_is_bound(
+					kind, is_fail))
 					bounds.push_back(
 					    {time, is_fail, amount});
 			}
