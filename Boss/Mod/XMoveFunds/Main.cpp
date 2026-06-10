@@ -12,6 +12,7 @@
 #include"Boss/Msg/Option.hpp"
 #include"Boss/Msg/TimerRandomHourly.hpp"
 #include"Boss/Msg/XRebalanceAttribution.hpp"
+#include"Boss/Msg/XRebalanceObservation.hpp"
 #include"Boss/concurrent.hpp"
 #include"Boss/log.hpp"
 #include"Ev/Io.hpp"
@@ -1323,6 +1324,19 @@ private:
 					Boss::Mod::AskreneLayer::
 					    xrebalance_layer_name,
 					enode));
+				auto node_amount = Ln::Amount::msat(1);
+				if (eidx < askrene_path.size()
+				 && askrene_path[eidx].has("amount_in_msat"))
+					node_amount = Ln::Amount::object(
+					    askrene_path[eidx]
+						["amount_in_msat"]);
+				auto obs = Msg::XRebalanceObservation{
+					std::uint64_t(std::time(nullptr)),
+					Ln::Scid(echan_str), edir,
+					Msg::XRebalanceObservationKind
+					    ::NodeFail,
+					node_amount, fail, enode};
+				actions.push_back(bus.raise(std::move(obs)));
 				return;
 			}
 
@@ -1396,6 +1410,19 @@ private:
 							    xrebalance_layer_name,
 							Ln::Scid(in_scid), in_dir,
 							Ln::Amount::msat(1)));
+						auto obs = Msg::
+						    XRebalanceObservation{
+							std::uint64_t(
+							    std::time(nullptr)),
+							Ln::Scid(in_scid),
+							in_dir,
+							Msg::
+							XRebalanceObservationKind
+							    ::PolicyFail,
+							Ln::Amount::msat(1),
+							fail, enode};
+						actions.push_back(
+						    bus.raise(std::move(obs)));
 						return;
 					}
 				}
@@ -1479,6 +1506,13 @@ private:
 					xrebalance_layer_name,
 				    Ln::Scid(echan_str), edir,
 				    constraint_amount));
+			auto obs = Msg::XRebalanceObservation{
+				std::uint64_t(std::time(nullptr)),
+				Ln::Scid(echan_str), edir,
+				Msg::XRebalanceObservationKind
+				    ::LiquidityFail,
+				constraint_amount, fail, enode};
+			actions.push_back(bus.raise(std::move(obs)));
 		} catch (std::exception const&) {
 			/* Best-effort: malformed payload just means
 			 * no feedback for this part. */
@@ -1866,6 +1900,22 @@ private:
 								std::get<0>(hop),
 								std::get<1>(hop),
 								std::get<2>(hop)));
+							auto obs = Msg::
+							    XRebalanceObservation{
+								std::uint64_t(
+								    std::time(
+									nullptr)),
+								std::get<0>(hop),
+								std::get<1>(hop),
+								Msg::
+								XRebalanceObservationKind
+								    ::Success,
+								std::get<2>(hop),
+								0, Ln::NodeId()};
+							feedback_actions
+							    ->push_back(
+							    bus.raise(
+								std::move(obs)));
 						}
 						/* Per-part earnings
 						 * attribution.  The askrene
