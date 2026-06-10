@@ -43,6 +43,18 @@ std::string samples_reason(std::size_t have, std::size_t need) {
 
 namespace Boss { namespace Mod { namespace XRebalancePredict {
 
+bool kind_is_bound(std::string const& kind, bool& is_fail) {
+	if (kind == "success") {
+		is_fail = false;
+		return true;
+	}
+	if (kind == "liquidity_fail" || kind == "policy_fail") {
+		is_fail = true;
+		return true;
+	}
+	return false;
+}
+
 Result predict( std::vector<Bound> bounds
 	      , std::uint64_t now
 	      , Params const& params
