@@ -20,6 +20,7 @@
 #include"Ln/NodeId.hpp"
 #include"S/Bus.hpp"
 #include"Sqlite3.hpp"
+#include"Util/Str.hpp"
 #include"Util/make_unique.hpp"
 #include<algorithm>
 #include<ctime>
@@ -700,15 +701,18 @@ private:
 		return Boss::log( bus, Info, "%s", levels_str.c_str() )
 		     + Boss::log( bus, Info
 			, "XRebalancer: cycle [xrebalance] floor=%.1f%s window=%.0fd "
-			  "-> derived N=%lld sat, joint=%.1f ppm "
+			  "-> derived N=%s sat, joint=%.1f ppm "
 			  "(fill>=%.1f + drain>=%.1f); size_factor=%.3g%s "
-			  "-> request=%lld sat (maxfee %u ppm); "
+			  "-> request=%s sat (maxfee %u ppm); "
 			  "sources=%zu dests=%zu; executing."
 			, effective_floor, picked_note.c_str(), window_days
-			, (long long)best_n, best_joint
+			, Util::Str::group_digits(
+				std::int64_t(best_n)).c_str(), best_joint
 			, best_fill_ppm, best_drain_ppm
 			, effective_size_factor, sf_note.c_str()
-			, (long long)requested, (unsigned)maxfee
+			, Util::Str::group_digits(
+				std::int64_t(requested)).c_str()
+			, (unsigned)maxfee
 			, source_scids.size(), dest_scids.size()
 			).then([this, source_scids, dest_scids]() {
 			return Boss::log( bus, Debug
@@ -860,9 +864,15 @@ private:
 			 * economics; reason is present only on a partial.  */
 			return Boss::log( bus, Info
 				, "XRebalancer: transfer done: %.0f/%.0f parts, "
-				  "delivered %.0f msat, fee %.0f msat%s%s."
+				  "delivered %s msat, fee %s msat%s%s."
 				, num("parts_complete"), num("parts")
-				, delivered, fee, ppm.c_str(), reason.c_str() );
+				, Util::Str::group_digits(
+					std::int64_t(std::llround(
+						delivered))).c_str()
+				, Util::Str::group_digits(
+					std::int64_t(std::llround(
+						fee))).c_str()
+				, ppm.c_str(), reason.c_str() );
 		/* Nothing delivered: a clean failure -- show the part count
 		 * attempted and the chokepoint, not three zeros.  */
 		return Boss::log( bus, Info

@@ -92,6 +92,25 @@ std::string trim(std::string const& s) {
 	return std::string(start, end);
 }
 
+std::string group_digits(std::uint64_t v) {
+	auto s = std::to_string(v);
+	auto out = std::string();
+	auto n = s.size();
+	for (auto i = std::size_t(0); i < n; ++i) {
+		if (i != 0 && (n - i) % 3 == 0)
+			out += '_';
+		out += s[i];
+	}
+	return out;
+}
+
+std::string group_digits(std::int64_t v) {
+	if (v < 0)
+		/* -(v + 1) is representable even for INT64_MIN.  */
+		return "-" + group_digits(std::uint64_t(-(v + 1)) + 1);
+	return group_digits(std::uint64_t(v));
+}
+
 std::string fmt(char const *tpl, ...) {
 	va_list ap;
 
