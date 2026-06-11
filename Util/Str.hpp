@@ -34,6 +34,13 @@ bool ishex(std::string const&);
 
 std::string trim(std::string const& s);
 
+/* Renders an integer with '_' between every three digit places
+ * (18851040 -> "18_851_040"), for log lines carrying large msat/sat
+ * amounts.  Matches the digit grouping clboss-xrebalance-view and
+ * the other contrib tools print.  */
+std::string group_digits(std::uint64_t);
+std::string group_digits(std::int64_t);
+
 /* Like `sprintf`.  */
 std::string fmt(char const *tpl, ...)
 #if HAVE_ATTRIBUTE_FORMAT

@@ -283,8 +283,10 @@ format_route_fees(Jsmn::Object const& path) {
 		auto cout = hop.has("cltv_out")
 			  ? std::uint32_t(double(hop["cltv_out"])) : 0u;
 		os << "  [" << i << "] " << scidd
-		   << " in=" << ain << " out=" << aout
-		   << " fee=" << fee << "msat(" << ppm << "ppm)"
+		   << " in=" << Util::Str::group_digits(ain)
+		   << " out=" << Util::Str::group_digits(aout)
+		   << " fee=" << Util::Str::group_digits(fee)
+		   << "msat(" << ppm << "ppm)"
 		   << " cltv " << cin << "->" << cout
 		   << " d=" << (cin >= cout ? cin - cout : 0u) << "\n";
 	}
@@ -1197,7 +1199,9 @@ private:
 				    << std::dec << " erring=" << echan_str << "/" << edir
 				    << " node=" << std::string(enode)
 				    << " from_target=" << from_target
-				    << " alloc_fee=" << alloc << "msat";
+				    << " alloc_fee="
+				    << Util::Str::group_digits(alloc)
+				    << "msat";
 				ChanUpdate scu;
 				if (data.has("raw_message")
 				 && eidx < askrene_path.size()
@@ -1209,7 +1213,9 @@ private:
 					auto req_out = std::uint64_t(scu.fee_base_msat)
 					    + std::uint64_t(scu.fee_proportional_millionths)
 					      * out / 1000000;
-					sum << " required_out=" << req_out << "msat";
+					sum << " required_out="
+					    << Util::Str::group_digits(req_out)
+					    << "msat";
 					if (scu.has_inbound_fee)
 						sum << " inbound_ppm="
 						    << scu.inbound_fee_proportional_millionths;
@@ -1247,7 +1253,8 @@ private:
 					auto alloc = (in >= out) ? in - out
 						   : std::uint64_t(0);
 					os << "  erring hop[" << eidx
-					   << "] allocated fee=" << alloc
+					   << "] allocated fee="
+					   << Util::Str::group_digits(alloc)
 					   << "msat\n";
 					if (data.has("raw_message")) {
 						ChanUpdate dcu;
@@ -1267,7 +1274,10 @@ private:
 							   << " out_ppm="
 							   << dcu.fee_proportional_millionths
 							   << " -> required_out="
-							   << req_out << "msat";
+							   << Util::Str::
+								group_digits(
+								    req_out)
+							   << "msat";
 							if (dcu.has_inbound_fee)
 								os << "; inbound_base="
 								   << dcu.inbound_fee_base_msat
@@ -1709,10 +1719,12 @@ private:
 							  "refused: %.0f ppm "
 							  "exceeds budget %.0f "
 							  "ppm (would deliver "
-							  "%" PRIu64 " msat)"
+							  "%s msat)"
 							, i, part_ppm
 							, budget_ppm
-							, deliv_msat );
+							, Util::Str::group_digits(
+								deliv_msat)
+							    .c_str() );
 						continue;
 					}
 				}
@@ -2174,13 +2186,15 @@ private:
 
 		return Boss::log( bus, Info
 				, "XMoveFunds: planning %s -> %s, "
-				  "amount=%" PRIu64 " msat, "
-				  "maxfee=%" PRIu64 " msat, "
+				  "amount=%s msat, "
+				  "maxfee=%s msat, "
 				  "maxparts=%" PRIu32 ", execute=%s"
 				, join_scids(p->source_scids).c_str()
 				, join_scids(p->dest_scids).c_str()
-				, std::uint64_t(p->amount.to_msat())
-				, std::uint64_t(p->maxfee.to_msat())
+				, Util::Str::group_digits(std::uint64_t(
+					p->amount.to_msat())).c_str()
+				, Util::Str::group_digits(std::uint64_t(
+					p->maxfee.to_msat())).c_str()
 				, p->maxparts
 				, p->execute ? "true" : "false"
 				)

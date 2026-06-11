@@ -694,7 +694,8 @@ TESTS = \
 	tests/util/test_date \
 	tests/util/test_duration \
 	tests/util/test_either \
-	tests/util/test_format
+	tests/util/test_format \
+	tests/util/test_str
 check_PROGRAMS = $(TESTS)
 
 if USE_VALGRIND
