@@ -44,7 +44,12 @@ std::string samples_reason(std::size_t have, std::size_t need) {
 namespace Boss { namespace Mod { namespace XRebalancePredict {
 
 bool kind_is_bound(std::string const& kind, bool& is_fail) {
-	if (kind == "success") {
+	/* "transit" (hop forwarded a part that later failed
+	 * downstream and unwound) proves the same lower bound as
+	 * "success" (hop on a settled part); they are distinct
+	 * kinds only so statistics can separate proven-and-restored
+	 * liquidity from proven-and-consumed.  */
+	if (kind == "success" || kind == "transit") {
 		is_fail = false;
 		return true;
 	}
