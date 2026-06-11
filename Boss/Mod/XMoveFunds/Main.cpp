@@ -1319,6 +1319,67 @@ private:
 							   , os.str().c_str()));
 			}
 
+			/* Positive reinforcement from a FAILED part: every
+			 * hop strictly before the failure point forwarded
+			 * the HTLC, proving liquidity >= the carried amount
+			 * at that moment -- evidence as strong as a settled
+			 * part's (stronger for floors, even: the unwind put
+			 * the liquidity back).  Inform unconstrained and
+			 * record a Transit observation per such hop.
+			 *
+			 * For 0x100c the incoming hop route[eidx-1] may
+			 * itself be blamed below (inbound-fee PolicyFail
+			 * exclusion), so stop one hop short on ALL 0x100c:
+			 * never claim "carried fine" and "excluded" about
+			 * the same hop from the same part.  The
+			 * stale-outbound 0x100c sub-case under-logs that
+			 * one hop's transit; acceptable.  */
+			{
+				auto transit_end =
+				    std::min(eidx, askrene_path.size());
+				if (fail == 0x100c && transit_end >= 1)
+					--transit_end;
+				for (auto j = std::size_t(0);
+				     j < transit_end; ++j) {
+					auto hop = askrene_path[j];
+					if (!hop.has("short_channel_id_dir")
+					 || !hop.has("amount_out_msat"))
+						continue;
+					auto scidd = std::string(
+					    hop["short_channel_id_dir"]);
+					auto slash = scidd.find('/');
+					auto scid_str = scidd.substr(0, slash);
+					/* auto.localchans owns our own
+					 * channels' truth.  */
+					if (our_scids.count(scid_str))
+						continue;
+					auto dir = std::uint32_t(std::stoul(
+					    scidd.substr(slash + 1)));
+					/* amount_out_msat = what the hop
+					 * forwarded; same lower-bound claim
+					 * the settled-part branch makes.  */
+					auto amt = Ln::Amount::object(
+					    hop["amount_out_msat"]);
+					actions.push_back(
+					    Boss::Mod::AskreneLayer::
+						inform_channel_unconstrained(
+						*rpc,
+						Boss::Mod::AskreneLayer::
+						    xrebalance_layer_name,
+						Ln::Scid(scid_str), dir,
+						amt));
+					auto obs = Msg::XRebalanceObservation{
+						std::uint64_t(
+						    std::time(nullptr)),
+						Ln::Scid(scid_str), dir,
+						Msg::XRebalanceObservationKind
+						    ::Transit,
+						amt, 0, Ln::NodeId()};
+					actions.push_back(
+					    bus.raise(std::move(obs)));
+				}
+			}
+
 			if (fail & 0x2000) {
 				/* NODE-level failure: take the whole forwarder
 				 * out of consideration -- but NEVER our own node.

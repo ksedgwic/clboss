@@ -14,9 +14,18 @@ namespace Boss { namespace Msg {
  * payment part produced about one directed channel.
  */
 enum class XRebalanceObservationKind
-{ /* A part traversed this hop carrying `amount`: liquidity in
-   * this direction was >= amount at `time`.  */
+{ /* This hop was on a part that SETTLED end-to-end carrying
+   * `amount`: liquidity in this direction was >= amount at
+   * `time` -- and was then consumed by the delivery itself.  */
   Success
+  /* This hop FORWARDED a part carrying `amount`, but the part
+   * failed further downstream and unwound: liquidity in this
+   * direction was >= amount at `time`, and (unlike Success)
+   * the HTLC rollback put it back.  Same lower bound as
+   * Success for prediction; kept distinct so reliability
+   * statistics can separate proven-and-restored from
+   * proven-and-consumed.  */
+, Transit
   /* Channel-level failure: the hop could not carry `amount`,
    * so liquidity in this direction was < amount at `time`.  */
 , LiquidityFail
@@ -51,13 +60,15 @@ struct XRebalanceObservation {
 	Ln::Scid scid;
 	std::uint32_t dir;
 	XRebalanceObservationKind kind;
-	/* Hop amount carried (Success) or attempted (the *Fail
-	 * kinds; falls back to 1 msat when the per-hop amount is
-	 * unparseable, mirroring the inform fallback).  */
+	/* Hop amount carried (Success/Transit) or attempted (the
+	 * *Fail kinds; falls back to 1 msat when the per-hop
+	 * amount is unparseable, mirroring the inform fallback).  */
 	Ln::Amount amount;
-	/* BOLT4 failcode for the *Fail kinds; 0 for Success.  */
+	/* BOLT4 failcode for the *Fail kinds; 0 for
+	 * Success/Transit.  */
 	std::uint16_t failcode;
-	/* Erring node for the *Fail kinds; null for Success.  */
+	/* Erring node for the *Fail kinds; null for
+	 * Success/Transit.  */
 	Ln::NodeId erring_node;
 };
 
