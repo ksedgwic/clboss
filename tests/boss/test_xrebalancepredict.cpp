@@ -216,5 +216,20 @@ int main() {
 		assert(r.floor.amount_msat == 8100);
 	}
 
+	/* Kind mapping: success and transit are lower bounds, the
+	 * fail kinds are upper bounds, node_fail is not a bound.  */
+	{
+		using Boss::Mod::XRebalancePredict::kind_is_bound;
+		auto is_fail = true;
+		assert(kind_is_bound("success", is_fail) && !is_fail);
+		is_fail = true;
+		assert(kind_is_bound("transit", is_fail) && !is_fail);
+		assert(kind_is_bound("liquidity_fail", is_fail)
+		    && is_fail);
+		assert(kind_is_bound("policy_fail", is_fail)
+		    && is_fail);
+		assert(!kind_is_bound("node_fail", is_fail));
+	}
+
 	return 0;
 }
