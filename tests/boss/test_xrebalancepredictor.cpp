@@ -30,6 +30,12 @@ int main() {
 		/* node_fail only: a candidate, but not a liquidity
 		 * bound -- nothing to assert.  */
 		{"400x4x0", 0, 500, "node_fail", 1},
+		/* Mixed lower bounds: a transit (hop forwarded a part
+		 * that failed downstream) and a settled success
+		 * combine on the floor side exactly alike; the floor
+		 * is the larger of the two.  */
+		{"500x5x0", 1, 1000, "transit", 9000},
+		{"500x5x0", 1, 2800, "success", 8000},
 	};
 	auto const cutoff = std::uint64_t(4000);
 	/* data age for the stale regimes: 3000s <= horizon 3600s.  */
@@ -40,8 +46,8 @@ int main() {
 	{
 		auto plan = XRebalancePredictor::plan(
 			rows, cutoff, now, walls_only);
-		assert(plan.directions == 4);
-		assert(plan.candidates == 3);
+		assert(plan.directions == 5);
+		assert(plan.candidates == 4);
 		assert(plan.assertions.size() == 1);
 		auto const& a = plan.assertions[0];
 		assert(a.scid == "100x1x0");
@@ -50,16 +56,22 @@ int main() {
 		assert(a.amount_msat == 6000);
 	}
 
-	/* Enabling floors adds the 300x3x0 floor (12000 * 0.9).  */
+	/* Enabling floors adds the 300x3x0 floor (12000 * 0.9) and
+	 * the 500x5x0 floor, whose bound comes from the TRANSIT
+	 * record (9000 > the settled success's 8000): transit
+	 * evidence feeds the floor side exactly like success.  */
 	{
 		auto p = walls_only;
 		p.floor_factor = 0.9;
 		auto plan = XRebalancePredictor::plan(
 			rows, cutoff, now, p);
-		assert(plan.assertions.size() == 2);
+		assert(plan.assertions.size() == 3);
 		assert(!plan.assertions[1].is_wall);
 		assert(plan.assertions[1].scid == "300x3x0");
 		assert(plan.assertions[1].amount_msat == 10800);
+		assert(!plan.assertions[2].is_wall);
+		assert(plan.assertions[2].scid == "500x5x0");
+		assert(plan.assertions[2].amount_msat == 8100);
 	}
 
 	/* Wall margin scales the asserted amount.  */
@@ -81,7 +93,7 @@ int main() {
 		auto plan = XRebalancePredictor::plan(
 			rows, cutoff, now, p);
 		assert(plan.assertions.size() == 0);
-		assert(plan.candidates == 3);
+		assert(plan.candidates == 4);
 	}
 
 	/* Later `now`: the same regimes go stale past their horizon
