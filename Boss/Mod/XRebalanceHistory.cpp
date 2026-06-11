@@ -39,6 +39,8 @@ kind_cstr(Boss::Msg::XRebalanceObservationKind kind) {
 	switch (kind) {
 	case Boss::Msg::XRebalanceObservationKind::Success:
 		return "success";
+	case Boss::Msg::XRebalanceObservationKind::Transit:
+		return "transit";
 	case Boss::Msg::XRebalanceObservationKind::LiquidityFail:
 		return "liquidity_fail";
 	case Boss::Msg::XRebalanceObservationKind::PolicyFail:
@@ -208,11 +210,11 @@ private:
 			     , scid TEXT NOT NULL
 			     , dir INTEGER NOT NULL -- askrene direction 0/1
 			     , kind TEXT NOT NULL
-			       -- success | liquidity_fail
+			       -- success | transit | liquidity_fail
 			       -- | policy_fail | node_fail
 			     , amount_msat INTEGER NOT NULL
-			     , failcode INTEGER -- NULL for success
-			     , erring_node TEXT -- NULL for success
+			     , failcode INTEGER -- NULL for success/transit
+			     , erring_node TEXT -- NULL for success/transit
 			     );
 			CREATE INDEX IF NOT EXISTS
 			    idx_xrebalancehistory_scid_dir_time
@@ -241,7 +243,9 @@ private:
 				.bind(":amount", o.amount.to_msat())
 				;
 			if (o.kind == Msg::XRebalanceObservationKind
-					::Success)
+					::Success
+			 || o.kind == Msg::XRebalanceObservationKind
+					::Transit)
 				q.bind(":failcode", nullptr);
 			else
 				q.bind(":failcode", int(o.failcode));
