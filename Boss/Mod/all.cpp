@@ -75,6 +75,7 @@
 #include"Boss/Mod/Timers.hpp"
 #include"Boss/Mod/UnmanagedManager.hpp"
 #include"Boss/Mod/Waiter.hpp"
+#include"Boss/Mod/XMoveFunds/Main.hpp"
 #include"Boss/Mod/all.hpp"
 #include<vector>
 
@@ -210,6 +211,7 @@ std::shared_ptr<void> all( std::ostream& cout
 	/* Channel balancing.  */
 	all->install<RebalanceModeManager>(bus);
 	all->install<FundsMover::Main>(bus);
+	all->install<XMoveFunds::Main>(bus);
 	all->install<MoveFundsCommand>(bus);
 	all->install<EarningsTracker>(bus);
 	all->install<JitRebalancer>(bus);
