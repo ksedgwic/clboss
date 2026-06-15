@@ -278,6 +278,10 @@ libclboss_la_SOURCES = \
 	Boss/Mod/UnmanagedManager.hpp \
 	Boss/Mod/Waiter.cpp \
 	Boss/Mod/Waiter.hpp \
+	Boss/Mod/XMoveFunds/Claimer.cpp \
+	Boss/Mod/XMoveFunds/Claimer.hpp \
+	Boss/Mod/XMoveFunds/Main.cpp \
+	Boss/Mod/XMoveFunds/Main.hpp \
 	Boss/Mod/all.cpp \
 	Boss/Mod/all.hpp \
 	Boss/ModG/Detail/ReqRespBase.cpp \
@@ -403,6 +407,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/TimerRandomDaily.hpp \
 	Boss/Msg/TimerRandomHourly.hpp \
 	Boss/Msg/TimerTwiceDaily.hpp \
+	Boss/Msg/XRebalanceAttribution.hpp \
 	Boss/RebalanceMode.hpp \
 	Boss/Shutdown.hpp \
 	Boss/Signer.cpp \
