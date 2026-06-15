@@ -284,6 +284,10 @@ libclboss_la_SOURCES = \
 	Boss/Mod/XMoveFunds/Main.hpp \
 	Boss/Mod/XRebalanceHistory.cpp \
 	Boss/Mod/XRebalanceHistory.hpp \
+	Boss/Mod/XRebalancePredict.cpp \
+	Boss/Mod/XRebalancePredict.hpp \
+	Boss/Mod/XRebalancePredictor.cpp \
+	Boss/Mod/XRebalancePredictor.hpp \
 	Boss/Mod/XRebalancer.cpp \
 	Boss/Mod/XRebalancer.hpp \
 	Boss/Mod/all.cpp \
@@ -412,6 +416,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/TimerRandomHourly.hpp \
 	Boss/Msg/TimerTwiceDaily.hpp \
 	Boss/Msg/XRebalanceAttribution.hpp \
+	Boss/Msg/XRebalanceLayerAged.hpp \
 	Boss/Msg/XRebalanceObservation.hpp \
 	Boss/RebalanceMode.hpp \
 	Boss/Shutdown.hpp \
@@ -649,6 +654,8 @@ TESTS = \
 	tests/boss/test_recentearnings \
 	tests/boss/test_earningshistory \
 	tests/boss/test_xrebalancehistory \
+	tests/boss/test_xrebalancepredict \
+	tests/boss/test_xrebalancepredictor \
 	tests/boss/test_peerjudge_algo \
 	tests/boss/test_peerjudge_datagatherer \
 	tests/boss/test_peerstatistician \
