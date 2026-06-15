@@ -284,6 +284,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/XMoveFunds/Main.hpp \
 	Boss/Mod/XRebalanceHistory.cpp \
 	Boss/Mod/XRebalanceHistory.hpp \
+	Boss/Mod/XRebalancePredict.cpp \
+	Boss/Mod/XRebalancePredict.hpp \
 	Boss/Mod/XRebalancer.cpp \
 	Boss/Mod/XRebalancer.hpp \
 	Boss/Mod/all.cpp \
@@ -647,6 +649,7 @@ TESTS = \
 	tests/boss/test_recentearnings \
 	tests/boss/test_earningshistory \
 	tests/boss/test_xrebalancehistory \
+	tests/boss/test_xrebalancepredict \
 	tests/boss/test_peerjudge_algo \
 	tests/boss/test_peerjudge_datagatherer \
 	tests/boss/test_peerstatistician \
