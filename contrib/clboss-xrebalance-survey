@@ -1,0 +1,89 @@
+#!/bin/sh
+# clboss-xrebalance-survey -- census of every (channel, direction)
+# in the xrebalance history store, classified by what the
+# persistence forecaster can do with it right now.
+#
+# Buckets:
+#   1_predictable_now    consistent regime, fresh within its horizon;
+#                        the predictor would assert a wall (or floor)
+#   2_changed_in_history regime walk hit a contradiction: the channel
+#                        demonstrably changed inside the window
+#   3_lapsed_horizon     consistent regime but data age exceeds the
+#                        horizon (min(frac*span, cap)); re-probe to
+#                        refresh -- these re-enter bucket 1 with a
+#                        longer horizon than before
+#   4_single_instant     >=2 bounds but all share one timestamp (MPP
+#                        parts of a single flow): no time span, so
+#                        nothing to extrapolate
+#   5_too_few_samples    only one bound observation in the regime
+#   6_success_only       no failure bound in the regime: nothing to
+#                        wall (floors cover these when enabled)
+#   7_no_bounds          records exist but none are liquidity bounds
+#                        (e.g. node_fail only)
+#
+# Buckets 4+5 are the second-touch backlog: one later re-probe
+# converts each to predictable (or truncated, if it contradicts).
+#
+# Usage: clboss-xrebalance-survey [lightning-cli options...]
+#   clboss-xrebalance-survey
+#   clboss-xrebalance-survey --signet --lightning-dir="$CLNDIR"
+# LIGHTNING_CLI overrides the lightning-cli executable.
+#
+# The clboss-xrebalance-predict-* config (cap, frac, min-samples,
+# wall-margin, floor-factor) is read from listconfigs each run and
+# passed to the predictions RPC, so the census mirrors the live
+# predictor rather than the compiled defaults.
+#
+# Output is a JSON array of {class, n}, identical to the hand-typed
+# pipeline it replaces; absent buckets are simply not listed.
+
+set -e
+
+LCLI="${LIGHTNING_CLI:-lightning-cli}"
+
+# Mirror the LIVE predictor instead of the compiled spot-check
+# defaults: pull every clboss-xrebalance-predict-* option from
+# listconfigs and forward it to the predictions RPC as the matching
+# keyword param (horizon-max-secs -> horizon_max_secs, etc.), so the
+# census tracks setconfig changes (cap, frac, min-samples, wall-
+# margin, floor-factor).  One in-memory listconfigs RPC per run --
+# cheap under watch.  "kind" is NOT a config knob (it selects the
+# report scope, not a setting), so it stays "all".  When floor-factor
+# is live (> 0) success-only directions classify as predictable via
+# the floor; when it is 0 the census is walls-only.  On a listconfigs
+# failure PREDICT_PARAMS is empty and the RPC falls back to its own
+# compiled defaults.
+PREDICT_PARAMS=$(
+    "$LCLI" "$@" listconfigs 2>/dev/null | jq -r '
+    .configs
+    | to_entries
+    | map(select(.key | startswith("clboss-xrebalance-predict-")))
+    | map((.key | ltrimstr("clboss-xrebalance-predict-") | gsub("-"; "_"))
+          + "=" + ((.value.value_int // .value.value_str) | tostring))
+    | join(" ")
+    '
+) || PREDICT_PARAMS=""
+
+# shellcheck disable=SC2086  -- PREDICT_PARAMS intentionally word-splits
+# into separate key=value RPC arguments.
+"$LCLI" "$@" -k clboss-xrebalance-predictions kind=all $PREDICT_PARAMS |
+jq '
+[ .predictions[]
+| { class:
+    ( if .wall.would_assert or .floor.would_assert
+        then "1_predictable_now"
+      elif .truncated
+        then "2_changed_in_history"
+      elif ((.wall.decline_reason // "") | startswith("stale"))
+        then "3_lapsed_horizon"
+      elif ((.wall.decline_reason // "")
+            | test("zero evidence span|single observation"))
+        then "4_single_instant"
+      elif ((.wall.decline_reason // "") | startswith("insufficient"))
+        then "5_too_few_samples"
+      elif ((.wall.decline_reason // "") | startswith("no failure"))
+        then "6_success_only"
+      else "7_no_bounds"
+      end ) }
+] | group_by(.class) | map({class: .[0].class, n: length})
+'
