@@ -121,7 +121,8 @@ private:
 				auto msg = Msg::RequestDowser{
 					nullptr,
 					curr->proposal,
-					curr->patron
+					curr->patron,
+					self->min_channel
 				};
 				return self->impl.dowser.execute(std::move(
 					msg

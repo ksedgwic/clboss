@@ -101,8 +101,17 @@ Manager::on_request_channel_creation(Ln::Amount amt) {
 		auto amount = std::make_shared<Ln::Amount>();
 
 		return Ev::lift().then([this, proposal, patron]() {
+			/* Size the probe to max_amount (clboss-max-channel),
+			 * NOT min_amount: the Planner opens up to the dowsed
+			 * flow (rejecting below min_amount, capping at
+			 * max_amount), and the askrene dowser caps its result
+			 * at the probe -- so probing at min_amount would pin
+			 * every new channel to min-channel regardless of the
+			 * candidate's real capacity.  Probing at max_amount
+			 * lets a well-connected candidate report its true
+			 * reachable flow up to the largest channel we'd open.  */
 			return dowser.execute(Msg::RequestDowser{
-				nullptr, proposal, patron
+				nullptr, proposal, patron, max_amount
 			});
 		}).then([this
 			, amount
