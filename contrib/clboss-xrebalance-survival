@@ -1,0 +1,531 @@
+#!/usr/bin/env python3
+"""clboss-xrebalance-survival -- regime survival calibration.
+
+Reads a (copy of a) CLBOSS sqlite database and replays every
+(channel, direction)'s observation history through the same regime
+walk Boss/Mod/XRebalancePredict.cpp uses live.  Every observation
+after a direction's first becomes one TRIAL: the regime built from
+everything before it had been sitting in silence for `gap` seconds,
+and the new observation either fits its [lo, hi) interval
+(consistent: the regime SURVIVED the gap) or empties it
+(contradiction: the channel CHANGED somewhere inside the gap).
+
+  refill = success/transit at or above the wall bound hi
+           (how walls go wrong)
+  drain  = failure at or below the floor bound lo
+           (how floors go wrong)
+
+Outputs:
+  1. store summary
+  2. wrong-while-asserting: contradiction rate among arrivals that
+     landed while the predictor (at --frac/--cap/--min-samples)
+     would have been asserting that side -- the harm rate of the
+     live settings.  Lower bound on wrongness: an arrival below the
+     wall does not test the wall.
+  3. P(changed | absolute gap) -- the curve that sets the cap:
+     read off the largest gap bucket still under your tolerated
+     contradiction rate.
+  4. P(changed | gap/span) -- tests the frac*span rule itself: if
+     this curve is cleaner than (3), frac is the knob that matters;
+     if (3) dominates, the cap is.
+     Both (3) and (4) split each bucket's rate into nN sub-columns:
+     the contradiction rate among regimes backed by N observations
+     (n2 / n3-5 / n6+).  The horizon extrapolates from span no matter
+     how many points define it, so a flat headline rate can still
+     hide thin 2-observation regimes misbehaving -- the sub-columns
+     expose that before you lengthen frac or the cap.  ('~' marks a
+     sub-rate with < 30 trials.)
+  5. policy-fail walls vs liquidity walls (inbound-fee exclusions
+     should survive far longer).
+  6. visit-frequency terciles for the long-gap buckets (the tail is
+     dominated by rarely-visited corridors; this shows whether that
+     selection bias distorts it).
+  7. floor-factor sweep: for the same arrivals behind the floor-side
+     wrong-while-asserting number, would a floor scaled to factor f
+     have been refuted (arrival amount <= f * lo)?  Quoted both for
+     all such arrivals and for those after a quiet gap > 1h: a
+     refutation minutes after our own activity is the algorithm
+     harvesting a corridor to its endpoint (benign); a refutation
+     after a quiet gap means something else consumed what we proved
+     and the floor genuinely misled the router.  Sets floor-factor
+     the way section 3 sets the cap.
+
+Same-instant arrivals (gap 0: MPP parts of one flow, including
+self-drain races between parts) are tallied separately and excluded
+from the curves.  Within one timestamp the replay sees rows in
+insertion order, not the predictor's tiebreak order; any verdict
+difference is confined to that excluded bucket.
+
+Usage:
+  clboss-xrebalance-survival /path/to/data.clboss
+      [--frac F] [--cap SECS] [--min-samples N] [--days N]
+
+frac / cap / min-samples default to the LIVE predictor config (read
+from `lightning-cli listconfigs`), so a no-arg run measures what the
+node is actually doing; pass them explicitly to override (e.g. a
+frac x cap grid for what-if analysis).  With no reachable node they
+fall back to the compiled defaults (2.0 / 86400 / 2).  The effective
+values + their source are printed in the `settings:` header line.
+LIGHTNING_CLI overrides the executable/flags (e.g. for signet).
+
+ALWAYS run against a copy, never the live file: CLBOSS opens its
+database with no sqlite busy handler (rollback-journal mode, lone-
+writer assumption), so any concurrent lock on the file makes its
+next commit fail with SQLITE_BUSY -- and CLBOSS throws on that,
+which (being an "important" plugin) takes lightningd down with it.
+Taking the copy:
+  cp data.clboss /tmp/                               # preferred:
+      takes no sqlite locks, so it CANNOT crash the node.  A commit
+      landing mid-copy can tear the copy ("database disk image is
+      malformed") -- just re-copy.
+  sqlite3 data.clboss ".backup '/tmp/data.clboss'"   # DANGEROUS:
+      the online backup API holds a SHARED read lock for the whole
+      copy; CLBOSS's next write then hits SQLITE_BUSY and the plugin
+      dies, killing lightningd.  Observed to SIGKILL a live node.
+      (read-only mode does not help: the SHARED lock is still taken.)
+      Safe only when CLBOSS/lightningd is stopped.
+
+Interval censoring caveat: a contradiction at gap g means the
+channel changed SOMEWHERE in (0, g]; the bucketed rate is the
+honest decision statistic, not a hazard curve.
+"""
+
+import argparse
+import json
+import os
+import shlex
+import sqlite3
+import subprocess
+import sys
+
+INF = 1 << 63
+
+# kind -> is_fail, mirroring XRebalancePredict::kind_is_bound.
+BOUND_KINDS = {
+    "success": False,
+    "transit": False,
+    "liquidity_fail": True,
+    "policy_fail": True,
+}
+
+ABS_BUCKETS = [
+    (3600, "0-1h"),
+    (3 * 3600, "1-3h"),
+    (6 * 3600, "3-6h"),
+    (12 * 3600, "6-12h"),
+    (24 * 3600, "12-24h"),
+    (48 * 3600, "24-48h"),
+    (96 * 3600, "48-96h"),
+    (7 * 86400, "4-7d"),
+    (INF, ">7d"),
+]
+
+REL_BUCKETS = [
+    (0.5, "0-0.5x"),
+    (1.0, "0.5-1x"),
+    (2.0, "1-2x"),
+    (4.0, "2-4x"),
+    (8.0, "4-8x"),
+    (float("inf"), ">8x"),
+]
+
+# Sub-bins for the P(changed|...) curves: split each gap bucket's
+# rate by how many observations back the regime (and hence its span).
+# The horizon extrapolates from span regardless of point count, so a
+# flat headline rate can hide thin 2-observation regimes misbehaving.
+SAMPLE_BINS = [
+    (2, "n2"),
+    (5, "n3-5"),
+    (INF, "n6+"),
+]
+SAMPLE_HDR = tuple(label for _, label in SAMPLE_BINS)
+
+
+def sample_bin(nrec):
+    for limit, label in SAMPLE_BINS:
+        if nrec <= limit:
+            return label
+    return SAMPLE_BINS[-1][1]
+
+
+def bucket_of(value, buckets):
+    for limit, label in buckets:
+        if value <= limit:
+            return label
+    return buckets[-1][1]
+
+
+def full_regime(records):
+    """The exact XRebalancePredict walk: newest -> oldest interval
+    intersection until contradiction; same sort tiebreak (equal
+    time: non-fail first, then smaller amount)."""
+    rs = sorted(records, key=lambda r: (-r[0], r[1], r[2]))
+    lo, hi = 0, INF
+    newest = oldest = None
+    nfail = nok = 0
+    hi_kinds = set()
+    for t, isf, amt, kind in rs:
+        nlo, nhi = lo, hi
+        if isf:
+            nhi = min(nhi, amt)
+        else:
+            nlo = max(nlo, amt)
+        if nlo >= nhi:
+            break
+        if isf:
+            if amt < hi:
+                hi_kinds = {kind}
+            elif amt == hi:
+                hi_kinds.add(kind)
+            nfail += 1
+        else:
+            nok += 1
+        lo, hi = nlo, nhi
+        if newest is None:
+            newest = t
+        oldest = t
+    return {
+        "lo": lo, "hi": hi,
+        "newest": newest, "oldest": oldest,
+        "nfail": nfail, "nok": nok,
+        "hi_kinds": hi_kinds,
+    }
+
+
+def extend_regime(reg, t, isf, amt, kind):
+    """Consistent newest observation: the maximal suffix extends in
+    place.  (A consistent extension can only tighten the interval,
+    so every record the old walk admitted is still admitted, and the
+    record it stopped at still conflicts.)"""
+    if isf:
+        if amt < reg["hi"]:
+            reg["hi_kinds"] = {kind}
+        elif amt == reg["hi"]:
+            reg["hi_kinds"].add(kind)
+        reg["hi"] = min(reg["hi"], amt)
+        reg["nfail"] += 1
+    else:
+        reg["lo"] = max(reg["lo"], amt)
+        reg["nok"] += 1
+    reg["newest"] = max(reg["newest"], t)
+
+
+def replay(rows, frac, cap, min_samples):
+    """rows: time-ascending (time, isf, amt, kind) for ONE direction.
+    Yields trial dicts."""
+    records = []
+    reg = None
+    for t, isf, amt, kind in rows:
+        if reg is not None:
+            contradiction = (amt <= reg["lo"]) if isf \
+                       else (amt >= reg["hi"])
+            gap = t - reg["newest"]
+            span = reg["newest"] - reg["oldest"]
+            horizon = min(frac * span, cap)
+            # Side-appropriate "was the predictor asserting the
+            # claim this arrival tests?"
+            if isf:
+                asserting = (reg["nok"] >= min_samples
+                             and reg["lo"] > 0
+                             and span > 0 and gap <= horizon)
+            else:
+                asserting = (reg["nfail"] >= min_samples
+                             and reg["hi"] < INF
+                             and span > 0 and gap <= horizon)
+            yield {
+                "gap": gap,
+                "span": span,
+                "nrec": reg["nfail"] + reg["nok"],
+                "contradiction": contradiction,
+                "side": "drain" if isf else "refill",
+                "asserting": asserting,
+                "had_wall": reg["hi"] < INF,
+                "policy_wall": (reg["hi"] < INF
+                                and "policy_fail" in reg["hi_kinds"]),
+                "amt": amt,
+                "lo": reg["lo"],
+            }
+        records.append((t, isf, amt, kind))
+        if reg is None:
+            reg = full_regime(records)
+        elif contradiction:
+            reg = full_regime(records)
+        else:
+            extend_regime(reg, t, isf, amt, kind)
+
+
+def fmt_table(title, header, rows):
+    out = ["", title]
+    widths = [len(h) for h in header]
+    srows = [[str(c) for c in r] for r in rows]
+    for r in srows:
+        widths = [max(w, len(c)) for w, c in zip(widths, r)]
+    line = "  ".join(h.ljust(w) for h, w in zip(header, widths))
+    out.append("  " + line)
+    out.append("  " + "-" * len(line))
+    for r in srows:
+        out.append(("  " + "  ".join(c.rjust(w)
+                                     for c, w in zip(r, widths))
+                    ).rstrip())
+    return "\n".join(out)
+
+
+def rate(changed, n):
+    """The ' ~' suffix marks low-confidence buckets (n < 30);
+    confident rows get an equal-width blank suffix so the percent
+    column stays aligned."""
+    if n == 0:
+        return "-  "
+    flag = " ~" if n < 30 else "  "
+    return "%.1f%%%s" % (100.0 * changed / n, flag)
+
+
+# Compiled fallbacks (match the predictor's spot-check defaults), used
+# only when no explicit arg is given AND the live config can't be read.
+DEFAULT_FRAC = 2.0
+DEFAULT_CAP = 86400
+DEFAULT_MIN_SAMPLES = 2
+
+# Live clboss-xrebalance-predict-* option -> survival param name.
+LIVE_OPTS = {
+    "clboss-xrebalance-predict-horizon-frac": "frac",
+    "clboss-xrebalance-predict-horizon-max-secs": "cap",
+    "clboss-xrebalance-predict-min-samples": "min_samples",
+}
+
+
+def read_live_config():
+    """{frac, cap, min_samples} from `lightning-cli listconfigs`, so a
+    no-arg run mirrors the live predictor instead of the compiled
+    defaults.  Returns {} if no node is reachable (offline copy, missing
+    binary, etc.) -- the caller then falls back to the defaults.
+    LIGHTNING_CLI overrides the executable and may carry flags, e.g.
+    LIGHTNING_CLI='lightning-cli --network=signet'."""
+    cli = shlex.split(os.environ.get("LIGHTNING_CLI", "lightning-cli"))
+    try:
+        out = subprocess.run(cli + ["listconfigs"], timeout=10,
+                             capture_output=True, text=True)
+        if out.returncode != 0:
+            return {}
+        configs = json.loads(out.stdout).get("configs", {})
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    live = {}
+    for opt, name in LIVE_OPTS.items():
+        c = configs.get(opt)
+        if not c:
+            continue
+        v = c.get("value_int", c.get("value_str"))
+        if v is None:
+            continue
+        live[name] = float(v) if name == "frac" else int(v)
+    return live
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="xrebalance regime survival calibration")
+    ap.add_argument("db", help="path to (a copy of) data.clboss")
+    ap.add_argument("--frac", type=float, default=None,
+                    help="horizon frac (default: live config, else 2.0)")
+    ap.add_argument("--cap", type=int, default=None,
+                    help="horizon max secs"
+                         " (default: live config, else 86400)")
+    ap.add_argument("--min-samples", type=int, default=None,
+                    help="per-side sample gate"
+                         " (default: live config, else 2)")
+    ap.add_argument("--days", type=int, default=0,
+                    help="restrict to the most recent N days")
+    args = ap.parse_args()
+
+    # Resolve frac/cap/min-samples: an explicit arg wins; else mirror
+    # the live predictor via listconfigs; else the compiled fallback.
+    live = read_live_config()
+
+    def resolve(argval, name, default):
+        if argval is not None:
+            return argval, "arg"
+        if name in live:
+            return live[name], "live"
+        return default, "default"
+
+    frac, frac_src = resolve(args.frac, "frac", DEFAULT_FRAC)
+    cap, cap_src = resolve(args.cap, "cap", DEFAULT_CAP)
+    min_samples, ms_src = resolve(
+        args.min_samples, "min_samples", DEFAULT_MIN_SAMPLES)
+    note = "" if live else "  [no live node; built-in defaults]"
+    print("settings: frac=%g (%s)  cap=%d (%s)  min-samples=%d (%s)%s"
+          % (frac, frac_src, cap, cap_src, min_samples, ms_src, note))
+
+    conn = sqlite3.connect("file:%s?mode=ro" % args.db, uri=True)
+    conn.execute("PRAGMA busy_timeout = 5000")
+    q = ('SELECT time, scid, dir, kind, amount_msat'
+         ' FROM "XRebalanceHistory"')
+    params = ()
+    if args.days:
+        (tmax,) = conn.execute(
+            'SELECT MAX(time) FROM "XRebalanceHistory"').fetchone()
+        q += " WHERE time >= ?"
+        params = (tmax - args.days * 86400,)
+    q += " ORDER BY time ASC, rowid ASC"
+
+    per_dir = {}
+    kind_counts = {}
+    tmin, tmax = None, None
+    nrows = 0
+    for t, scid, d, kind, amt in conn.execute(q, params):
+        nrows += 1
+        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        tmin = t if tmin is None else min(tmin, t)
+        tmax = t if tmax is None else max(tmax, t)
+        if kind not in BOUND_KINDS:
+            continue
+        per_dir.setdefault((scid, d), []).append(
+            (t, BOUND_KINDS[kind], amt, kind))
+
+    trials = []
+    visit_rate = {}
+    for key, rows in per_dir.items():
+        for tr in replay(rows, frac, cap, min_samples):
+            tr["dir_key"] = key
+            trials.append(tr)
+        times = sorted(set(r[0] for r in rows))
+        if len(times) >= 2:
+            days = max((times[-1] - times[0]) / 86400.0, 1.0 / 24)
+            visit_rate[key] = len(times) / days
+
+    print("store: %d rows, %d bound directions, %s"
+          % (nrows, len(per_dir),
+             "%ds span" % (tmax - tmin) if nrows else "empty"))
+    print("kinds: " + ", ".join("%s=%d" % kv
+                                for kv in sorted(kind_counts.items())))
+    same_instant = [t for t in trials if t["gap"] == 0]
+    curve_trials = [t for t in trials if t["gap"] > 0]
+    print("trials: %d total, %d same-instant (excluded from curves,"
+          " %d of them contradictions)"
+          % (len(trials), len(same_instant),
+             sum(t["contradiction"] for t in same_instant)))
+
+    # 2. wrong while asserting
+    for side, label in (("refill", "wall"), ("drain", "floor")):
+        tested = [t for t in curve_trials
+                  if t["asserting"] and t["side"] == side]
+        changed = sum(t["contradiction"] for t in tested)
+        print("wrong-while-asserting [%s side]: %d arrivals during"
+              " assertion, %d refuted it -> %s"
+              % (label, len(tested), changed,
+                 rate(changed, len(tested)).rstrip()))
+
+    # 3. absolute gap curve
+    def curve(trial_list, buckets, keyfn):
+        agg = {}
+        for t in trial_list:
+            b = keyfn(t)
+            a = agg.setdefault(b, {"tot": [0, 0, 0, 0], "smp": {}})
+            a["tot"][0] += 1
+            if t["contradiction"]:
+                a["tot"][1] += 1
+                a["tot"][2 if t["side"] == "refill" else 3] += 1
+            sb = a["smp"].setdefault(sample_bin(t["nrec"]), [0, 0])
+            sb[0] += 1
+            if t["contradiction"]:
+                sb[1] += 1
+        rows = []
+        for limit, label in buckets:
+            if label not in agg:
+                continue
+            n, ch, re, dr = agg[label]["tot"]
+            smp = agg[label]["smp"]
+            subs = []
+            for _, sbl in SAMPLE_BINS:
+                stot, sch = smp.get(sbl, [0, 0])
+                subs.append(rate(sch, stot))
+            rows.append((label, n, ch, rate(ch, n), *subs, re, dr))
+        return rows
+
+    print(fmt_table(
+        "P(changed | gap)  [the cap-setting curve]",
+        ("gap", "trials", "changed", "rate") + SAMPLE_HDR
+        + ("refill", "drain"),
+        curve(curve_trials, ABS_BUCKETS,
+              lambda t: bucket_of(t["gap"], ABS_BUCKETS))))
+
+    # 4. relative gap curve (needs a span)
+    spanned = [t for t in curve_trials if t["span"] > 0]
+    nospan = len(curve_trials) - len(spanned)
+    print(fmt_table(
+        "P(changed | gap/span)  [tests the frac*span rule;"
+        " %d no-span trials excluded]" % nospan,
+        ("gap/span", "trials", "changed", "rate") + SAMPLE_HDR
+        + ("refill", "drain"),
+        curve(spanned, REL_BUCKETS,
+              lambda t: bucket_of(t["gap"] / t["span"],
+                                  REL_BUCKETS))))
+
+    # 5. policy walls vs liquidity walls: refill-side arrivals
+    # against regimes that actually had a wall to survive.
+    wall_tests = [t for t in curve_trials
+                  if t["side"] == "refill" and t["had_wall"]]
+    rows = []
+    for flag, label in ((True, "policy_fail wall"),
+                        (False, "liquidity wall")):
+        sel = [t for t in wall_tests if t["policy_wall"] == flag]
+        ch = sum(t["contradiction"] for t in sel)
+        rows.append((label, len(sel), ch, rate(ch, len(sel))))
+    print(fmt_table(
+        "wall survival by binding kind",
+        ("wall kind", "trials", "changed", "rate"), rows))
+
+    # 6. long-gap buckets by visit-frequency tercile
+    rates = sorted(visit_rate.values())
+    if rates:
+        t1 = rates[len(rates) // 3]
+        t2 = rates[2 * len(rates) // 3]
+
+        def tercile(key):
+            r = visit_rate.get(key)
+            if r is None:
+                return "rare"
+            return ("rare" if r <= t1
+                    else "mid" if r <= t2 else "busy")
+
+        rows = []
+        long_trials = [t for t in curve_trials
+                       if t["gap"] > 24 * 3600]
+        for label in ("rare", "mid", "busy"):
+            sel = [t for t in long_trials
+                   if tercile(t["dir_key"]) == label]
+            ch = sum(t["contradiction"] for t in sel)
+            rows.append((label, len(sel), ch, rate(ch, len(sel))))
+        print(fmt_table(
+            "gap > 24h by direction visit frequency"
+            " (selection-bias check)",
+            ("visits", "trials", "changed", "rate"), rows))
+
+    # 7. floor-factor sweep: the same arrival set as the floor-side
+    # wrong-while-asserting headline (so the 1.00 row reproduces
+    # it), re-judged against a floor scaled to each factor.
+    floor_tests = [t for t in curve_trials
+                   if t["side"] == "drain" and t["asserting"]]
+    quiet = [t for t in floor_tests if t["gap"] > 3600]
+    rows = []
+    for f in (1.0, 0.9, 0.75, 0.5, 0.3, 0.2, 0.1):
+        ref = sum(1 for t in floor_tests
+                  if t["amt"] <= f * t["lo"])
+        qref = sum(1 for t in quiet if t["amt"] <= f * t["lo"])
+        rows.append(("%.2f" % f,
+                     ref, rate(ref, len(floor_tests)),
+                     qref, rate(qref, len(quiet))))
+    print(fmt_table(
+        "floor-factor sweep: refutation rate had floors been"
+        " asserted at factor f\n(%d floor tests during assertion;"
+        " 'quiet' = the %d arriving after a gap > 1h,\nwhere"
+        " refutation means real misleading rather than our own"
+        " corridor harvesting)"
+        % (len(floor_tests), len(quiet)),
+        ("factor", "refuted", "rate", "quiet-ref", "quiet-rate"),
+        rows))
+
+
+if __name__ == "__main__":
+    main()
