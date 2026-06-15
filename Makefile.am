@@ -278,6 +278,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/UnmanagedManager.hpp \
 	Boss/Mod/Waiter.cpp \
 	Boss/Mod/Waiter.hpp \
+	Boss/Mod/XRebalancer.cpp \
+	Boss/Mod/XRebalancer.hpp \
 	Boss/Mod/all.cpp \
 	Boss/Mod/all.hpp \
 	Boss/ModG/Detail/ReqRespBase.cpp \
