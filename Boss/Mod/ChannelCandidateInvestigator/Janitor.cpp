@@ -25,7 +25,7 @@ Janitor::clean_up( Secretary& secretary
 		auto const& candidate = candidate_patron.first;
 		auto const& patron = candidate_patron.second;
 		return dowser.execute(Msg::RequestDowser{
-			nullptr, candidate, patron
+			nullptr, candidate, patron, min_channel
 		}).then([candidate, min_channel](Msg::ResponseDowser m) {
 			/* If below, return the node ID of the candidate.  */
 			if (m.amount < min_channel)
@@ -80,7 +80,7 @@ Ev::Io<bool> Janitor::check_acceptable( Ln::NodeId proposal
 				      , Ln::Amount min_channel
 				      ) {
 	return dowser.execute(Msg::RequestDowser{
-		nullptr, proposal, patron
+		nullptr, proposal, patron, min_channel
 	}).then([this, proposal, min_channel](Msg::ResponseDowser m) {
 		auto act = Ev::lift();
 		auto rv = true;

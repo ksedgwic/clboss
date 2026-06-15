@@ -112,44 +112,6 @@ private:
 		}
 	private:
 		Ev::Io<void>
-		on_success_connect(Msg::ProposeChannelCandidates p) {
-			auto self = shared_from_this();
-			auto curr = std::make_shared<
-				Msg::ProposeChannelCandidates
-			>(std::move(p));
-			return Ev::lift().then([self, curr]() {
-				auto msg = Msg::RequestDowser{
-					nullptr,
-					curr->proposal,
-					curr->patron
-				};
-				return self->impl.dowser.execute(std::move(
-					msg
-				));
-			}).then([self, curr](Msg::ResponseDowser r) {
-				if (r.amount >= self->min_channel)
-					return self->on_success(*curr);
-
-				return Boss::log( self->bus, Debug
-						, "ChannelCandidate"
-						  "Preinvestigator: "
-						  "Rejecting %s (patron %s) "
-						  "due to low flow %s "
-						  "(minimum %s)."
-						, std::string(curr->proposal)
-							.c_str()
-						, std::string(curr->patron)
-							.c_str()
-						, std::string(r.amount)
-							.c_str()
-						, std::string(self->min_channel)
-							.c_str()
-						).then([self]() {
-					return self->loop();
-				});
-			});
-		}
-		Ev::Io<void>
 		on_success(Msg::ProposeChannelCandidates const& p) {
 			auto self = shared_from_this();
 			return Boss::log( bus, Info
