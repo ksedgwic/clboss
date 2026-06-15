@@ -280,6 +280,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/XMoveFunds/Claimer.hpp \
 	Boss/Mod/XMoveFunds/Main.cpp \
 	Boss/Mod/XMoveFunds/Main.hpp \
+	Boss/Mod/XRebalancer.cpp \
+	Boss/Mod/XRebalancer.hpp \
 	Boss/Mod/all.cpp \
 	Boss/Mod/all.hpp \
 	Boss/ModG/Detail/ReqRespBase.cpp \
