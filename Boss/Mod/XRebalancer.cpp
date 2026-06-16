@@ -904,6 +904,16 @@ private:
 			   << " ppm)";
 			ppm = os.str();
 		}
+		auto detached = std::string();
+		{
+			auto nd = num("parts_detached");
+			if (nd > 0.0) {
+				auto os = std::ostringstream();
+				os << " (" << std::llround(nd)
+				   << " detached, settling in background)";
+				detached = os.str();
+			}
+		}
 		/* Chokepoint: among the failed parts, surface the one that got
 		 * CLOSEST to delivery -- the smallest from_target magnitude --
 		 * because that frontier (how near the best attempt came, and
@@ -958,7 +968,7 @@ private:
 			 * economics; reason is present only on a partial.  */
 			return Boss::log( bus, Info
 				, "XRebalancer: transfer done: %.0f/%.0f parts, "
-				  "delivered %s msat, fee %s msat%s%s."
+				  "delivered %s msat, fee %s msat%s%s%s."
 				, num("parts_complete"), num("parts")
 				, Util::Str::group_digits(
 					std::int64_t(std::llround(
@@ -966,12 +976,14 @@ private:
 				, Util::Str::group_digits(
 					std::int64_t(std::llround(
 						fee))).c_str()
-				, ppm.c_str(), reason.c_str() );
+				, ppm.c_str(), reason.c_str()
+				, detached.c_str() );
 		/* Nothing delivered: a clean failure -- show the part count
 		 * attempted and the chokepoint, not three zeros.  */
 		return Boss::log( bus, Info
-			, "XRebalancer: transfer failed: %.0f part(s)%s."
-			, num("parts"), reason.c_str() );
+			, "XRebalancer: transfer failed: %.0f part(s)%s%s."
+			, num("parts"), reason.c_str()
+			, detached.c_str() );
 	}
 
 	static std::string join_scids(std::vector<std::string> const& v) {

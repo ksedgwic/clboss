@@ -17,6 +17,7 @@
 #include"Boss/concurrent.hpp"
 #include"Boss/log.hpp"
 #include"Ev/Io.hpp"
+#include"Ev/now.hpp"
 #include"Ev/yield.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
@@ -343,6 +344,17 @@ private:
 	 * via setconfig to keep accumulated capacity knowledge longer
 	 * before constraints expire. */
 	std::uint64_t aging_window_secs;
+	/* How long (seconds) do_execute waits SYNCHRONOUSLY for parts
+	 * to terminate before it stops blocking the cycle.  A part still
+	 * in flight at this deadline is detached (background_wait_part):
+	 * its waitsendpay+attribution continue in the background so it
+	 * still settles and is accounted within the Claimer's 24h claim
+	 * window, while the driver loop is freed to start the next cycle.
+	 * This bounds a single stuck HTLC from freezing the whole
+	 * xrebalance executor (no protocol way to cancel an in-flight
+	 * HTLC; it resolves on its own).  Dynamic via setconfig
+	 * `clboss-xrebalance-part-wait-secs`.  Default 180s. */
+	double part_wait_secs;
 	/* For generating MPP groupids -- a u64 random value shared
 	 * across all parts of one xmovefunds invocation. */
 	std::mt19937_64 rng;
@@ -986,7 +998,8 @@ private:
 	Ev::Io<Jsmn::Object>
 	waitsendpay_part(Sha256::Hash const& payment_hash,
 			 std::uint64_t partid,
-			 std::uint64_t groupid) {
+			 std::uint64_t groupid,
+			 std::uint64_t timeout_secs = 0) {
 		auto parms = Json::Out();
 		auto obj = parms.start_object();
 		obj.field("payment_hash",
@@ -995,6 +1008,13 @@ private:
 			obj.field("partid", partid);
 			obj.field("groupid", groupid);
 		}
+		/* timeout_secs > 0 bounds the synchronous wait: CLN returns
+		 * error 200 ("Timed out") after this many seconds while
+		 * leaving the HTLC in flight, which the caller detects and
+		 * detaches.  timeout_secs == 0 waits indefinitely (used by
+		 * the detached background re-wait). */
+		if (timeout_secs > 0)
+			obj.field("timeout", timeout_secs);
 		obj.end_object();
 		return rpc->command("waitsendpay", std::move(parms));
 	}
@@ -1633,6 +1653,131 @@ private:
 		return rpc->command("getroutes", std::move(parms));
 	}
 
+	/* Run a batch of accumulated feedback actions in sequence. */
+	Ev::Io<void>
+	run_feedback(std::shared_ptr<std::vector<Ev::Io<void>>> fb) {
+		return Ev::lift().then([fb]() {
+			auto act = Ev::lift();
+			for (auto& a : *fb)
+				act = std::move(act) + std::move(a);
+			return act;
+		});
+	}
+
+	/* Push the positive-reinforcement feedback for a settled part into
+	 * `sink`: inform-unconstrained every network middle hop at the
+	 * amount it carried, plus a Success observation per hop.  Shared by
+	 * the foreground wait handler (sink = the cycle's deferred batch,
+	 * drained once after the wait loop) and the detached background
+	 * re-wait (sink = a local batch drained inline). */
+	void
+	push_success_feedback( std::size_t i
+			     , std::vector<std::vector<std::tuple<
+				   Ln::Scid, std::uint32_t, Ln::Amount>>>
+				   const& per_part_middle
+			     , std::vector<Ev::Io<void>>& sink
+			     ) {
+		for (auto const& hop : per_part_middle[i]) {
+			sink.push_back(
+			    Boss::Mod::AskreneLayer::
+				inform_channel_unconstrained(
+				    *rpc,
+				    Boss::Mod::AskreneLayer::
+					xrebalance_layer_name,
+				    std::get<0>(hop), std::get<1>(hop),
+				    std::get<2>(hop)));
+			auto obs = Msg::XRebalanceObservation{
+				std::uint64_t(std::time(nullptr)),
+				std::get<0>(hop), std::get<1>(hop),
+				Msg::XRebalanceObservationKind::Success,
+				std::get<2>(hop), 0, Ln::NodeId()};
+			sink.push_back(bus.raise(std::move(obs)));
+		}
+	}
+
+	/* Re-wait (no timeout) a part that exceeded the synchronous wait
+	 * budget and detached.  Runs in a background greenthread via
+	 * Boss::concurrent.  When the part finally settles (within the
+	 * Claimer's 24h claim window) or fails, it applies the SAME
+	 * attribution / askrene learning the foreground path would have --
+	 * so a slow part is still accounted, with no gap, while the driver
+	 * loop was freed to start the next cycle.  Mirrors the foreground
+	 * success/failure handlers, but drains its own feedback inline (the
+	 * cycle's feedback batch was already flushed). */
+	Ev::Io<void>
+	background_wait_part(
+	    std::shared_ptr<Sha256::Hash> payment_hash,
+	    std::uint64_t partid, std::size_t i,
+	    std::shared_ptr<std::uint64_t> groupid_actual,
+	    std::shared_ptr<std::vector<std::vector<std::tuple<
+		Ln::Scid, std::uint32_t, Ln::Amount>>>> per_part_middle,
+	    std::shared_ptr<std::set<std::string>> our_scids,
+	    std::shared_ptr<Jsmn::Object> askrene_response) {
+		return Boss::log( bus, Info
+				, "XMoveFunds: part %zu (hash %s partid %"
+				  PRIu64 ") still in flight at the %.0fs "
+				  "synchronous wait budget; detaching to "
+				  "settle in the background."
+				, i
+				, std::string(*payment_hash).substr(0, 16)
+				      .c_str()
+				, partid
+				, part_wait_secs
+				).then([ this, payment_hash, partid, i
+				       , groupid_actual, per_part_middle
+				       , our_scids, askrene_response
+				       ]() {
+			return waitsendpay_part( *payment_hash, partid
+					       , *groupid_actual)
+			    .then([ this, i, per_part_middle, askrene_response
+				  , payment_hash, partid
+				  ](Jsmn::Object r) {
+				auto fb = std::make_shared<
+				    std::vector<Ev::Io<void>>>();
+				push_success_feedback(i, *per_part_middle, *fb);
+				auto path = (*askrene_response)
+					["routes"][i]["path"];
+				return run_feedback(fb)
+				     + raise_attribution(path, r)
+				     + Boss::log( bus, Info
+						, "XMoveFunds: detached part "
+						  "%zu (hash %s partid %" PRIu64
+						  ") settled in the background."
+						, i
+						, std::string(*payment_hash)
+						      .substr(0, 16).c_str()
+						, partid
+						);
+			    }).catching<RpcError>([ this, i, our_scids
+						  , askrene_response
+						  , payment_hash, partid
+						  , groupid_actual
+						  ](RpcError const& e) {
+				auto fb = std::make_shared<
+				    std::vector<Ev::Io<void>>>();
+				auto path = (*askrene_response)
+					["routes"][i]["path"];
+				accumulate_failure_feedback(
+				    e, *our_scids, path, *fb);
+				return run_feedback(fb)
+				     + delpay_part( *payment_hash, partid
+						  , *groupid_actual)
+				     + Boss::log( bus, Info
+						, "XMoveFunds: detached part "
+						  "%zu (hash %s partid %" PRIu64
+						  ") failed in the background: "
+						  "%s"
+						, i
+						, std::string(*payment_hash)
+						      .substr(0, 16).c_str()
+						, partid
+						, failure_summary(e, path)
+						      .c_str()
+						);
+			    });
+		});
+	}
+
 	/* Drive the sendpay + waitsendpay sequence for one or more
 	 * askrene-returned routes (multi-part for MPP).  All parts
 	 * share payment_hash + payment_secret + groupid + label;
@@ -1937,21 +2082,53 @@ private:
 		 * payment-critical path is not slowed by feedback RPCs
 		 * and to preserve a single coherent observation set
 		 * across MPP parts. */
+		/* Synchronous-wait deadline.  We block the cycle waiting for
+		 * parts only up to part_wait_secs from when the wait phase
+		 * begins (set at execute time below, after the sends).  A part
+		 * still in flight then is detached to settle in the background
+		 * (background_wait_part), so one stuck HTLC cannot freeze the
+		 * executor; num_detached feeds the reply. */
+		auto deadline = std::make_shared<double>(0.0);
+		auto num_detached = std::make_shared<std::size_t>(0);
+		chain = std::move(chain) + Ev::lift().then([deadline, this]() {
+			*deadline = Ev::now() + part_wait_secs;
+			return Ev::lift();
+		});
 		for (auto i = std::size_t(0); i < num_parts; ++i) {
 			if (skipped[i])
 				continue;
 			auto partid = multi ? (i + 1) : 0;
 			chain = std::move(chain)
 			      + Ev::lift().then(
-				    [this, payment_hash, partid, i,
+				    [this, deadline, payment_hash, partid, i,
 				     groupid_actual, results, err_msgs,
 				     per_part_middle, our_scids,
 				     askrene_response,
-				     feedback_actions]
-				    () {
+				     feedback_actions, num_detached]
+				    () -> Ev::Io<void> {
+					auto remaining =
+					    *deadline - Ev::now();
+					if (remaining <= 0.0) {
+						/* Budget already spent by
+						 * earlier parts: detach this
+						 * one without a foreground
+						 * wait. */
+						++*num_detached;
+						results->push_back(
+						    Jsmn::Object());
+						return Boss::concurrent(
+						    background_wait_part(
+							payment_hash, partid,
+							i, groupid_actual,
+							per_part_middle,
+							our_scids,
+							askrene_response));
+					}
 					return waitsendpay_part(
 						   *payment_hash, partid,
-						   *groupid_actual)
+						   *groupid_actual,
+						   std::uint64_t(remaining)
+						       + 1)
 					    .then([results, i,
 						   per_part_middle,
 						   feedback_actions,
@@ -2021,8 +2198,39 @@ private:
 						 askrene_response, i,
 						 feedback_actions,
 						 payment_hash, partid,
-						 groupid_actual, this]
-						(RpcError const& e) {
+						 groupid_actual,
+						 per_part_middle,
+						 num_detached, this]
+						(RpcError const& e)
+						    -> Ev::Io<void> {
+						/* Timed out (code 200): the
+						 * part is still in flight, not
+						 * failed.  Detach a background
+						 * re-wait so it still settles
+						 * and is attributed within the
+						 * Claimer's 24h claim window;
+						 * write no constraint and do
+						 * NOT delpay (the HTLC is
+						 * alive).  Frees the cycle to
+						 * proceed. */
+						if (e.error.has("code")
+						 && e.error["code"]
+							.is_number()
+						 && int(double(
+						      e.error["code"]))
+						    == 200) {
+							++*num_detached;
+							results->push_back(
+							    Jsmn::Object());
+							return Boss::concurrent(
+							  background_wait_part(
+							    payment_hash,
+							    partid, i,
+							    groupid_actual,
+							    per_part_middle,
+							    our_scids,
+							    askrene_response));
+						}
 						results->push_back(
 						    Jsmn::Object());
 						/* Negative reinforcement:
@@ -2086,7 +2294,7 @@ private:
 		return std::move(chain).then(
 		    [payment_hash, preimage, label,
 		     groupid_actual, num_parts, num_skipped,
-		     results, err_msgs]() {
+		     num_detached, results, err_msgs]() {
 			auto out = Json::Out();
 			auto obj = out.start_object();
 			obj.field("payment_hash",
@@ -2102,6 +2310,12 @@ private:
 			obj.field("parts", num_parts - num_skipped);
 			if (num_skipped > 0)
 				obj.field("parts_skipped", num_skipped);
+			/* Parts still in flight at the synchronous-wait
+			 * deadline, detached to settle in the background.
+			 * They are NOT yet in parts_complete; their
+			 * attribution lands later via background_wait_part. */
+			if (*num_detached > 0)
+				obj.field("parts_detached", *num_detached);
 
 			/* Per-call summary across successful parts:
 			 *   delivered_msat  = sum r.amount_msat for parts
@@ -2334,6 +2548,7 @@ public:
 		, claimer(bus_)
 		, layer_ready(false)
 		, aging_window_secs(3600)
+		, part_wait_secs(180.0)
 		, rng(static_cast<std::uint64_t>(
 		      std::chrono::system_clock::now()
 		          .time_since_epoch().count())) {
@@ -2388,6 +2603,24 @@ public:
 				"clboss-xrebalance-age-secs <secs>`.  "
 				"Default 3600 (1h); operators on slower "
 				"networks (signet) typically widen this.",
+				/* dynamic = */ true
+			}) + bus.raise(Msg::ManifestOption{
+				"clboss-xrebalance-part-wait-secs",
+				Msg::OptionType_Int,
+				Json::Out::direct(
+				    std::uint64_t(part_wait_secs)),
+				"Seconds clboss-xmovefunds waits synchronously "
+				"for its parts to settle before returning and "
+				"letting the next cycle start.  A part still in "
+				"flight at this deadline is detached: its "
+				"waitsendpay + earnings/askrene attribution "
+				"continue in the background, so it still "
+				"settles and is accounted within the claim "
+				"window -- one stuck HTLC no longer freezes the "
+				"xrebalance executor.  Dynamic: settable at "
+				"runtime via `lightning-cli setconfig "
+				"clboss-xrebalance-part-wait-secs <secs>`.  "
+				"Default 180 (3 minutes).",
 				/* dynamic = */ true
 			});
 		});
@@ -2444,6 +2677,53 @@ public:
 					  "aging window = %" PRIu64
 					  " seconds"
 					, aging_window_secs
+					);
+		});
+		bus.subscribe<Msg::Option
+			     >([this](Msg::Option const& o) {
+			if (o.name != "clboss-xrebalance-part-wait-secs")
+				return Ev::lift();
+			/* Number at startup, string via setconfig -- same
+			 * dual encoding as clboss-xrebalance-age-secs. */
+			auto secs = double(0.0);
+			try {
+				if (o.value.is_number()) {
+					secs = double(o.value);
+				} else if (o.value.is_string()) {
+					secs = std::stod(std::string(o.value));
+				} else {
+					return Boss::log( bus, Warn
+							, "XMoveFunds: clboss-"
+							  "xrebalance-part-wait-"
+							  "secs: unsupported "
+							  "value type; keeping "
+							  "%.0f."
+							, part_wait_secs
+							);
+				}
+			} catch (std::exception const& e) {
+				return Boss::log( bus, Warn
+						, "XMoveFunds: clboss-"
+						  "xrebalance-part-wait-secs: "
+						  "parse error '%s'; keeping "
+						  "%.0f."
+						, e.what()
+						, part_wait_secs
+						);
+			}
+			if (secs <= 0.0) {
+				return Boss::log( bus, Warn
+						, "XMoveFunds: clboss-"
+						  "xrebalance-part-wait-secs: "
+						  "must be > 0; keeping %.0f."
+						, part_wait_secs
+						);
+			}
+			part_wait_secs = secs;
+			return Boss::log( bus, Info
+					, "XMoveFunds: part synchronous-wait "
+					  "budget = %.0f seconds"
+					, part_wait_secs
 					);
 		});
 		bus.subscribe<Msg::TimerRandomHourly
