@@ -142,10 +142,14 @@ int main() {
 
 	auto num_move_funds = std::size_t(0);
 	void* last_requester = nullptr;
+	auto last_source = Ln::NodeId();
+	auto last_destination = Ln::NodeId();
 	bus.subscribe< RequestMoveFunds
 		     >([&](RequestMoveFunds const& m) {
 		++num_move_funds;
 		last_requester = m.requester;
+		last_source = m.source;
+		last_destination = m.destination;
 		return Ev::lift();
 	});
 
@@ -174,7 +178,9 @@ int main() {
 		return bus.raise(ResponseMoveFunds{
 			last_requester,
 			Ln::Amount::sat(0),
-			Ln::Amount::sat(0)
+			Ln::Amount::sat(0),
+			last_source,
+			last_destination
 		});
 	}).then([&]() {
 

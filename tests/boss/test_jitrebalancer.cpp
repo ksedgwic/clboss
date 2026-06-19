@@ -422,7 +422,9 @@ int main() {
 		return bus.raise(ResponseMoveFunds{
 			requester,
 			Ln::Amount::sat(0),
-			Ln::Amount::sat(0)
+			Ln::Amount::sat(0),
+			source,
+			destination
 		});
 	}).then([&]() {
 		/* We should then release.  */

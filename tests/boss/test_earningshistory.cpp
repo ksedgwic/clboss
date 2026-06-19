@@ -63,9 +63,11 @@ Ev::Io<void> raiseMoveFundsLoop(S::Bus& bus, int count) {
 		.then([&bus]() {
 			return bus.raise(
 				Boss::Msg::ResponseMoveFunds{
-					nullptr,        	// requester (see RequestMoveFunds)
+					nullptr,        	// requester (unused for attribution)
 					Ln::Amount::sat(1000),  // amount_moved
-					Ln::Amount::sat(1)      // fee_spent
+					Ln::Amount::sat(1),     // fee_spent
+					C,              	// source
+					A               	// destination
 				});
 		})
 		.then([&bus, count]() {
