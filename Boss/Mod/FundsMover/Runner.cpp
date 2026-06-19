@@ -288,7 +288,8 @@ Ev::Io<void> Runner::finish() {
 				);
 	}).then([this]() {
 		return bus.raise(Msg::ResponseMoveFunds{
-			requester, transferred, orig_budget - *fee_budget
+			requester, transferred, orig_budget - *fee_budget,
+			source, destination
 		});
 	});
 }

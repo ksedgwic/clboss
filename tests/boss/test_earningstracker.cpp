@@ -5,7 +5,6 @@
 #include"Boss/Msg/ForwardFee.hpp"
 #include"Boss/Msg/ProvideStatus.hpp"
 #include"Boss/Msg/RequestEarningsInfo.hpp"
-#include"Boss/Msg/RequestMoveFunds.hpp"
 #include"Boss/Msg/ResponseEarningsInfo.hpp"
 #include"Boss/Msg/ResponseMoveFunds.hpp"
 #include"Boss/Msg/SolicitStatus.hpp"
@@ -167,22 +166,30 @@ int main() {
                         )JSON"));
 		return Ev::lift();
 	}).then([&]() {
+		/* Two rebalance moves reported under the SAME requester.
+		 * The response carries its own source/destination, so both
+		 * are booked and attributed correctly.  The tracker used to
+		 * correlate moves back to requests by `requester`, so every
+		 * move after the first of a same-requester batch was
+		 * silently dropped -- regression guard for that bug.  */
 		mock_now = 4000.0;
 		return bus.raise(
-			Boss::Msg::RequestMoveFunds{
-				NULL,			// requester (match ResponseMoveFunds)
+			Boss::Msg::ResponseMoveFunds{
+				NULL,			// requester (shared)
+				Ln::Amount::sat(1000),	// amount_moved
+				Ln::Amount::sat(2),	// fee_spent
 				C,			// source
-				A,			// destination
-				Ln::Amount::sat(1000),	// amount
-				Ln::Amount::sat(3)	// fee_budget
+				A			// destination
 			});
 	}).then([&]() {
 		mock_now = 5000.0;
 		return bus.raise(
 			Boss::Msg::ResponseMoveFunds{
-				NULL,			// requester (match RequestMoveFunds)
+				NULL,			// requester (same as above)
 				Ln::Amount::sat(1000),	// amount_moved
-				Ln::Amount::sat(2)	// fee_spent
+				Ln::Amount::sat(2),	// fee_spent
+				C,			// source
+				B			// destination
 			});
 	}).then([&]() {
 		return bus.raise(Boss::Msg::SolicitStatus{});
@@ -207,31 +214,31 @@ int main() {
 		    "in_earnings": 0,
 		    "in_expenditures": 0,
 		    "out_earnings": 2000,
-		    "out_expenditures": 0,
+		    "out_expenditures": 2000,
 		    "in_forwarded": 0,
 		    "in_rebalanced": 0,
 		    "out_forwarded": 3000000,
-		    "out_rebalanced": 0
+		    "out_rebalanced": 1000000
 		  },
 		  "020000000000000000000000000000000000000000000000000000000000000003": {
 		    "in_earnings": 0,
-		    "in_expenditures": 2000,
+		    "in_expenditures": 4000,
 		    "out_earnings": 0,
 		    "out_expenditures": 0,
 		    "in_forwarded": 0,
-		    "in_rebalanced": 1000000,
+		    "in_rebalanced": 2000000,
 		    "out_forwarded": 0,
 		    "out_rebalanced": 0
 		  },
 		  "total": {
 		    "in_earnings": 2000,
-		    "in_expenditures": 2000,
+		    "in_expenditures": 4000,
 		    "out_earnings": 2000,
-		    "out_expenditures": 2000,
+		    "out_expenditures": 4000,
 		    "in_forwarded": 3000000,
-		    "in_rebalanced": 1000000,
+		    "in_rebalanced": 2000000,
 		    "out_forwarded": 3000000,
-		    "out_rebalanced": 1000000
+		    "out_rebalanced": 2000000
 		  }
 		}
                         )JSON"));

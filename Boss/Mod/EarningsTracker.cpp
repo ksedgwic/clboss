@@ -8,7 +8,6 @@
 #include"Boss/Msg/Manifestation.hpp"
 #include"Boss/Msg/ProvideStatus.hpp"
 #include"Boss/Msg/RequestEarningsInfo.hpp"
-#include"Boss/Msg/RequestMoveFunds.hpp"
 #include"Boss/Msg/ResponseEarningsInfo.hpp"
 #include"Boss/Msg/ResponseMoveFunds.hpp"
 #include"Boss/Msg/SolicitStatus.hpp"
@@ -20,7 +19,6 @@
 #include"Util/make_unique.hpp"
 
 #include<cmath>
-#include<map>
 #include<iostream>
 #include<unordered_set>
 
@@ -87,14 +85,6 @@ private:
 	std::function<double()> get_now;
 	Sqlite3::Db db;
 
-	/* Information of a pending MoveFunds.  */
-	struct Pending {
-		Ln::NodeId source;
-		Ln::NodeId destination;
-	};
-	/* Maps a requester to the source-destination of the movefunds.  */
-	std::map<void*, Pending> pendings;
-
 	void start() {
 		bus.subscribe<Msg::DbResource
 			     >([this](Msg::DbResource const& r) {
@@ -104,10 +94,6 @@ private:
 		bus.subscribe<Msg::ForwardFee
 			     >([this](Msg::ForwardFee const& f) {
 				     return forward_fee(f.in_id, f.out_id, f.fee, f.amount);
-		});
-		bus.subscribe<Msg::RequestMoveFunds
-			     >([this](Msg::RequestMoveFunds const& req) {
-			return request_move_funds(req);
 		});
 		bus.subscribe<Msg::ResponseMoveFunds
 			     >([this](Msg::ResponseMoveFunds const& rsp) {
@@ -401,28 +387,25 @@ private:
 		});
 	}
 	Ev::Io<void>
-	request_move_funds(Boss::Msg::RequestMoveFunds const& req) {
-		auto& pending = pendings[req.requester];
-		pending.source = req.source;
-		pending.destination = req.destination;
-		return Ev::lift();
-	}
-	Ev::Io<void>
 	response_move_funds(Boss::Msg::ResponseMoveFunds const& rsp) {
-		auto requester = rsp.requester;
+		/* The response carries its own source/destination, so we
+		 * attribute the move directly rather than correlating back
+		 * to the request by `requester`.  A `requester`-keyed map
+		 * collides when one rebalancer issues several moves at once
+		 * (they share the requester pointer): the first response to
+		 * arrive consumed the shared entry and every later
+		 * response -- including the actually-successful one -- was
+		 * silently dropped.  */
+		auto source = rsp.source;
+		auto destination = rsp.destination;
 		auto fee = rsp.fee_spent;
 		auto amount = rsp.amount_moved;
-		return db.transact().then([this, requester, fee, amount
+		return db.transact().then([ this, source, destination
+					  , fee, amount
 					  ](Sqlite3::Tx tx) {
-			auto it = pendings.find(requester);
-			if (it == pendings.end())
-				/* Not in our table, huh, weird.  */
-				return Ev::lift();
-			auto& pending = it->second;
-
 			auto bucket = bucket_time(get_now());
-			ensure(tx, pending.source, bucket);
-			ensure(tx, pending.destination, bucket);
+			ensure(tx, source, bucket);
+			ensure(tx, destination, bucket);
 
 			/* Source gets in-expenditures since it gets more
 			 * incoming capacity (for more earnings for the
@@ -435,7 +418,7 @@ private:
 			   AND time_bucket = :bucket
 			     ;
 			)QRY")
-				.bind(":node", std::string(pending.source))
+				.bind(":node", std::string(source))
 				.bind(":bucket", bucket)
 				.bind(":fee", fee.to_msat())
 				.bind(":amount", amount.to_msat())
@@ -453,16 +436,13 @@ private:
 			     ;
 			)QRY")
 				.bind( ":node"
-				     , std::string(pending.destination)
+				     , std::string(destination)
 				     )
 				.bind(":bucket", bucket)
 				.bind(":fee", fee.to_msat())
 				.bind(":amount", amount.to_msat())
 				.execute()
 				;
-
-			/* Erase it.  */
-			pendings.erase(it);
 
 			tx.commit();
 			return Ev::lift();
