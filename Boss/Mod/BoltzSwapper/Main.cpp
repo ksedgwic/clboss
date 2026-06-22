@@ -5,59 +5,67 @@
 
 namespace {
 
-auto const boltz_instances = std::map< Boss::Msg::Network
-				     , std::vector<Boss::Mod::BoltzSwapper::Instance>
-				     >
-{ { Boss::Msg::Network_Bitcoin
-/* Historically, the clearnet API endpoint was used as the in-database label
- * for Boltz services.
- * The boltz.exchange service thus uses the API endpoint as the label for
- * back-compatibility.
- * Other services since then were added after we had a separate label.
- */
-  , { { "https://boltz.exchange/api"
-      , "https://boltz.exchange/api"
-      , "http://boltzzzbnus4m7mta3cxmflnps4fp7dueu2tgurstbvrbt6xswzcocyd.onion/api"
+    auto const boltz_instances = std::map< Boss::Msg::Network, std::vector<Boss::Mod::BoltzSwapper::Instance> >
+    {
+        { Boss::Msg::Network_Bitcoin,
+    /* Historically, the clearnet API endpoint was used as the in-database label
+     * for Boltz services.
+     * The boltz.exchange service thus uses the API endpoint as the label for
+     * back-compatibility.
+     * Other services since then were added after we had a separate label.
+     */
+      {
+          { "https://boltz.exchange/api",
+          "https://boltz.exchange/api",
+          "http://boltzzzbnus4m7mta3cxmflnps4fp7dueu2tgurstbvrbt6xswzcocyd.onion/api"
+          },
+          { "AutonomousOrganization@github.com",
+              "",
+              "http://jsyqqszgfrya6nj7nhi4hu4tdpuvfursl7dyxeiukzit5mvckqbzxpad.onion"
+            }
       }
-    , { "AutonomousOrganization@github.com"
-      , ""
-      , "http://jsyqqszgfrya6nj7nhi4hu4tdpuvfursl7dyxeiukzit5mvckqbzxpad.onion"
-      }
-    }
-  }
-, { Boss::Msg::Network_Testnet
-  , { { "https://testnet.boltz.exchange/api"
-      , "https://testnet.boltz.exchange/api"
-      , "http://tboltzzrsoc3npe6sydcrh37mtnfhnbrilqi45nao6cgc6dr7n2eo3id.onion/api"
-      }
-    }
-  }
-};
+    },
+        { Boss::Msg::Network_Signet,
+            {
+              { "signet-boltz-backend-for-clboss",
+                  "http://127.0.0.1:8080",
+                  "http://boltz7ckqss7j66wjjqlm334qccsrjie552gdnvn6vwztnzk7bqwsdad.onion"
+              }
+          }
+        },
+        { Boss::Msg::Network_Testnet,
+            {
+              { "https://testnet.boltz.exchange/api",
+                  "https://testnet.boltz.exchange/api",
+                  "http://tboltzzrsoc3npe6sydcrh37mtnfhnbrilqi45nao6cgc6dr7n2eo3id.onion/api"
+              }
+          }
+        }
+    };
 
 }
 
 namespace Boss { namespace Mod { namespace BoltzSwapper {
 
-class Main::Impl {
-private:
-	Env env;
-	ServiceCreator creator;
+    class Main::Impl {
+    private:
+        Env env;
+        ServiceCreator creator;
 
-public:
-	Impl(S::Bus& bus, Ev::ThreadPool& threadpool)
-		: env(bus)
-		, creator(bus, threadpool, env, boltz_instances)
-		{ }
-};
+    public:
+        Impl(S::Bus& bus, Ev::ThreadPool& threadpool)
+            : env(bus)
+            , creator(bus, threadpool, env, boltz_instances)
+        { }
+    };
 
-Main::Main(Main&&) =default;
-Main& Main::operator=(Main&&) =default;
-Main::~Main() =default;
+    Main::Main(Main&&) =default;
+    Main& Main::operator=(Main&&) =default;
+    Main::~Main() =default;
 
-Main::Main( S::Bus& bus
-	  , Ev::ThreadPool& threadpool
-	  ) : pimpl(Util::make_unique<Impl>(bus, threadpool))
-	    { }
+    Main::Main( S::Bus& bus
+          , Ev::ThreadPool& threadpool
+          ) : pimpl(Util::make_unique<Impl>(bus, threadpool))
+    { }
 
 }}}
-

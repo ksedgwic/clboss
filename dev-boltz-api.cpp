@@ -5,12 +5,17 @@
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
 #include"Util/make_unique.hpp"
+#include<cstdlib>
 #include<iostream>
 #include<sstream>
 #include<string>
 
 /* argv[1] == /api
  * argv[2] == JSON
+ *
+ * Environment overrides:
+ *   BOLTZ_API_BASE  URL prefix (default: https://boltz.exchange/api)
+ *   BOLTZ_PROXY     libcurl proxy (e.g. socks5h://127.0.0.1:9050)
  */
 int main(int argc, char** argv) {
 	if (argc < 2 || argc > 3) {
@@ -31,8 +36,13 @@ int main(int argc, char** argv) {
 		);
 	}
 
+	auto base = std::string("https://boltz.exchange/api");
+	if (auto e = std::getenv("BOLTZ_API_BASE")) base = e;
+	auto proxy = std::string("");
+	if (auto e = std::getenv("BOLTZ_PROXY")) proxy = e;
+
 	Ev::ThreadPool tp;
-	auto cc = Boltz::Connection(tp);
+	auto cc = Boltz::Connection(tp, base, proxy);
 
 	auto code = Ev::lift().then([&]() {
 		return cc.api(api, std::move(json));
