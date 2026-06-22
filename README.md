@@ -228,6 +228,53 @@ Installing `lcov`:
 * Debian/Ubuntu: `sudo apt-get install lcov`
 * Or via Nix (without installing system-wide): `nix shell nixpkgs#lcov --command make coverage-report`
 
+### Testing on signet w/ swaps
+
+CLBOSS can run its `boltz.exchange` swaps against a signet Boltz backend,
+which is useful for exercising the swap machinery without spending real
+funds. This needs a CLBOSS built with signet support, which ships a
+`Network_Signet` Boltz instance.
+
+The signet Boltz service has no public clearnet endpoint, so CLBOSS
+reaches it at a local address (`http://127.0.0.1:8080`) that you front
+with a forward to the service. The service is reachable over I2P
+(preferred) or Tor — its `.onion` is also configured, but has been
+unreliable in practice.
+
+To forward the local port over I2P:
+
+1. Install and run [i2pd](https://i2pd.readthedocs.io/). Its SOCKS5 proxy
+   listens on `127.0.0.1:4447` by default; no extra configuration is
+   required.
+
+2. Forward `127.0.0.1:8080` to the signet Boltz I2P address through that
+   SOCKS5 proxy with `socat`. A systemd unit keeps it running:
+
+```
+[Unit]
+Description=socat proxy: 127.0.0.1:8080 -> Boltz signet I2P (via i2pd SOCKS5)
+After=i2pd.service network-online.target
+Wants=i2pd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/socat --experimental -d TCP4-LISTEN:8080,bind=127.0.0.1,fork,reuseaddr SOCKS5-CONNECT:127.0.0.1:4447:boltz7c3f7bb5pe7k25uv2wdd57oayoazacorwdvzksz6q7hicxq.b32.i2p:80
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+For a one-off test, run just the `socat …` command from `ExecStart`
+directly. With i2pd and this forward running, a signet CLBOSS uses the
+Boltz signet backend automatically.
+
+To smoke-test the backend without CLBOSS, the `dev-boltz-api` helper
+honors two environment variables: set `BOLTZ_PROXY=socks5h://127.0.0.1:4447`
+and `BOLTZ_API_BASE=http://boltz7c3f7bb5pe7k25uv2wdd57oayoazacorwdvzksz6q7hicxq.b32.i2p`
+to reach the service directly over I2P.
+
 ### Contributed Utilities
 
 There are a number of contributed utilities in the `contrib` directory.  See
