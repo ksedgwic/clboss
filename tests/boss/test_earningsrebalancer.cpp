@@ -6,8 +6,10 @@
 #include"Boss/Mod/ConstructedListpeers.hpp"
 #include"Boss/Msg/ListpeersResult.hpp"
 #include"Boss/Msg/RequestEarningsInfo.hpp"
+#include"Boss/Msg/RequestGetCircularRebalanceFlag.hpp"
 #include"Boss/Msg/RequestMoveFunds.hpp"
 #include"Boss/Msg/ResponseEarningsInfo.hpp"
+#include"Boss/Msg/ResponseGetCircularRebalanceFlag.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/start.hpp"
 #include"Json/Out.hpp"
@@ -144,6 +146,14 @@ int main() {
 		source = m.source;
 		destination = m.destination;
 		return Ev::lift();
+	});
+	bus.subscribe< Boss::Msg::RequestGetCircularRebalanceFlag
+		     >([&bus](Boss::Msg::RequestGetCircularRebalanceFlag const& m) {
+			auto msg = Boss::Msg::ResponseGetCircularRebalanceFlag();
+			msg.requester = m.requester;
+			msg.state = true;
+			msg.comment = "test";
+			return bus.raise(msg);
 	});
 
 	/* Module under test.  */

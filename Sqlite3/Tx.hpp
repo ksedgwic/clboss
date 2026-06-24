@@ -59,6 +59,7 @@ public:
 	 * retrieve results.
 	 */
 	Sqlite3::Query query(char const*);
+	Sqlite3::Query query(std::string const&);
 
 	/** Sqlite3::Tx::query_execute
 	 *

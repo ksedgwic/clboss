@@ -1,10 +1,13 @@
 #include"Boss/Mod/ChannelCreationDecider.hpp"
+#include"Boss/ModG/ReqResp.hpp"
 #include"Boss/Msg/AmountSettings.hpp"
 #include"Boss/Msg/ChannelFunds.hpp"
 #include"Boss/Msg/NeedsOnchainFunds.hpp"
 #include"Boss/Msg/OnchainFee.hpp"
 #include"Boss/Msg/OnchainFunds.hpp"
 #include"Boss/Msg/RequestChannelCreation.hpp"
+#include"Boss/Msg/RequestGetAutoOpenFlag.hpp"
+#include"Boss/Msg/ResponseGetAutoOpenFlag.hpp"
 #include"Boss/concurrent.hpp"
 #include"Boss/log.hpp"
 #include"S/Bus.hpp"
@@ -45,10 +48,14 @@ namespace Boss { namespace Mod {
 class ChannelCreationDecider::Impl {
 private:
 	S::Bus& bus;
+	ModG::ReqResp< Msg::RequestGetAutoOpenFlag
+		     , Msg::ResponseGetAutoOpenFlag
+		     > get_auto_open_rr;
 
 	std::unique_ptr<bool> low_fee;
 	std::unique_ptr<Ln::Amount> channels;
 	std::unique_ptr<Ln::Amount> saved_onchain;
+	std::unique_ptr<Ln::Amount> onchain;
 
 	Ln::Amount reserve;
 	Ln::Amount min_amount;
@@ -90,7 +97,7 @@ private:
 			return Ev::lift();
 
 		/* Get this trigger.  */
-		auto onchain = std::move(saved_onchain);
+		onchain = std::move(saved_onchain);
 
 		/* How much total money do we have anyway?  */
 		auto total = *channels + *onchain;
@@ -100,65 +107,74 @@ private:
 			/* Do nothing and be silent.  */
 			return decide_do_nothing_silently();
 
-		/* What is our minimum channeling amount?  */
-		auto target = total * (onchain_percent_min / 100.0);
-		if (target < min_amount)
-			target = min_amount;
-		if (target > max_onchain_holdoff)
-			target = max_onchain_holdoff;
-		/* Make sure to add the reserve!  */
-		target += reserve;
-		/* Below our minimum channeling amount?  */
-		if (*onchain < target) {
-			/* Add the needs_reserve here because fees.  */
-			auto more = ( target
-				    + needs_reserve
-				    )
-				  - *onchain
-				  ;
-			auto more_btc = more.to_btc();
-			/* Totally not a "just send me more funds to
-			 * redeem your money" scam.  */
-			return decide( std::string("Onchain amount too low, ")
-				     + "add " + Util::stringify(more_btc)
-				     + " or more before we create channels"
-				     , nullptr
-				     ).then([this, more]() {
-				if (more > max_needs_onchain) {
-					return Boss::log( bus, Debug
-							, "ChannelCreationDecider: "
-							  "We need %s, which is "
-							  "greater than our limit of "
-							  "%s; will NOT move funds "
-							  "from channels to onchain."
-							, std::string(more).c_str()
-							, std::string(max_needs_onchain)
-								.c_str()
-							);
-				}
-				/* And tell everyone about the
-				 * missingfunds.  */
-				return bus.raise(Msg::NeedsOnchainFunds{
-					more
-				});
+		return Ev::lift().then([this]() {
+			return get_auto_open_rr.execute(Msg::RequestGetAutoOpenFlag{
+				nullptr
 			});
-		}
+		}).then([this, total](Msg::ResponseGetAutoOpenFlag res) {
+			if (!res.state)
+				return decide(res.comment, nullptr);
 
-		if (*low_fee)
-			return decide("Low fees now", std::move(onchain));
+			/* What is our minimum channeling amount?  */
+			auto target = total * (onchain_percent_min / 100.0);
+			if (target < min_amount)
+				target = min_amount;
+			if (target > max_onchain_holdoff)
+				target = max_onchain_holdoff;
+			/* Make sure to add the reserve!  */
+			target += reserve;
+			/* Below our minimum channeling amount?  */
+			if (*onchain < target) {
+				/* Add the needs_reserve here because fees.  */
+				auto more = ( target
+					    + needs_reserve
+					    )
+					  - *onchain
+					  ;
+				auto more_btc = more.to_btc();
+				/* Totally not a "just send me more funds to
+				 * redeem your money" scam.  */
+				return decide( std::string("Onchain amount too low, ")
+					     + "add " + Util::stringify(more_btc)
+					     + " or more before we create channels"
+					     , nullptr
+					     ).then([this, more]() {
+					if (more > max_needs_onchain) {
+						return Boss::log( bus, Debug
+								, "ChannelCreationDecider: "
+								  "We need %s, which is "
+								  "greater than our limit of "
+								  "%s; will NOT move funds "
+								  "from channels to onchain."
+								, std::string(more).c_str()
+								, std::string(max_needs_onchain)
+									.c_str()
+								);
+					}
+					/* And tell everyone about the
+					 * missingfunds.  */
+					return bus.raise(Msg::NeedsOnchainFunds{
+						more
+					});
+				});
+			}
 
-		auto onchain_percent = (*onchain / total) * 100;
-		if (onchain_percent > onchain_percent_max)
-			return decide( std::string("High fees, but ")
-				     + Util::stringify(onchain_percent)
-				     + "% of our funds are onchain, "
-				       "which is above our limit of "
-				     + Util::stringify(onchain_percent_max)
-				     + "%"
-				     , std::move(onchain)
-				     );
+			if (*low_fee)
+				return decide("Low fees now", std::move(onchain));
 
-		return decide("High fees now", nullptr);
+			auto onchain_percent = (*onchain / total) * 100;
+			if (onchain_percent > onchain_percent_max)
+				return decide( std::string("High fees, but ")
+					     + Util::stringify(onchain_percent)
+					     + "% of our funds are onchain, "
+					       "which is above our limit of "
+					     + Util::stringify(onchain_percent_max)
+					     + "%"
+					     , std::move(onchain)
+					     );
+
+			return decide("High fees now", nullptr);
+		});
 	}
 
 	Ev::Io<void> decide( std::string comment
@@ -195,7 +211,7 @@ public:
 	Impl() =delete;
 	Impl(Impl const&) =delete;
 
-	Impl(S::Bus& bus_) : bus(bus_) { start(); }
+	Impl(S::Bus& bus_) : bus(bus_), get_auto_open_rr(bus_) { start(); }
 };
 
 ChannelCreationDecider::ChannelCreationDecider(S::Bus& bus)

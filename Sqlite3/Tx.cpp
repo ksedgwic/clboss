@@ -88,6 +88,10 @@ Query Tx::query(char const* sql) {
 	return pimpl->query(sql);
 }
 
+Query Tx::query(std::string const& q) {
+	return query(q.c_str());
+}
+
 void Tx::query_execute(char const* q) {
 	return pimpl->query_execute(q);
 }

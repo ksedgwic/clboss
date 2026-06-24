@@ -280,6 +280,8 @@ libclboss_la_SOURCES = \
 	Boss/ModG/RebalanceUnmanagerProxy.hpp \
 	Boss/ModG/Swapper.cpp \
 	Boss/ModG/Swapper.hpp \
+	Boss/ModG/TimedBoolean.hpp \
+	Boss/ModG/TimedBooleanController.hpp \
 	Boss/Msg/AcceptSwapQuotation.hpp \
 	Boss/Msg/AmountSettings.hpp \
 	Boss/Msg/AvailableRpcCommands.hpp \
@@ -343,6 +345,9 @@ libclboss_la_SOURCES = \
 	Boss/Msg/RequestConnect.hpp \
 	Boss/Msg/RequestDowser.hpp \
 	Boss/Msg/RequestEarningsInfo.hpp \
+	Boss/Msg/RequestGetAutoOpenFlag.hpp \
+	Boss/Msg/RequestGetAutoSwapFlag.hpp \
+	Boss/Msg/RequestGetCircularRebalanceFlag.hpp \
 	Boss/Msg/RequestGetOnchainIgnoreFlag.hpp \
 	Boss/Msg/RequestListpays.hpp \
 	Boss/Msg/RequestMoveFunds.hpp \
@@ -356,6 +361,9 @@ libclboss_la_SOURCES = \
 	Boss/Msg/ResponseConnect.hpp \
 	Boss/Msg/ResponseDowser.hpp \
 	Boss/Msg/ResponseEarningsInfo.hpp \
+	Boss/Msg/ResponseGetAutoOpenFlag.hpp \
+	Boss/Msg/ResponseGetAutoSwapFlag.hpp \
+	Boss/Msg/ResponseGetCircularRebalanceFlag.hpp \
 	Boss/Msg/ResponseGetOnchainIgnoreFlag.hpp \
 	Boss/Msg/ResponseListpays.hpp \
 	Boss/Msg/ResponseMoveFunds.hpp \
