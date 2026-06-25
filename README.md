@@ -605,6 +605,47 @@ startup default, or at runtime with
 
     lightning-cli setconfig clboss-classic-layer-age-secs <seconds>
 
+### `--clboss-min-rebalance-ppm=<ppm>`
+
+Sets the minimum fee budget, expressed as parts-per-million of the amount
+being moved, at which the classic rebalancer will bother attempting a
+rebalance.  When a requested move's budget (`fee_budget / amount`) is below
+this, FundsMover declines it immediately — no route solve, no split-retry —
+rather than spending effort on a move that almost never succeeds at that
+rate.
+
+The default is `50`.  Set it to `0` to disable the gate and attempt every
+requested move.
+
+This is a *dynamic* option: set it in the `lightningd` config for the
+startup default, or at runtime with
+
+    lightning-cli setconfig clboss-min-rebalance-ppm <ppm>
+
+### `--clboss-min-rebalance-prob-ppm=<ppm>`
+
+Sets the minimum *success probability*, expressed in parts-per-million, that
+a found route must have for the classic rebalancer to actually send it.
+`askrene` returns a `probability_ppm` with every route — its estimate, from
+channel capacities and accumulated liquidity constraints, that the route's
+channels really hold the funds.  When the returned route scores below this
+floor, FundsMover does **not** send it; instead the attempt fails and the
+move is split into a smaller amount, which has a higher per-hop probability
+and may be deliverable.  This avoids paying (with a sendpay that almost
+certainly fails `204`, plus the re-pathfind churn that follows) for routes
+`askrene` already expects to fail.
+
+The default is `500000` (50%): routes that `askrene` scores below an even
+chance of success are not sent.  Set it to `0` to **disable** the gate
+(every route `askrene` returns is sent, the pre-migration behaviour); lower
+values such as `100000` (10%) refuse only the more improbable routes, while
+`1` refuses only routes scored at exactly 0.
+
+This is a *dynamic* option: set it in the `lightningd` config for the
+startup default, or at runtime with
+
+    lightning-cli setconfig clboss-min-rebalance-prob-ppm <ppm>
+
 ### `--clboss-min-nodes-to-process=<number>`
 
 Sets the minimum number of nodes that CLBOSS must know about before it
