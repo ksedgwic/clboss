@@ -599,6 +599,23 @@ startup default, or at runtime with
 
     lightning-cli setconfig clboss-classic-layer-age-secs <seconds>
 
+### `--clboss-min-rebalance-ppm=<ppm>`
+
+Sets the minimum fee budget, expressed as parts-per-million of the amount
+being moved, at which the classic rebalancer will bother attempting a
+rebalance.  When a requested move's budget (`fee_budget / amount`) is below
+this, FundsMover declines it immediately — no route solve, no split-retry —
+rather than spending effort on a move that almost never succeeds at that
+rate.
+
+The default is `50`.  Set it to `0` to disable the gate and attempt every
+requested move.
+
+This is a *dynamic* option: set it in the `lightningd` config for the
+startup default, or at runtime with
+
+    lightning-cli setconfig clboss-min-rebalance-ppm <ppm>
+
 ### `--clboss-min-nodes-to-process=<number>`
 
 Sets the minimum number of nodes that CLBOSS must know about before it
