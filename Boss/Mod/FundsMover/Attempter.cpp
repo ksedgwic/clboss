@@ -255,6 +255,11 @@ private:
 	 */
 	Ln::Amount orig_budget;
 	Ln::Amount orig_amount;
+	/* Minimum askrene route success probability (ppm) we will send at.
+	 * A returned route scored below this is not sent; the attempt fails
+	 * and Runner splits to a smaller (higher-probability) amount.  0
+	 * disables.  Snapshot of clboss-min-rebalance-prob-ppm. */
+	std::uint64_t min_prob_ppm;
 	/* Details of the last channel from destination to us.  */
 	Ln::Scid last_scid;
 	Ln::Amount base_fee;
@@ -354,6 +359,7 @@ public:
 	    , Ln::Scid first_scid_
 	    , Ln::Amount orig_budget_
 	    , Ln::Amount orig_amount_
+	    , std::uint64_t min_prob_ppm_
 	    ) : bus(bus_)
 	      , rpc(rpc_)
 	      , self_id(std::move(self_id_))
@@ -366,6 +372,7 @@ public:
 	      , remaining_amount(std::move(remaining_amount_))
 	      , orig_budget(orig_budget_)
 	      , orig_amount(orig_amount_)
+	      , min_prob_ppm(min_prob_ppm_)
 	      , last_scid(last_scid_)
 	      , base_fee(base_fee_)
 	      , proportional_fee(proportional_fee_)
@@ -672,6 +679,26 @@ private:
 						, attempt_tag().c_str()
 						, route.size()
 						, max_safe_hops
+						).then([]() {
+					return Ev::lift(false);
+				});
+			/* Probability gate: askrene already scored this route's
+			 * success likelihood (probability_ppm).  If it is below
+			 * clboss-min-rebalance-prob-ppm, do not send: it would
+			 * almost certainly fail with a sendpay 204 and then drive
+			 * a re-pathfind/retry treadmill for a route we already
+			 * know is dead.  Return failure so Runner::attempt splits
+			 * and re-probes at a smaller, more-probable amount.  0
+			 * disables the gate. */
+			if (min_prob_ppm > 0 && prob_ppm < std::int64_t(min_prob_ppm))
+				return Boss::log( bus, Debug
+						, "FundsMover[%s]: route too "
+						  "improbable: prob_ppm=%" PRIi64
+						  " < min %" PRIu64 "; not "
+						  "sending, will split."
+						, attempt_tag().c_str()
+						, prob_ppm
+						, min_prob_ppm
 						).then([]() {
 					return Ev::lift(false);
 				});
@@ -1787,6 +1814,7 @@ Attempter::run( S::Bus& bus
 	       */
 	      , Ln::Amount orig_budget
 	      , Ln::Amount orig_amount
+	      , std::uint64_t min_prob_ppm
 	      ) {
 	auto impl = std::make_shared<Impl>( bus
 					  , rpc
@@ -1805,6 +1833,7 @@ Attempter::run( S::Bus& bus
 					  , first_scid
 					  , orig_budget
 					  , orig_amount
+					  , min_prob_ppm
 					  );
 	return impl->run();
 }
