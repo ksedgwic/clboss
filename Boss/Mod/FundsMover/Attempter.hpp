@@ -78,6 +78,11 @@ public:
 	    */
 	   , Ln::Amount orig_budget
 	   , Ln::Amount orig_amount
+	   /* Minimum askrene route success probability (ppm) below which a
+	    * found route is not sent: the attempt fails and Runner splits to
+	    * a smaller, more-probable amount.  0 disables.  Snapshot of
+	    * clboss-min-rebalance-prob-ppm. */
+	   , std::uint64_t min_prob_ppm
 	   );
 };
 

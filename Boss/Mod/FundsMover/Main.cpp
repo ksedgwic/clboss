@@ -66,6 +66,16 @@ private:
 	 * and attempt every requested move. */
 	std::uint64_t min_rebalance_ppm = std::uint64_t(50);
 
+	/* Minimum askrene route success probability (ppm) below which a
+	 * found rebalance route is NOT sent.  askrene returns a
+	 * probability_ppm with every route; a route scored below this floor
+	 * is declined (the attempt fails and the Runner splits to a smaller,
+	 * more-probable amount) instead of sending a route that will almost
+	 * certainly 204.  Dynamic via clboss-min-rebalance-prob-ppm; default
+	 * 500000 (refuse routes askrene scores below ~50% likely; 0 disables).
+	 * Snapshotted into each Runner/Attempter. */
+	std::uint64_t min_prob_ppm = std::uint64_t(500000);
+
 	void start() {
 		bus.subscribe<Msg::Init>([this](Msg::Init const& init) {
 			rpc = &init.rpc;
@@ -107,6 +117,25 @@ private:
 				"setconfig clboss-min-rebalance-ppm <ppm>`.  "
 				"Default 50; set to 0 to disable (attempt every "
 				"requested move).",
+				/* dynamic = */ true
+			})
+			+ bus.raise(Msg::ManifestOption{
+				"clboss-min-rebalance-prob-ppm",
+				Msg::OptionType_Int,
+				Json::Out::direct(min_prob_ppm),
+				"Minimum askrene success probability, in ppm, for a "
+				"found route to be sent.  askrene returns a "
+				"probability_ppm with every route (its estimate that "
+				"the liquidity is actually there); a route below this "
+				"floor is not sent -- the attempt fails and the move "
+				"is split to a smaller, more-probable amount.  This "
+				"stops paying for routes askrene already expects to "
+				"fail (a sendpay 204).  Dynamic: settable at runtime "
+				"via `lightning-cli setconfig "
+				"clboss-min-rebalance-prob-ppm <ppm>`.  Default "
+				"500000 (refuse routes scored below ~50% likely); "
+				"set to 0 to disable (send every route askrene "
+				"returns).",
 				/* dynamic = */ true
 			});
 		});
@@ -204,6 +233,53 @@ private:
 					, min_rebalance_ppm
 					);
 		});
+		bus.subscribe<Msg::Option
+			     >([this](Msg::Option const& o) {
+			if (o.name != "clboss-min-rebalance-prob-ppm")
+				return Ev::lift();
+			/* Number at startup, string via setconfig -- the same
+			 * dual encoding the other dynamic options handle.
+			 * Signed so a negative value is rejected below rather
+			 * than wrapping to a huge unsigned. */
+			long long ppm = 0;
+			try {
+				if (o.value.is_number()) {
+					ppm = static_cast<long long>(double(o.value));
+				} else if (o.value.is_string()) {
+					ppm = std::stoll(std::string(o.value));
+				} else {
+					return Boss::log( bus, Warn
+							, "FundsMover: clboss-min-"
+							  "rebalance-prob-ppm: "
+							  "unsupported value type; "
+							  "keeping %" PRIu64 "."
+							, min_prob_ppm
+							);
+				}
+			} catch (std::exception const& e) {
+				return Boss::log( bus, Warn
+						, "FundsMover: clboss-min-rebalance-"
+						  "prob-ppm: parse error '%s'; "
+						  "keeping %" PRIu64 "."
+						, e.what()
+						, min_prob_ppm
+						);
+			}
+			if (ppm < 0) {
+				return Boss::log( bus, Warn
+						, "FundsMover: clboss-min-rebalance-"
+						  "prob-ppm: must be >= 0; keeping %"
+						  PRIu64 "."
+						, min_prob_ppm
+						);
+			}
+			min_prob_ppm = std::uint64_t(ppm);
+			return Boss::log( bus, Info
+					, "FundsMover: min rebalance route "
+					  "probability = %" PRIu64 " ppm"
+					, min_prob_ppm
+					);
+		});
 		bus.subscribe<Msg::RequestMoveFunds
 			     >([this](Msg::RequestMoveFunds const& m) {
 			auto msg = std::make_shared<Msg::RequestMoveFunds>(m);
@@ -285,6 +361,7 @@ private:
 							    , self_id
 							    , claimer
 							    , *msg
+							    , min_prob_ppm
 							    );
 				return Runner::start(runner);
 			});

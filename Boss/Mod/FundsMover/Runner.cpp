@@ -38,6 +38,7 @@ Runner::Runner( S::Bus& bus_
 	      , Ln::NodeId self_
 	      , Boss::Mod::FundsMover::Claimer& claimer_
 	      , Boss::Msg::RequestMoveFunds const& req
+	      , std::uint64_t min_prob_ppm_
 	      ) : bus(bus_)
 		, rpc(rpc_)
 		, self(std::move(self_))
@@ -49,6 +50,7 @@ Runner::Runner( S::Bus& bus_
 		, fee_budget(std::make_shared<Ln::Amount>(req.fee_budget))
 		, remaining_amount(std::make_shared<Ln::Amount>(req.amount))
 		, orig_budget(req.fee_budget)
+		, min_prob_ppm(min_prob_ppm_)
 		, start_time(Ev::now())
 		, attempts(0)
 		{ }
@@ -219,6 +221,7 @@ Ev::Io<void> Runner::attempt(Ln::Amount amount) {
 				      */
 				     , orig_budget
 				     , this->amount
+				     , min_prob_ppm
 				     );
 	}).then([this, amount](bool result) {
 		--attempts;
