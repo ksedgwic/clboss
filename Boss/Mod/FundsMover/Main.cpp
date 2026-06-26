@@ -180,6 +180,12 @@ private:
 						);
 			}
 			aging_window_secs = std::uint64_t(secs);
+			/* Keep the AskreneLayer inform-coalescing bucket a
+			 * fixed fraction of the aging window (see
+			 * set_aging_window_secs); tracks setconfig live. */
+			Boss::Mod::AskreneLayer::set_aging_window_secs(
+				aging_window_secs
+			);
 			return Boss::log( bus, Info
 					, "FundsMover: clboss layer aging "
 					  "window = %" PRIu64 " seconds"
