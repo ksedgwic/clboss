@@ -275,9 +275,102 @@ test_silent_rpc_error( MockRpcServer& server
 	});
 }
 
+/* Test 5 (pure): the write-coalescing decision (inform_coalesce_emit).
+ * No RPC -- exercises the dominance + bucket rule directly. */
+void test_coalesce_decision() {
+	using Boss::Mod::AskreneLayer::InformObs;
+	using Boss::Mod::AskreneLayer::inform_coalesce_emit;
+
+	/* No prior: always emit, either kind. */
+	assert(inform_coalesce_emit(nullptr, 100, 500, true));
+	assert(inform_coalesce_emit(nullptr, 100, 500, false));
+
+	auto const prior = InformObs{ 100, 500 };
+
+	/* New bucket: emit even when not tighter (keep-alive vs aging). */
+	assert(inform_coalesce_emit(&prior, 101, 500, true));
+	assert(inform_coalesce_emit(&prior, 101, 10, true));
+
+	/* Same bucket, lower bound (min): emit iff strictly higher. */
+	assert( inform_coalesce_emit(&prior, 100, 600, true));
+	assert(!inform_coalesce_emit(&prior, 100, 500, true));
+	assert(!inform_coalesce_emit(&prior, 100, 400, true));
+
+	/* Same bucket, upper bound (max): emit iff strictly lower. */
+	assert( inform_coalesce_emit(&prior, 100, 400, false));
+	assert(!inform_coalesce_emit(&prior, 100, 500, false));
+	assert(!inform_coalesce_emit(&prior, 100, 600, false));
+
+	/* Oscillation within a bucket cannot defeat dominance: with 600 the
+	 * running min, nothing at/below it re-emits, whatever the order. */
+	auto const osc = InformObs{ 100, 600 };
+	assert(!inform_coalesce_emit(&osc, 100, 500, true));
+	assert(!inform_coalesce_emit(&osc, 100, 400, true));
+	assert(!inform_coalesce_emit(&osc, 100, 600, true));
+}
+
+/* Test 6 (behavioural): inform_channel coalesces.  A second, dominated
+ * write to the same dir within the same time bucket must NOT hit the
+ * RPC.  Proven via a sentinel inform to a different dir: if the
+ * dominated write leaked through, the second server read would see it
+ * (and its dir assertion would fire) instead of the sentinel. */
+Ev::Io<void>
+test_coalesce_drops_dominated( MockRpcServer& server
+			     , Boss::Mod::Rpc& rpc
+			     ) {
+	auto const layer = std::string("coalesce-layer");
+
+	auto assert_first = [](Jsmn::Object const& req) {
+		auto id = assert_method(req, "askrene-inform-channel");
+		auto params = req["params"];
+		assert(std::string(params["short_channel_id_dir"]) == "400x4x0/0");
+		assert(double(params["amount_msat"]) == 750000.0);
+		return id;
+	};
+	auto assert_sentinel = [](Jsmn::Object const& req) {
+		auto id = assert_method(req, "askrene-inform-channel");
+		auto params = req["params"];
+		/* A leaked dominated 400x4x0/0 write would show up here
+		 * instead of the sentinel -> this assertion fires. */
+		assert(std::string(params["short_channel_id_dir"]) == "500x5x0/0");
+		assert(double(params["amount_msat"]) == 999.0);
+		return id;
+	};
+
+	return Ev::lift().then([&server, assert_first]() {
+		return Ev::concurrent(server.serve_ok(assert_first));
+	}).then([&rpc, layer]() {
+		/* First write: new dir+bucket -> emits, served by assert_first. */
+		return Boss::Mod::AskreneLayer::inform_channel_unconstrained(
+			rpc, layer, Ln::Scid("400x4x0"), std::uint32_t(0),
+			Ln::Amount::msat(750000)
+		);
+	}).then([&server, assert_sentinel]() {
+		/* Spawn the sentinel server BEFORE the dominated write, so a
+		 * leaked write is caught by assert_sentinel rather than
+		 * hanging the test. */
+		return Ev::concurrent(server.serve_ok(assert_sentinel));
+	}).then([&rpc, layer]() {
+		/* Dominated (lower min, same bucket) -> must DROP, no RPC. */
+		return Boss::Mod::AskreneLayer::inform_channel_unconstrained(
+			rpc, layer, Ln::Scid("400x4x0"), std::uint32_t(0),
+			Ln::Amount::msat(500000)
+		);
+	}).then([&rpc, layer]() {
+		/* Sentinel: different dir -> emits, served by assert_sentinel. */
+		return Boss::Mod::AskreneLayer::inform_channel_unconstrained(
+			rpc, layer, Ln::Scid("500x5x0"), std::uint32_t(0),
+			Ln::Amount::msat(999)
+		);
+	});
+}
+
 } // namespace
 
 int main() {
+	/* Pure-logic coalescing test first -- needs no Ev/RPC machinery. */
+	test_coalesce_decision();
+
 	auto bus = S::Bus();
 
 	int sockets[2];
@@ -297,6 +390,8 @@ int main() {
 		return test_disable_node(server, rpc);
 	}).then([&]() {
 		return test_silent_rpc_error(server, rpc);
+	}).then([&]() {
+		return test_coalesce_drops_dominated(server, rpc);
 	}).then([&]() {
 		/* All tests passed; raise Shutdown so concurrent
 		 * server tasks (if any are still alive) and the

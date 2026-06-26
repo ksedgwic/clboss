@@ -129,6 +129,52 @@ Ev::Io<void> update_channel( Boss::Mod::Rpc& rpc
 			   , std::uint16_t cltv_expiry_delta
 			   );
 
+/* --- inform-channel write coalescing -------------------------------
+ *
+ * askrene's get_constraints folds every constraint for a given
+ * (layer, scid-dir) down to a single tightest [min, max] at query
+ * time, so a stream of repeated inform-channel writes for the same dir
+ * only bloats the layer: hot rebalance corridors accreted hundreds-to-
+ * thousands of dominated min_msat copies, every one of which askrene
+ * must re-fold on each getroutes through that dir.  inform_channel
+ * coalesces them -- per (layer, scid-dir, inform-kind) it keeps the
+ * tightest bound seen in the current time bucket and emits a write only
+ * when a new bucket opens (a keep-alive against the layer aging) or the
+ * bound tightens.  Dropping a dominated write is lossless: it is exactly
+ * what get_constraints discards.
+ *
+ * InformObs is the per-key state; inform_coalesce_emit is the pure
+ * decision, exposed here so it can be unit-tested directly.
+ */
+struct InformObs {
+	/* Time bucket (Ev::now() / window) the tightest bound was last
+	 * emitted in. */
+	std::uint64_t bucket;
+	/* That tightest bound, in msat: the highest min for a lower-bound
+	 * (unconstrained) kind, the lowest max for an upper-bound
+	 * (constrained) kind. */
+	std::uint64_t tightest_msat;
+};
+
+/* Decide whether a new observation should be written through to
+ * askrene.  prior is the last emitted state for this
+ * (layer, scid-dir, kind), or nullptr if none.  is_lower_bound is true
+ * for the unconstrained/min kind, false for the constrained/max kind.
+ * Emit on no prior, on a new bucket, or on a tightening within the
+ * same bucket. */
+bool inform_coalesce_emit( InformObs const* prior
+			 , std::uint64_t bucket
+			 , std::uint64_t amount_msat
+			 , bool is_lower_bound
+			 );
+
+/* Set the inform-channel coalescing bucket length from the layer aging
+ * window: the bucket is a fixed fraction of aging_secs, so the
+ * once-per-bucket keep-alive always refreshes a constraint before it
+ * ages out.  Wired from FundsMover's clboss-classic-layer-age-secs
+ * handler so the window tracks the aging window live. */
+void set_aging_window_secs(std::uint64_t aging_secs);
+
 }}}
 
 #endif /* !defined(BOSS_MOD_ASKRENELAYER_HPP_) */

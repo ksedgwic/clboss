@@ -1,16 +1,55 @@
 #include"Boss/Mod/AskreneLayer.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Ev/Io.hpp"
+#include"Ev/now.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
 #include"Util/stringify.hpp"
 #include<assert.h>
+#include<cstdint>
+#include<map>
 
 namespace Boss { namespace Mod { namespace AskreneLayer {
 
 std::string const clboss_layer_name = "clboss";
 
 namespace {
+
+/* Coalescing state, keyed by "layer|scid-dir|inform-kind" -> the
+ * tightest bound emitted in the current time bucket (see InformObs in
+ * the header).  Safe as a file-static: the whole plugin runs on a
+ * single Ev event-loop thread, so there is no concurrent access. */
+std::map<std::string, InformObs> inform_cache;
+
+/* The coalescing bucket length, derived as a fixed fraction
+ * (1 / coalesce_window_divisor) of the layer aging window
+ * (clboss-classic-layer-age-secs).  Making it a fraction of the aging
+ * window means the keep-alive re-emit (once per bucket) always refreshes
+ * a constraint well before it can age out, and the aging window is
+ * always exactly coalesce_window_divisor buckets long whatever its
+ * value -- so the prune and the depth floor are scale-invariant.
+ * FundsMover feeds the live aging value via set_aging_window_secs();
+ * this default matches aging/12 at the default 12h aging (1h bucket). */
+std::uint64_t constexpr coalesce_window_divisor = 12;
+double coalesce_window_secs = 43200.0 / double(coalesce_window_divisor);
+
+/* Drop coalescing entries idle past the aging window, so the cache does
+ * not grow with the set of channel-dirs seen over the process lifetime.
+ * Amortised -- swept once per 4096 emits, not per call. */
+void prune_inform_cache(std::uint64_t now_bucket) {
+	static std::uint64_t emits = 0;
+	if ((++emits & 0xFFF) != 0)
+		return;
+	/* The aging window is always coalesce_window_divisor buckets, so a
+	 * few more than that covers any still-active dir at any aging value. */
+	auto constexpr keep_buckets = std::uint64_t(coalesce_window_divisor + 4);
+	for (auto it = inform_cache.begin(); it != inform_cache.end(); ) {
+		if (it->second.bucket + keep_buckets < now_bucket)
+			it = inform_cache.erase(it);
+		else
+			++it;
+	}
+}
 
 /* Common machinery for the two inform_channel variants.  askrene
  * accepts inform=succeeded / constrained / unconstrained as the
@@ -38,6 +77,27 @@ inform_channel( Boss::Mod::Rpc& rpc
 	if (direction > 1)
 		return Ev::lift();
 	auto sdir = std::string(scid) + "/" + Util::stringify(direction);
+
+	/* Coalesce redundant writes (see InformObs in the header): keep the
+	 * tightest bound per (layer, scid-dir, kind) within one aging-derived
+	 * bucket and emit only on a new bucket (keep-alive against the layer
+	 * aging) or a tightening.  Dropping a dominated write is lossless --
+	 * get_constraints folds the dir down to one tightest [min,max], so the
+	 * dropped entry would not have changed any route. */
+	auto const bucket = std::uint64_t(Ev::now() / coalesce_window_secs);
+	auto const is_lower_bound = (std::string(inform) != "constrained");
+	auto const key = layer + "|" + sdir + "|" + inform;
+	auto const cache_it = inform_cache.find(key);
+	auto const* prior = (cache_it == inform_cache.end())
+			  ? nullptr : &cache_it->second;
+	if (!inform_coalesce_emit( prior, bucket
+				 , std::uint64_t(amount.to_msat())
+				 , is_lower_bound
+				 ))
+		return Ev::lift();
+	inform_cache[key] = InformObs{ bucket, std::uint64_t(amount.to_msat()) };
+	prune_inform_cache(bucket);
+
 	auto parms = Json::Out()
 		.start_object()
 			.field("layer", layer)
@@ -61,6 +121,34 @@ inform_channel( Boss::Mod::Rpc& rpc
 	});
 }
 
+}
+
+/* The coalescing decision (see InformObs in the header).  Defined out
+ * here rather than in the anonymous namespace so the unit test can call
+ * it directly; inform_channel reaches it via the header declaration. */
+bool
+inform_coalesce_emit( InformObs const* prior
+		    , std::uint64_t bucket
+		    , std::uint64_t amount_msat
+		    , bool is_lower_bound
+		    ) {
+	if (!prior)
+		return true;                 /* first observation for this key */
+	if (prior->bucket != bucket)
+		return true;                 /* new bucket: keep-alive emit */
+	/* Same bucket: emit only if this observation tightens the bound. */
+	return is_lower_bound ? amount_msat > prior->tightest_msat
+			      : amount_msat < prior->tightest_msat;
+}
+
+/* Set the coalescing bucket length from the current layer aging window
+ * (clboss-classic-layer-age-secs), as aging / coalesce_window_divisor.
+ * Called by FundsMover when that option loads or changes, so the
+ * coalescing window tracks the aging window live.  Floored at 1s so a
+ * pathological aging value can never produce a zero-length bucket. */
+void set_aging_window_secs(std::uint64_t aging_secs) {
+	auto const w = double(aging_secs) / double(coalesce_window_divisor);
+	coalesce_window_secs = (w >= 1.0) ? w : 1.0;
 }
 
 Ev::Io<void>
