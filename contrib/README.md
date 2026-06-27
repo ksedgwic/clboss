@@ -58,6 +58,8 @@ cd contrib/
 
 ./recently-closed
 
+./clboss-askrene-layer-summary
+
 The `clboss-routing-stats` and `clboss-forwarding-stats` scripts now accept `--days` to limit
 how many days of earnings history are considered when ranking channels.
 
@@ -75,6 +77,12 @@ how many days of earnings history are considered when ranking channels.
   accepts the `--days` option.
 - **`recently-closed`** lists channels that closed within the last N days, also
   controlled via `--days`.
+- **`clboss-askrene-layer-summary`** rolls an askrene layer's raw constraint
+  dump up into a breadth/depth census: how many distinct channel-directions
+  the layer knows about and how many constraint entries are stacked on each,
+  with `--top N` resolving the busiest directions to node aliases.  Works on
+  any persistent layer (`clboss` by default) and can replay a captured
+  `askrene-listlayers` dump offline via `--input`.
 - **`fee-log-parser`** is a parser that streams DEBUG-level logging and writes
   a sqlite database containing fee algorithm information. CLBOSS now records
   the same schema in its internal database (`data.clboss`, tables
