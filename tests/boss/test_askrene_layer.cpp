@@ -320,6 +320,16 @@ test_coalesce_drops_dominated( MockRpcServer& server
 			     ) {
 	auto const layer = std::string("coalesce-layer");
 
+	/* Pin the coalescing bucket astronomically large so both writes
+	 * below always land in the same Ev::now()/window bucket regardless
+	 * of when the test runs; otherwise a run straddling a bucket
+	 * boundary re-emits the dominated write as a keep-alive and
+	 * assert_sentinel fires spuriously.  This is the final test before
+	 * Shutdown, so the global window needs no restore. */
+	Boss::Mod::AskreneLayer::set_aging_window_secs(
+		std::uint64_t(1000) * 365 * 24 * 60 * 60
+	);
+
 	auto assert_first = [](Jsmn::Object const& req) {
 		auto id = assert_method(req, "askrene-inform-channel");
 		auto params = req["params"];
