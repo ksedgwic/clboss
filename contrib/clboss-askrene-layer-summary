@@ -128,8 +128,15 @@ def percentile(sorted_vals, q):
 
 def load_layers(args, network_option):
     if args.input is not None:
-        raw = sys.stdin.read() if args.input == "-" else open(args.input).read()
-        return json.loads(raw).get("layers", [])
+        try:
+            if args.input == "-":
+                raw = sys.stdin.read()
+            else:
+                with open(args.input) as f:
+                    raw = f.read()
+            return json.loads(raw).get("layers", [])
+        except (OSError, json.JSONDecodeError) as e:
+            sys.exit(f"failed to load --input data: {e}")
     res = run_lightning_cli_command(
         args.lightning_dir, network_option, "askrene-listlayers", args.layer
     )
@@ -238,6 +245,10 @@ def main():
 
     s = summarize(target)
     depth = s.pop("_depth")
+
+    if args.json and args.top > 0:
+        sys.exit("--json cannot be combined with --top "
+                 "(the top list is human-readable only)")
 
     if args.json:
         print(json.dumps(s, indent=2))
