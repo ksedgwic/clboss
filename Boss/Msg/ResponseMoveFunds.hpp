@@ -2,6 +2,7 @@
 #define BOSS_MSG_RESPONSEMOVEFUNDS_HPP
 
 #include"Ln/Amount.hpp"
+#include"Ln/NodeId.hpp"
 
 namespace Boss { namespace Msg {
 
@@ -17,6 +18,12 @@ struct ResponseMoveFunds {
 	Ln::Amount amount_moved;
 	/* Actual amount spent on fees.  */
 	Ln::Amount fee_spent;
+
+	/* The peers this move was between.  Carried in the response so
+	 * consumers (e.g. earnings accounting) can attribute the move
+	 * without correlating back to the request by `requester`.  */
+	Ln::NodeId source;
+	Ln::NodeId destination;
 };
 
 }}

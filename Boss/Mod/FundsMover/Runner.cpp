@@ -1,3 +1,4 @@
+#include"Boss/Mod/AskreneLayer.hpp"
 #include"Boss/Mod/FundsMover/Attempter.hpp"
 #include"Boss/Mod/FundsMover/Claimer.hpp"
 #include"Boss/Mod/FundsMover/Runner.hpp"
@@ -37,6 +38,7 @@ Runner::Runner( S::Bus& bus_
 	      , Ln::NodeId self_
 	      , Boss::Mod::FundsMover::Claimer& claimer_
 	      , Boss::Msg::RequestMoveFunds const& req
+	      , std::uint64_t min_prob_ppm_
 	      ) : bus(bus_)
 		, rpc(rpc_)
 		, self(std::move(self_))
@@ -48,6 +50,7 @@ Runner::Runner( S::Bus& bus_
 		, fee_budget(std::make_shared<Ln::Amount>(req.fee_budget))
 		, remaining_amount(std::make_shared<Ln::Amount>(req.amount))
 		, orig_budget(req.fee_budget)
+		, min_prob_ppm(min_prob_ppm_)
 		, start_time(Ev::now())
 		, attempts(0)
 		{ }
@@ -63,7 +66,18 @@ Ev::Io<void> Runner::core_run() {
 	return Ev::lift().then([this]() {
 		/* Initialize.  */
 		transferred = Ln::Amount::sat(0);
-		/* Next step.  */
+		auto src_pfx = std::string(source).substr(0, 8);
+		auto dst_pfx = std::string(destination).substr(0, 8);
+		return Boss::log( bus, Debug
+				, "FundsMover/Runner: REQ "
+				  "src=%s... dst=%s... "
+				  "amount=%s fee_budget=%s"
+				, src_pfx.c_str()
+				, dst_pfx.c_str()
+				, std::string(amount).c_str()
+				, std::string(orig_budget).c_str()
+				);
+	}).then([this]() {
 		return gather_info();
 	});
 }
@@ -198,6 +212,16 @@ Ev::Io<void> Runner::attempt(Ln::Amount amount) {
 				     , proportional_fee
 				     , cltv_delta
 				     , first_scid
+				     /* orig_budget / orig_amount: pass
+				      * Runner's per-msat rate snapshot
+				      * for the Attempter's absolute
+				      * rate cap.  Both are class members
+				      * of Runner and don't change after
+				      * construction.
+				      */
+				     , orig_budget
+				     , this->amount
+				     , min_prob_ppm
 				     );
 	}).then([this, amount](bool result) {
 		--attempts;
@@ -250,8 +274,25 @@ Ev::Io<void> Runner::attempt(Ln::Amount amount) {
 
 Ev::Io<void> Runner::finish() {
 	return Ev::lift().then([this]() {
+		auto fee_spent = orig_budget - *fee_budget;
+		auto src_pfx = std::string(source).substr(0, 8);
+		auto dst_pfx = std::string(destination).substr(0, 8);
+		return Boss::log( bus, Debug
+				, "FundsMover/Runner: DONE "
+				  "src=%s... dst=%s... "
+				  "transferred=%s fee_spent=%s "
+				  "orig_amount=%s orig_budget=%s"
+				, src_pfx.c_str()
+				, dst_pfx.c_str()
+				, std::string(transferred).c_str()
+				, std::string(fee_spent).c_str()
+				, std::string(amount).c_str()
+				, std::string(orig_budget).c_str()
+				);
+	}).then([this]() {
 		return bus.raise(Msg::ResponseMoveFunds{
-			requester, transferred, orig_budget - *fee_budget
+			requester, transferred, orig_budget - *fee_budget,
+			source, destination
 		});
 	});
 }

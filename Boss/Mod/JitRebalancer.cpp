@@ -1,4 +1,5 @@
 #include"Boss/Mod/JitRebalancer.hpp"
+#include"Boss/ModG/RebalanceModeProxy.hpp"
 #include"Boss/ModG/RebalanceUnmanagerProxy.hpp"
 #include"Boss/ModG/ReqResp.hpp"
 #include"Boss/ModG/RpcProxy.hpp"
@@ -108,6 +109,7 @@ private:
 	PeerFromScidRR peer_from_scid_rr;
 
         ModG::RebalanceUnmanagerProxy unmanager;
+        ModG::RebalanceModeProxy mode_proxy;
         std::uint32_t max_rebalance_fee_ppm;
 
         void start() {
@@ -151,18 +153,26 @@ private:
 		if (!req.next_channel)
 			return Ev::lift(false);
 
-		/* Get it from the table.  */
-		return peer_from_scid_rr.execute(Msg::RequestPeerFromScid{
-			nullptr, req.next_channel
-		}).then([ this
-			, req
-			](Msg::ResponsePeerFromScid const& r) {
-			if (!r.peer)
+		/* Self-gate on the rebalance mode: JIT rebalancing only runs
+		 * in the "classic" track.  In other modes do not defer the
+		 * HTLC, so forwarding is never delayed by the JIT logic.  */
+		return mode_proxy.get_mode().then([this, req](RebalanceMode m) {
+			if (m != RebalanceMode::classic)
 				return Ev::lift(false);
-			return htlc_accepted_cont( r.peer
-						 , req.id
-						 , req.next_amount
-						 );
+
+			/* Get it from the table.  */
+			return peer_from_scid_rr.execute(Msg::RequestPeerFromScid{
+				nullptr, req.next_channel
+			}).then([ this
+				, req
+				](Msg::ResponsePeerFromScid const& r) {
+				if (!r.peer)
+					return Ev::lift(false);
+				return htlc_accepted_cont( r.peer
+							 , req.id
+							 , req.next_amount
+							 );
+			});
 		});
 	}
 	Ev::Io<bool>
@@ -239,6 +249,7 @@ public:
 	      , move_funds_rr(bus)
 	      , peer_from_scid_rr(bus)
               , unmanager(bus)
+              , mode_proxy(bus)
               { start(); }
 };
 

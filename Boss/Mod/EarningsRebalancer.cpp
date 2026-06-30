@@ -1,5 +1,6 @@
 
 #include"Boss/Mod/EarningsRebalancer.hpp"
+#include"Boss/ModG/RebalanceModeProxy.hpp"
 #include"Boss/ModG/RebalanceUnmanagerProxy.hpp"
 #include"Boss/ModG/ReqResp.hpp"
 #include"Boss/Msg/CommandRequest.hpp"
@@ -82,6 +83,7 @@ private:
 	std::map<Ln::NodeId, EarningsInfo> earnings;
 
         ModG::RebalanceUnmanagerProxy unmanager;
+        ModG::RebalanceModeProxy mode_proxy;
         std::set<Ln::NodeId> const* unmanaged;
         std::uint32_t max_fee_ppm;
 
@@ -105,17 +107,30 @@ private:
 			if (working)
 				return Ev::lift();
 
-			working = true;
-			return Boss::log( bus, Debug
-					, "EarningsRebalancer: Triggering."
-					).then([this]() {
-				return run();
-			}).then([this]() {
-				working = false;
+			/* Self-gate on the rebalance mode: only the
+			 * "classic" track runs the EarningsRebalancer.  */
+			return mode_proxy.get_mode().then([this](RebalanceMode m) {
+				if (m != RebalanceMode::classic)
+					return Boss::log( bus, Debug
+							, "EarningsRebalancer: "
+							  "rebalance mode is not "
+							  "\"classic\", skipping."
+							);
+				if (working)
+					return Ev::lift();
 
+				working = true;
 				return Boss::log( bus, Debug
-						, "EarningsRebalancer: Finished."
-						);
+						, "EarningsRebalancer: Triggering."
+						).then([this]() {
+					return run();
+				}).then([this]() {
+					working = false;
+
+					return Boss::log( bus, Debug
+							, "EarningsRebalancer: Finished."
+							);
+				});
 			});
 		});
 
@@ -395,6 +410,7 @@ public:
 	    ) : bus(bus_)
 	      , earnings_rr(bus_)
 	      , unmanager(bus_)
+	      , mode_proxy(bus_)
 	      { start(); }
 };
 

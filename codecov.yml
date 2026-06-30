@@ -1,0 +1,22 @@
+# Codecov configuration for CLBOSS.
+#
+# Project-level: still guards against bulk coverage regression
+# (overall coverage may not drop more than 1% from the master
+# baseline).
+#
+# Patch-level: informational only.  Most CLBOSS modules predate
+# the unit-test infrastructure and have no existing tests, so
+# requiring a fixed minimum patch coverage on every PR would
+# block work in those modules regardless of correctness.
+# Codecov still reports the per-PR coverage delta as a comment;
+# it just does not fail the status check.
+
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        informational: true

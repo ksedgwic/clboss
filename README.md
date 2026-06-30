@@ -565,6 +565,81 @@ Limits the fee CLBOSS will pay for a single internal rebalance.
 The value is in parts-per-million (PPM) of the amount being moved.
 The default is `1000` (0.1% of the amount). Both the
 JitRebalancer and EarningsRebalancer honor this limit.
+
+### `--clboss-rebalance-mode=<classic|off>`
+
+Selects how CLBOSS rebalances channel liquidity:
+
+* `classic` (default): the original CLBOSS rebalancer (JitRebalancer plus
+  EarningsRebalancer), now driven through CLN's `askrene` / `getroutes`
+  pathfinder instead of the deprecated `getroute`.
+* `off`: disable autonomous rebalancing entirely.
+
+This is a *dynamic* option: set it in the `lightningd` config for the
+startup default, or change it at runtime without a restart with
+
+    lightning-cli setconfig clboss-rebalance-mode <mode>
+
+The mode selector is the entry point for future rebalancing strategies;
+`classic` and `off` are the values supported today.
+
+### `--clboss-classic-layer-age-secs=<seconds>`
+
+Sets how long entries persist in the CLBOSS `askrene` layer used by the
+classic rebalancer — the failure / transit feedback recorded by
+FundsMover plus ActiveProber's probe results.  Entries older than this
+cutoff are trimmed once per (roughly hourly) aging pass.
+
+The default is `43200` (twelve hours).  Because the aging pass runs on a fixed
+cadence, this option sets only the *expiration age*, not how often
+trimming happens; values below roughly one hour do not trim any faster.
+
+This is a *dynamic* option: set it in the `lightningd` config for the
+startup default, or at runtime with
+
+    lightning-cli setconfig clboss-classic-layer-age-secs <seconds>
+
+### `--clboss-min-rebalance-ppm=<ppm>`
+
+Sets the minimum fee budget, expressed as parts-per-million of the amount
+being moved, at which the classic rebalancer will bother attempting a
+rebalance.  When a requested move's budget (`fee_budget / amount`) is below
+this, FundsMover declines it immediately — no route solve, no split-retry —
+rather than spending effort on a move that almost never succeeds at that
+rate.
+
+The default is `50`.  Set it to `0` to disable the gate and attempt every
+requested move.
+
+This is a *dynamic* option: set it in the `lightningd` config for the
+startup default, or at runtime with
+
+    lightning-cli setconfig clboss-min-rebalance-ppm <ppm>
+
+### `--clboss-min-rebalance-prob-ppm=<ppm>`
+
+Sets the minimum *success probability*, expressed in parts-per-million, that
+a found route must have for the classic rebalancer to actually send it.
+`askrene` returns a `probability_ppm` with every route — its estimate, from
+channel capacities and accumulated liquidity constraints, that the route's
+channels really hold the funds.  When the returned route scores below this
+floor, FundsMover does **not** send it; instead the attempt fails and the
+move is split into a smaller amount, which has a higher per-hop probability
+and may be deliverable.  This avoids paying (with a sendpay that almost
+certainly fails `204`, plus the re-pathfind churn that follows) for routes
+`askrene` already expects to fail.
+
+The default is `500000` (50%): routes that `askrene` scores below an even
+chance of success are not sent.  Set it to `0` to **disable** the gate
+(every route `askrene` returns is sent, the pre-migration behaviour); lower
+values such as `100000` (10%) refuse only the more improbable routes, while
+`1` refuses only routes scored at exactly 0.
+
+This is a *dynamic* option: set it in the `lightningd` config for the
+startup default, or at runtime with
+
+    lightning-cli setconfig clboss-min-rebalance-prob-ppm <ppm>
+
 ### `--clboss-min-nodes-to-process=<number>`
 
 Sets the minimum number of nodes that CLBOSS must know about before it

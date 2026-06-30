@@ -32,10 +32,18 @@ void NewaddrHandler::start() {
 	});
 }
 Ev::Io<void> NewaddrHandler::newaddr(void* requester) {
+	/** BREAKING CHANGE:
+	 * Requesting addresstype=p2tr is NOT compatible with CLN v23.05
+	 * and older, which did not accept the p2tr addresstype. */
+	auto params = Json::Out()
+		.start_object()
+			.field("addresstype", "p2tr")
+		.end_object()
+		;
 	return rpc->command( "newaddr"
-			   , Json::Out::empty_object()
+			   , std::move(params)
 			   ).then([this, requester](Jsmn::Object res) {
-		auto addr = std::string(res["bech32"]);
+		auto addr = std::string(res["p2tr"]);
 		return bus.raise(Msg::ResponseNewaddr{
 			std::move(addr), requester
 		});

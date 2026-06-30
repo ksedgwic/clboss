@@ -1,5 +1,6 @@
 #include"Boss/Mod/ActiveProber.hpp"
 #include"Boss/Mod/AmountSettingsHandler.hpp"
+#include"Boss/Mod/AskreneVolatileLayer.hpp"
 #include"Boss/Mod/AutoDisconnector.hpp"
 #include"Boss/Mod/AvailableRpcCommandsAnnouncer.hpp"
 #include"Boss/Mod/BlockTracker.hpp"
@@ -60,12 +61,14 @@
 #include"Boss/Mod/PeerFromScidMapper.hpp"
 #include"Boss/Mod/PeerMetrician.hpp"
 #include"Boss/Mod/PeerStatistician.hpp"
+#include"Boss/Mod/RebalanceModeManager.hpp"
 #include"Boss/Mod/RebalanceUnmanager.hpp"
 #include"Boss/Mod/Reconnector.hpp"
 #include"Boss/Mod/RegularActiveProbe.hpp"
 #include"Boss/Mod/RpcWrapper.hpp"
 #include"Boss/Mod/SelfUptimeMonitor.hpp"
 #include"Boss/Mod/SendpayResultMonitor.hpp"
+#include"Boss/Mod/SetConfigHandler.hpp"
 #include"Boss/Mod/StatusCommand.hpp"
 #include"Boss/Mod/SwapManager.hpp"
 #include"Boss/Mod/SwapReporter.hpp"
@@ -119,6 +122,7 @@ std::shared_ptr<void> all( std::ostream& cout
 	/* Startup.  */
 	all->install<Manifester>(bus);
 	all->install<Initiator>(bus, threadpool, std::move(open_rpc_socket));
+	all->install<SetConfigHandler>(bus);
 
 	/* General settings.  */
 	all->install<AmountSettingsHandler>(bus);
@@ -205,6 +209,8 @@ std::shared_ptr<void> all( std::ostream& cout
 #endif /* ENABLE_COMPLAINER_BY_LOW_SUCCESS_PER_DAY */
 
 	/* Channel balancing.  */
+	all->install<RebalanceModeManager>(bus);
+	all->install<AskreneVolatileLayer>(bus);
 	all->install<FundsMover::Main>(bus);
 	all->install<MoveFundsCommand>(bus);
 	all->install<EarningsTracker>(bus);

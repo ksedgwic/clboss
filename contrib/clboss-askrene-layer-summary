@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+
+# clboss-askrene-layer-summary — breadth/depth census of an askrene layer.
+#
+# askrene-listlayers only dumps a layer's raw constraint list (tens of
+# thousands of entries on a busy node); it has no aggregate view.  This
+# rolls that dump up into the two numbers that actually describe a layer's
+# routing knowledge:
+#
+#   breadth  = how many distinct channel-directions the layer knows about
+#              (cardinality of short_channel_id_dir).
+#   depth    = how many constraint entries are stacked on each direction
+#              (min / avg / median / p90 / max across directions).
+#
+# Each constraint carries a maximum_msat (an upper bound learned from a
+# sendpay 204 — "this direction could NOT move that much") and/or a
+# minimum_msat (a lower bound from positive reinforcement — "this direction
+# DID move at least that much").  The max-bound breadth is the load-bearing
+# number: a doomed route is only short-circuited at getroutes time once the
+# dry direction on it carries a maximum_msat bound, so dirs_with_max climbing
+# is what predicts a 204-storm self-resolving into immediate rejections.
+#
+# Usage (runs lightning-cli itself, like the other contrib scripts):
+#   clboss-askrene-layer-summary [layer] [--top N] [network/dir options]
+#   clboss-askrene-layer-summary clboss --top 20
+#   clboss-askrene-layer-summary clboss --signet --lightning-dir=/path/to/dir
+#   clboss-askrene-layer-summary xpay --json
+#
+# Offline replay of a captured dump (no node access needed):
+#   clboss-askrene-layer-summary --input dump.json clboss
+#   lightning-cli askrene-listlayers clboss | clboss-askrene-layer-summary --input -
+#
+# --top resolves each direction's endpoints to "source -> destination" aliases
+# (via listchannels + the shared ~/.clboss alias cache) when run against a live
+# node; pass --no-alias to skip, and it is skipped automatically with --input.
+#
+# Works on any persistent layer (clboss, xpay, ...).  Default layer: clboss.
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+# Alias resolution.  Prefer the shared contrib module (clboss.alias_cache, as
+# the other scripts use); if this file was copied off on its own (e.g. to /tmp)
+# so that package isn't importable, fall back to an inline lookup against the
+# same ~/.clboss/alias_cache.json -- so a lone copy still resolves aliases.
+try:
+    from clboss.alias_cache import lookup_alias
+except Exception:
+    _ALIAS_CACHE_FILE = os.path.join(
+        os.path.expanduser("~"), ".clboss", "alias_cache.json"
+    )
+
+    def lookup_alias(run, lightning_dir, network_option, peer_id):
+        try:
+            with open(_ALIAS_CACHE_FILE) as f:
+                cache = json.load(f)
+        except Exception:
+            cache = {}
+        if peer_id in cache:
+            return cache[peer_id]
+        alias = peer_id
+        data = run(lightning_dir, network_option, "listnodes", peer_id)
+        for node in (data or {}).get("nodes", []):
+            alias = node.get("alias", peer_id)
+        cache[peer_id] = alias
+        try:
+            os.makedirs(os.path.dirname(_ALIAS_CACHE_FILE), exist_ok=True)
+            with open(_ALIAS_CACHE_FILE, "w") as f:
+                json.dump(cache, f)
+        except Exception:
+            pass
+        return alias
+
+
+def run_lightning_cli_command(lightning_dir, network_option, command, *args):
+    cmd = ["lightning-cli", network_option, command, *args]
+    if lightning_dir:
+        cmd = cmd[:2] + [f"--lightning-dir={lightning_dir}"] + cmd[2:]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return json.loads(result.stdout)
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return None
+
+
+def resolve_endpoints(run, lightning_dir, network_option, scid_dir, scid_cache):
+    """Map an askrene short_channel_id_dir 'SCID/D' to (source, destination)
+    node ids for BOLT direction D via listchannels.  None on miss (e.g. a
+    private/pruned channel not in our gossip)."""
+    scid, _, d = scid_dir.rpartition("/")
+    if not scid:
+        return None
+    try:
+        direction = int(d)
+    except ValueError:
+        return None
+    if scid not in scid_cache:
+        data = run(lightning_dir, network_option, "listchannels", scid)
+        scid_cache[scid] = (data or {}).get("channels", [])
+    for c in scid_cache[scid]:
+        if c.get("direction") == direction:
+            return c.get("source"), c.get("destination")
+    return None
+
+
+def node_label(run, lightning_dir, network_option, node_id):
+    """Alias if known, else an 8-char id prefix."""
+    if not node_id:
+        return "?"
+    alias = lookup_alias(run, lightning_dir, network_option, node_id)
+    if alias and alias != node_id:
+        return alias
+    return node_id[:8] + "..."
+
+
+def percentile(sorted_vals, q):
+    """Nearest-rank percentile (q in [0,1]); sorted_vals must be sorted."""
+    if not sorted_vals:
+        return 0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    idx = int(round(q * (len(sorted_vals) - 1)))
+    return sorted_vals[idx]
+
+
+def load_layers(args, network_option):
+    if args.input is not None:
+        try:
+            if args.input == "-":
+                raw = sys.stdin.read()
+            else:
+                with open(args.input) as f:
+                    raw = f.read()
+            return json.loads(raw).get("layers", [])
+        except (OSError, json.JSONDecodeError) as e:
+            sys.exit(f"failed to load --input data: {e}")
+    res = run_lightning_cli_command(
+        args.lightning_dir, network_option, "askrene-listlayers", args.layer
+    )
+    if res is None:
+        sys.exit("askrene-listlayers failed -- is the node reachable, and are "
+                 "--network / --lightning-dir correct?")
+    return res.get("layers", [])
+
+
+def summarize(layer):
+    constraints = layer.get("constraints", [])
+
+    # Group entries by channel-direction; tally bound kinds.
+    depth = {}
+    dirs_with_max = set()
+    dirs_with_min = set()
+    max_entries = 0
+    min_entries = 0
+    for c in constraints:
+        d = c.get("short_channel_id_dir")
+        depth[d] = depth.get(d, 0) + 1
+        if c.get("maximum_msat") is not None:
+            dirs_with_max.add(d)
+            max_entries += 1
+        if c.get("minimum_msat") is not None:
+            dirs_with_min.add(d)
+            min_entries += 1
+
+    depths = sorted(depth.values())
+    ndir = len(depths)
+    return {
+        "layer": layer.get("layer", "?"),
+        "raw_constraints": len(constraints),
+        "chan_dirs": ndir,
+        "dirs_with_max": len(dirs_with_max),
+        "dirs_with_min": len(dirs_with_min),
+        "max_entries": max_entries,
+        "min_entries": min_entries,
+        "depth_min": depths[0] if depths else 0,
+        "depth_avg": round(sum(depths) / ndir, 2) if ndir else 0,
+        "depth_median": percentile(depths, 0.5),
+        "depth_p90": percentile(depths, 0.9),
+        "depth_max": depths[-1] if depths else 0,
+        "disabled_nodes": len(layer.get("disabled_nodes", [])),
+        "created_channels": len(layer.get("created_channels", [])),
+        "channel_updates": len(layer.get("channel_updates", [])),
+        "_depth": depth,
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Breadth/depth census of an askrene layer."
+    )
+    ap.add_argument("layer", nargs="?", default="clboss",
+                    help="layer name (default: clboss)")
+    ap.add_argument("--top", type=int, default=0, metavar="N",
+                    help="also list the N deepest channel-directions")
+    ap.add_argument("--no-alias", action="store_true",
+                    help="skip resolving node aliases for the --top list "
+                         "(faster; automatic with --input)")
+    ap.add_argument("--json", action="store_true",
+                    help="emit the summary as JSON")
+    ap.add_argument("--input", metavar="FILE",
+                    help="read askrene-listlayers JSON from FILE ('-' = stdin) "
+                         "instead of calling lightning-cli")
+    # Network / data-dir selection — same convention as the other contrib
+    # scripts (clboss-earnings-history, ...).
+    ap.add_argument("--mainnet", action="store_true", help="Run on mainnet")
+    ap.add_argument("--testnet", action="store_true", help="Run on testnet")
+    ap.add_argument("--signet", action="store_true", help="Run on signet")
+    ap.add_argument("--regtest", action="store_true", help="Run on regtest")
+    ap.add_argument("--network", help="Set the network explicitly")
+    ap.add_argument("--lightning-dir", help="lightning data location")
+    args = ap.parse_args()
+
+    # Reconcile network option (lightning-cli wants "bitcoin" for mainnet).
+    if args.network:
+        network_option = f"--network={args.network}"
+    elif args.testnet:
+        network_option = "--network=testnet"
+    elif args.signet:
+        network_option = "--network=signet"
+    elif args.regtest:
+        network_option = "--network=regtest"
+    else:
+        network_option = "--network=bitcoin"
+
+    if args.lightning_dir:
+        assert os.path.isdir(args.lightning_dir), \
+            f'"{args.lightning_dir}" is not a valid directory'
+
+    layers = load_layers(args, network_option)
+    target = next((l for l in layers if l.get("layer") == args.layer), None)
+    if target is None:
+        if len(layers) == 1:
+            # A piped/offline dump of a single layer: use it, but say so —
+            # never silently answer about a different layer than was asked.
+            target = layers[0]
+            print(f"note: layer {args.layer!r} not found; "
+                  f"using the only layer present: {target.get('layer')!r}",
+                  file=sys.stderr)
+        else:
+            names = ", ".join(l.get("layer", "?") for l in layers) or "(none)"
+            sys.exit(f"layer {args.layer!r} not found; present: {names}")
+
+    s = summarize(target)
+    depth = s.pop("_depth")
+
+    if args.json and args.top > 0:
+        sys.exit("--json cannot be combined with --top "
+                 "(the top list is human-readable only)")
+
+    if args.json:
+        print(json.dumps(s, indent=2))
+    else:
+        print(f"layer            {s['layer']}")
+        print(f"raw constraints  {s['raw_constraints']}")
+        print(f"chan-dirs        {s['chan_dirs']}    (breadth)")
+        print(f"  with max-bound {s['dirs_with_max']}    "
+              f"({s['max_entries']} entries; 204-learned upper bounds)")
+        print(f"  with min-bound {s['dirs_with_min']}    "
+              f"({s['min_entries']} entries; reinforcement lower bounds)")
+        print(f"depth per dir    min={s['depth_min']} median={s['depth_median']} "
+              f"avg={s['depth_avg']} p90={s['depth_p90']} max={s['depth_max']}")
+        print(f"disabled nodes   {s['disabled_nodes']}")
+        if s["created_channels"] or s["channel_updates"]:
+            print(f"created chans     {s['created_channels']}   "
+                  f"chan updates {s['channel_updates']}")
+
+    if args.top > 0:
+        # Alias the endpoints (source -> destination for the dir) when we have
+        # a live node and the shared alias cache; skip offline or on request.
+        do_alias = (not args.no_alias) and args.input is None
+        scid_cache = {}
+        print(f"\ntop {args.top} deepest channel-directions:")
+        for d, n in sorted(depth.items(), key=lambda kv: -kv[1])[:args.top]:
+            tail = ""
+            if do_alias:
+                ep = resolve_endpoints(run_lightning_cli_command,
+                                       args.lightning_dir, network_option,
+                                       d, scid_cache)
+                if ep:
+                    src = node_label(run_lightning_cli_command,
+                                     args.lightning_dir, network_option, ep[0])
+                    dst = node_label(run_lightning_cli_command,
+                                     args.lightning_dir, network_option, ep[1])
+                    tail = f"  {src} -> {dst}"
+            if tail:
+                print(f"  {n:6d}  {d:18s}{tail}")
+            else:
+                print(f"  {n:6d}  {d}")
+
+
+if __name__ == "__main__":
+    main()

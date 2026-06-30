@@ -69,6 +69,10 @@ libclboss_la_SOURCES = \
 	Boss/Mod/ActiveProber.hpp \
 	Boss/Mod/AmountSettingsHandler.cpp \
 	Boss/Mod/AmountSettingsHandler.hpp \
+	Boss/Mod/AskreneLayer.cpp \
+	Boss/Mod/AskreneLayer.hpp \
+	Boss/Mod/AskreneVolatileLayer.cpp \
+	Boss/Mod/AskreneVolatileLayer.hpp \
 	Boss/Mod/AutoDisconnector.cpp \
 	Boss/Mod/AutoDisconnector.hpp \
 	Boss/Mod/AvailableRpcCommandsAnnouncer.cpp \
@@ -250,12 +254,16 @@ libclboss_la_SOURCES = \
 	Boss/Mod/Rpc.hpp \
 	Boss/Mod/RpcWrapper.cpp \
 	Boss/Mod/RpcWrapper.hpp \
+	Boss/Mod/RebalanceModeManager.cpp \
+	Boss/Mod/RebalanceModeManager.hpp \
 	Boss/Mod/RebalanceUnmanager.cpp \
 	Boss/Mod/RebalanceUnmanager.hpp \
 	Boss/Mod/SelfUptimeMonitor.cpp \
 	Boss/Mod/SelfUptimeMonitor.hpp \
 	Boss/Mod/SendpayResultMonitor.cpp \
 	Boss/Mod/SendpayResultMonitor.hpp \
+	Boss/Mod/SetConfigHandler.cpp \
+	Boss/Mod/SetConfigHandler.hpp \
 	Boss/Mod/StatusCommand.cpp \
 	Boss/Mod/StatusCommand.hpp \
 	Boss/Mod/SwapManager.cpp \
@@ -277,6 +285,7 @@ libclboss_la_SOURCES = \
 	Boss/ModG/ReqResp.hpp \
 	Boss/ModG/RpcProxy.cpp \
 	Boss/ModG/RpcProxy.hpp \
+	Boss/ModG/RebalanceModeProxy.hpp \
 	Boss/ModG/RebalanceUnmanagerProxy.hpp \
 	Boss/ModG/Swapper.cpp \
 	Boss/ModG/Swapper.hpp \
@@ -350,6 +359,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/RequestPeerFromScid.hpp \
 	Boss/Msg/RequestPeerMetrics.hpp \
 	Boss/Msg/RequestPeerStatistics.hpp \
+	Boss/Msg/RequestRebalanceMode.hpp \
 	Boss/Msg/RequestRebalanceUnmanaged.hpp \
 	Boss/Msg/RequestRpcCommand.hpp \
 	Boss/Msg/RequestSelfUptime.hpp \
@@ -363,6 +373,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/ResponsePeerFromScid.hpp \
 	Boss/Msg/ResponsePeerMetrics.hpp \
 	Boss/Msg/ResponsePeerStatistics.hpp \
+	Boss/Msg/ResponseRebalanceMode.hpp \
 	Boss/Msg/ResponseRebalanceUnmanaged.hpp \
 	Boss/Msg/ResponseRpcCommand.hpp \
 	Boss/Msg/ResponseSelfUptime.hpp \
@@ -388,6 +399,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/TimerRandomDaily.hpp \
 	Boss/Msg/TimerRandomHourly.hpp \
 	Boss/Msg/TimerTwiceDaily.hpp \
+	Boss/RebalanceMode.hpp \
 	Boss/Shutdown.hpp \
 	Boss/Signer.cpp \
 	Boss/Signer.hpp \
@@ -598,7 +610,9 @@ TESTS = \
 	tests/boltz/test_match_lockscript \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
 	tests/boss/channelcandidateinvestigator/test_secretary \
+	tests/boss/test_askrene_layer \
 	tests/boss/test_availablerpccommandsannouncer \
+	tests/boss/test_channel_create_destroy_monitor_missing_old_state \
 	tests/boss/test_channelcreationdecider \
 	tests/boss/test_channelcreator_planner \
 	tests/boss/test_channelcreator_rearrangerbysize \
