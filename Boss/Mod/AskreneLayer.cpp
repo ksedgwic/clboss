@@ -11,6 +11,7 @@
 
 namespace Boss { namespace Mod { namespace AskreneLayer {
 
+std::string const clboss_volatile_layer_name = "clboss-volatile";
 std::string const clboss_layer_name = "clboss";
 
 namespace {

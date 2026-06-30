@@ -545,6 +545,7 @@ private:
 			 * to cover that plus its real fee.
 			 */
 			la.entry(Boss::Mod::AskreneLayer::clboss_layer_name);
+			la.entry(Boss::Mod::AskreneLayer::clboss_volatile_layer_name);
 			la.end_array();
 			obj.field("maxfee_msat", route_maxfee.to_msat());
 			obj.field("final_cltv", cltv_delta + 14);
@@ -1339,22 +1340,24 @@ private:
 					     ;
 				/* 0x2000 == NODE level error.  */
 				if ((fail & 0x2000)) {
-					/* Persistent disable_node is correct
-					 * for NODE-level failures and is also
-					 * consulted by this Attempter's own
-					 * subsequent getroutes calls (the
-					 * clboss layer is in the layers
-					 * array), so no separate transient
-					 * write is needed for this case.
+					/* disable_node goes to the shared
+					 * clboss-volatile layer: it is a block
+					 * (askrene-age never removes it), so it
+					 * lives in the wiped layer where it can
+					 * heal rather than accumulating forever.
+					 * That layer is also in this Attempter's
+					 * own getroutes layers array, so the
+					 * disable steers subsequent routes with
+					 * no separate transient write needed.
 					 */
 					feedback = Boss::Mod::AskreneLayer::disable_node(
 						rpc,
-						Boss::Mod::AskreneLayer::clboss_layer_name,
+						Boss::Mod::AskreneLayer::clboss_volatile_layer_name,
 						enode
 					)
 					+ Boss::log( bus, Debug
 						   , "FundsMover[%s]: feedback: "
-						     "disable_node %s on clboss"
+						     "disable_node %s on clboss-volatile"
 						   , attempt_tag().c_str()
 						   , std::string(enode).c_str()
 						   );
@@ -1560,16 +1563,20 @@ private:
 								 * channel_update.  Cache it
 								 * for apply_policy_overrides
 								 * on the next retry, and
-								 * mirror to the clboss
-								 * layer (for other CLBOSS
-								 * subsystems that consult
-								 * the layer).
+								 * mirror to the shared
+								 * clboss-volatile layer: a
+								 * policy override is a block
+								 * (askrene-age never removes
+								 * it), so it lives in the
+								 * wiped layer where it can
+								 * heal, and is consulted by
+								 * both modes' getroutes.
 								 */
 								policy_overrides[key] = cu;
 								feedback = std::move(feedback)
 									 + Boss::Mod::AskreneLayer::update_channel(
 										rpc,
-										Boss::Mod::AskreneLayer::clboss_layer_name,
+										Boss::Mod::AskreneLayer::clboss_volatile_layer_name,
 										echan,
 										std::uint32_t(edir),
 										cu.enabled,
@@ -1581,7 +1588,7 @@ private:
 									)
 									+ Boss::log( bus, Debug
 										   , "FundsMover[%s]: "
-										     "feedback: clboss "
+										     "feedback: volatile "
 										     "update_channel %s/%d "
 										     "enabled=%d "
 										     "base=%umsat prop=%uppm "

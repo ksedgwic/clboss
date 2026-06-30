@@ -12,6 +12,24 @@ namespace Boss { namespace Mod { class Rpc; } }
 
 namespace Boss { namespace Mod { namespace AskreneLayer {
 
+/* Name of the shared, non-persistent askrene layer that holds the
+ * "blocks" both rebalancers learn -- node disables (NODE-level
+ * failures) and channel_update policy overrides.  These are not
+ * timestamped and askrene-age never removes them, so unlike the
+ * inform-channel constraints they cannot heal by aging.  Instead this
+ * layer is wiped wholesale on a timer (see Boss::Mod::AskreneVolatileLayer)
+ * and re-accumulates from fresh failures, so a recovered node/channel
+ * becomes routable again within one wipe interval.
+ *
+ * Shared by both modes because a down node / a forwarder's policy is a
+ * mode-independent fact; both classic and xrebalance getroutes include
+ * this layer alongside their per-mode constraint layer.  Deliberately
+ * carries NO self_id entry -- the classic self-exclude lives in
+ * clboss_layer_name (xrebalance must never disable self for its circular
+ * routing).
+ */
+extern std::string const clboss_volatile_layer_name;
+
 /* Name of the persistent askrene layer that CLBOSS subsystems
  * write failure-feedback and (optionally) success-observations
  * into.  Following the xpay convention -- the layer is named
