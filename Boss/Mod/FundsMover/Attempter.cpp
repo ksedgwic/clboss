@@ -2,6 +2,8 @@
 #include"Boss/Mod/FundsMover/Attempter.hpp"
 #include"Boss/Mod/FundsMover/create_label.hpp"
 #include"Boss/Mod/Rpc.hpp"
+#include"Boss/Msg/AskreneChannelUpdate.hpp"
+#include"Boss/Msg/AskreneNodeDisableUpdate.hpp"
 #include"Boss/log.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/now.hpp"
@@ -12,6 +14,7 @@
 #include"Ln/NodeId.hpp"
 #include"Ln/Preimage.hpp"
 #include"Ln/Scid.hpp"
+#include"S/Bus.hpp"
 #include"Sha256/Hash.hpp"
 #include"Util/Str.hpp"
 #include"Util/stringify.hpp"
@@ -191,6 +194,19 @@ bool parse_chan_update( std::string const& raw_message_hex
 	out.fee_proportional_millionths = std::uint32_t(read_be(cu, 124, 4));
 	out.htlc_maximum_msat           = read_be(cu, 128, 8);
 
+	/* Reject absurd signed policies rather than propagating them.
+	 * A proportional fee above 100% is never a policy we would
+	 * pay, and bounding it here keeps the ceil(amt * prop / 1e6)
+	 * multiply in apply_policy_overrides() within uint64 (that
+	 * code assumes prop <= 1e6; a forwarder-signed 0xFFFFFFFF
+	 * would wrap the product for amounts >= ~4.3M sat).  Failing
+	 * the parse routes the failure into the max_msat=0
+	 * hard-exclusion fallback -- the right response to a
+	 * forwarder signing garbage.
+	 */
+	if (out.fee_proportional_millionths > 1000000)
+		return false;
+
 	/* Scan the trailing TLV stream for bLIP-18 inbound fees
 	 * (type 55555): value is [i32 base][i32 prop], both signed. */
 	out.has_inbound_fee                     = false;
@@ -268,7 +284,20 @@ private:
 	/* Details of the first channel from us to source.  */
 	Ln::Scid first_scid;
 
+	/* Private, uuid-named askrene layer (created/removed by the Runner)
+	 * this attempt names in its getroutes `layers` array and writes its
+	 * learned node-disable / channel-update overrides into.  Empty when
+	 * askrene is unavailable, in which case it is simply not named or
+	 * written.  */
+	std::string updates_layer;
+
 	bool ok;
+
+	/* Count of getroute() re-entries from the sendpay-failure
+	 * handler; bounds the retry chain (see max_retries at the
+	 * handler's tail).
+	 */
+	std::size_t retries;
 
 	Ln::Amount dest_amount;
 	Ln::Amount source_amount;
@@ -360,6 +389,7 @@ public:
 	    , Ln::Amount orig_budget_
 	    , Ln::Amount orig_amount_
 	    , std::uint64_t min_prob_ppm_
+	    , std::string updates_layer_
 	    ) : bus(bus_)
 	      , rpc(rpc_)
 	      , self_id(std::move(self_id_))
@@ -378,7 +408,9 @@ public:
 	      , proportional_fee(proportional_fee_)
 	      , cltv_delta(cltv_delta_)
 	      , first_scid(first_scid_)
+	      , updates_layer(std::move(updates_layer_))
 	      , ok(false)
+	      , retries(0)
 	      , attempt_uuid(std::string(Uuid::random()).substr(0, 8))
 	      { }
 	Ev::Io<bool> run() {
@@ -493,9 +525,29 @@ private:
 			assert(amount <= *remaining_amount);
 			auto prorata = amount / *remaining_amount;
 			auto prorated_fee_budget = *fee_budget * prorata;
+			/* Quote askrene the same effective cap the
+			 * post-route budget check enforces:
+			 * min(prorated, absolute).  Quoting the prorated
+			 * budget alone lets askrene return routes in the
+			 * (absolute, prorated] fee band whenever sibling
+			 * reservations have inflated the prorata (the
+			 * 2026-05-28 pattern the absolute cap exists for)
+			 * -- routes compute_source_amount() then
+			 * unconditionally rejects, failing the attempt
+			 * although routes within the absolute cap existed.
+			 * Askrene optimizes probability under maxfee, not
+			 * minimum fee, so it must be handed the real
+			 * constraint to search within it.
+			 */
+			auto absolute_fee_cap = orig_budget
+					      * (amount / orig_amount);
+			auto effective_cap =
+				prorated_fee_budget < absolute_fee_cap
+					? prorated_fee_budget
+					: absolute_fee_cap;
 			auto dest_hop_fee = dest_amount - amount;
-			auto route_maxfee = prorated_fee_budget > dest_hop_fee
-					  ? prorated_fee_budget - dest_hop_fee
+			auto route_maxfee = effective_cap > dest_hop_fee
+					  ? effective_cap - dest_hop_fee
 					  : Ln::Amount::sat(0);
 
 			auto pj = Json::Out();
@@ -545,6 +597,12 @@ private:
 			 * to cover that plus its real fee.
 			 */
 			la.entry(Boss::Mod::AskreneLayer::clboss_layer_name);
+			/* This attempt's private updates layer (node disables
+			 * + channel-update overrides, seeded from AskreneUpdates
+			 * and appended to during retries).  Omitted when askrene
+			 * is unavailable (empty name).  */
+			if (!updates_layer.empty())
+				la.entry(updates_layer);
 			la.end_array();
 			obj.field("maxfee_msat", route_maxfee.to_msat());
 			obj.field("final_cltv", cltv_delta + 14);
@@ -763,12 +821,14 @@ private:
 	 *       ceiling rounding on the proportional fee.
 	 *
 	 *   (b) For each hop with no override, keep askrene's
-	 *       path values for delay but add 1 msat to the
-	 *       upstream amount to absorb the floor-vs-ceiling
+	 *       path values raised by the increases accumulated
+	 *       from overrides further downstream (so upstream
+	 *       forwarders keep their fee/delta margins), plus
+	 *       1 msat per hop to absorb the floor-vs-ceiling
 	 *       rounding mismatch between askrene (floor) and
-	 *       forwarders (ceiling) on prop-fee channels.  This
-	 *       cumulates to (route.size()-1) msat over the path,
-	 *       small relative to our minimum_split_size.
+	 *       forwarders (ceiling) on prop-fee channels.  The
+	 *       cushion cumulates to (route.size()-1) msat over
+	 *       the path, small relative to our minimum_split_size.
 	 *
 	 * Why this exists: empirically (production, 2026-05-27)
 	 * askrene-getroutes does NOT honour our layer
@@ -802,40 +862,73 @@ private:
 		 * (the hop forwards INTO that channel), so the policy
 		 * lookup keys on route[i].scid/route[i].direction.
 		 */
+		/* Downstream-accumulated increases over askrene's original
+		 * path values.  An override at hop i raises route[i-1]'s
+		 * amount/delay above what askrene computed; every hop
+		 * further upstream must rise by the same amount, or the
+		 * forwarder at the first non-override hop upstream sees
+		 * its fee/delta margin shrunk by exactly the increase and
+		 * fails the sendpay (converging only at one failed network
+		 * attempt per hop).  The no-override branch therefore adds
+		 * the accumulated extras on top of askrene's values, plus
+		 * the 1 msat rounding cushion, which itself accumulates so
+		 * every boundary (not just the last) nets +1 msat of
+		 * margin against floor-vs-ceiling prop-fee rounding.
+		 */
+		auto extra_amt   = Ln::Amount::msat(0);
+		auto extra_delay = std::uint32_t(0);
 		for (auto i = route.size(); i-- > 1; ) {
 			auto key = std::string(route[i].scid) + "/"
 				 + std::to_string(route[i].direction);
 			auto it = policy_overrides.find(key);
 			if (it == policy_overrides.end()) {
-				/* No override: keep askrene's amount and
-				 * delay for this hop's upstream side, but
-				 * bump amount by 1 msat to cover the
-				 * floor-vs-ceiling rounding gap.  Forwarders
-				 * accept overpayment.
+				/* No override: askrene's values for this
+				 * hop's upstream side, raised by the
+				 * downstream-accumulated extras and the
+				 * rounding cushion.  Forwarders accept
+				 * overpayment.
 				 */
+				extra_amt = extra_amt + Ln::Amount::msat(1);
 				route[i - 1].amount_msat = route[i - 1].amount_msat
-							 + Ln::Amount::msat(1);
+							 + extra_amt;
+				route[i - 1].delay = route[i - 1].delay
+						   + extra_delay;
 				continue;
 			}
 			auto const& cu = it->second;
 			auto amt_msat = route[i].amount_msat.to_msat();
 			/* ceil(amt * prop / 1e6) in integer math.
-			 * Overflow is not a concern at our amounts: the
+			 * Overflow is not a concern at our amounts:
+			 * parse_chan_update() rejects prop > 1e6, and the
 			 * largest amount we route is bounded by
-			 * msg.amount and prop is bounded by 1e6, so the
-			 * product is at most ~1e7 * 1e6 = 1e13, far
-			 * below uint64 max.
+			 * msg.amount, so the product is far below
+			 * uint64 max.
 			 */
 			auto prop_fee_msat =
 				( amt_msat * std::uint64_t(cu.fee_proportional_millionths)
 				+ std::uint64_t(999999)
 				) / std::uint64_t(1000000);
+			auto orig_amt   = route[i - 1].amount_msat;
+			auto orig_delay = route[i - 1].delay;
 			route[i - 1].amount_msat =
 				  route[i].amount_msat
 				+ Ln::Amount::msat(cu.fee_base_msat)
 				+ Ln::Amount::msat(prop_fee_msat);
 			route[i - 1].delay = route[i].delay
 					   + std::uint32_t(cu.cltv_expiry_delta);
+			/* Refresh the accumulated extras from this hop's
+			 * recomputed values.  A policy that got cheaper
+			 * can push them negative; clamp at zero --
+			 * upstream hops then keep askrene's originals,
+			 * which overpays the boundary slightly and is
+			 * safe.
+			 */
+			extra_amt = route[i - 1].amount_msat > orig_amt
+				  ? route[i - 1].amount_msat - orig_amt
+				  : Ln::Amount::msat(0);
+			extra_delay = route[i - 1].delay > orig_delay
+				    ? route[i - 1].delay - orig_delay
+				    : 0;
 			++applied;
 		}
 		return applied;
@@ -905,6 +998,33 @@ private:
 							.c_str()
 						);
 
+			/* Prefer a forwarder-signed channel_update learned
+			 * from an erring_index=1 failure in this attempt's
+			 * retry chain over listchannels gossip.
+			 * apply_policy_overrides() walks route[i] for
+			 * i >= 1 only, so route[0]'s key is never consulted
+			 * there.  Without this lookup the retry rebuilds
+			 * the source hop from the same stale gossip,
+			 * underpays identically, receives the identical
+			 * channel_update, and the repeat-update branch then
+			 * hard-excludes a healthy channel for the whole
+			 * aging window.
+			 */
+			{
+				auto key = std::string(route[0].scid) + "/"
+					 + std::to_string(route[0].direction);
+				auto it = policy_overrides.find(key);
+				if (it != policy_overrides.end()) {
+					src_base_fee = Ln::Amount::msat(
+						it->second.fee_base_msat
+					);
+					src_prop_fee =
+						it->second.fee_proportional_millionths;
+					src_cltv_delta = std::uint32_t(
+						it->second.cltv_expiry_delta
+					);
+				}
+			}
 			source_amount = route[0].amount_msat + src_base_fee
 				      + (route[0].amount_msat
 					 * ( double(src_prop_fee)
@@ -1339,25 +1459,29 @@ private:
 					     ;
 				/* 0x2000 == NODE level error.  */
 				if ((fail & 0x2000)) {
-					/* Persistent disable_node is correct
-					 * for NODE-level failures and is also
-					 * consulted by this Attempter's own
-					 * subsequent getroutes calls (the
-					 * clboss layer is in the layers
-					 * array), so no separate transient
-					 * write is needed for this case.
+					/* Persist the node-disable via
+					 * AskreneUpdates (which ages and
+					 * re-projects it across attempts), and
+					 * -- if this attempt has a private layer
+					 * -- write it there too so this attempt's
+					 * own retries route around the dead node.
 					 */
-					feedback = Boss::Mod::AskreneLayer::disable_node(
-						rpc,
-						Boss::Mod::AskreneLayer::clboss_layer_name,
-						enode
-					)
-					+ Boss::log( bus, Debug
-						   , "FundsMover[%s]: feedback: "
-						     "disable_node %s on clboss"
-						   , attempt_tag().c_str()
-						   , std::string(enode).c_str()
-						   );
+					feedback =
+						bus.raise(Msg::AskreneNodeDisableUpdate{
+							enode
+						})
+						+ ( updates_layer.empty()
+						  ? Ev::lift()
+						  : Boss::Mod::AskreneLayer::disable_node(
+							rpc, updates_layer, enode
+						    )
+						  )
+						+ Boss::log( bus, Debug
+							   , "FundsMover[%s]: feedback: "
+							     "disable_node %s"
+							   , attempt_tag().c_str()
+							   , std::string(enode).c_str()
+							   );
 				} else {
 					/* Non-NODE 204 failure feedback policy.
 					 *
@@ -1559,29 +1683,45 @@ private:
 								/* New or changed
 								 * channel_update.  Cache it
 								 * for apply_policy_overrides
-								 * on the next retry, and
-								 * mirror to the clboss
-								 * layer (for other CLBOSS
-								 * subsystems that consult
-								 * the layer).
+								 * on the next retry; persist it
+								 * via AskreneUpdates (aged and
+								 * re-projected across attempts);
+								 * and -- if this attempt has a
+								 * private layer -- apply it there
+								 * too so this attempt's retries
+								 * use the fresher policy.
 								 */
 								policy_overrides[key] = cu;
+								auto cu_msg = Msg::AskreneChannelUpdate{
+									echan,
+									std::uint32_t(edir),
+									cu.enabled,
+									Ln::Amount::msat(cu.htlc_minimum_msat),
+									Ln::Amount::msat(cu.htlc_maximum_msat),
+									Ln::Amount::msat(cu.fee_base_msat),
+									cu.fee_proportional_millionths,
+									cu.cltv_expiry_delta
+								};
 								feedback = std::move(feedback)
-									 + Boss::Mod::AskreneLayer::update_channel(
+									 + bus.raise(Msg::AskreneChannelUpdate{ cu_msg })
+									 + ( updates_layer.empty()
+									   ? Ev::lift()
+									   : Boss::Mod::AskreneLayer::update_channel(
 										rpc,
-										Boss::Mod::AskreneLayer::clboss_layer_name,
-										echan,
-										std::uint32_t(edir),
-										cu.enabled,
-										Ln::Amount::msat(cu.htlc_minimum_msat),
-										Ln::Amount::msat(cu.htlc_maximum_msat),
-										Ln::Amount::msat(cu.fee_base_msat),
-										cu.fee_proportional_millionths,
-										cu.cltv_expiry_delta
-									)
+										updates_layer,
+										cu_msg.scid,
+										cu_msg.direction,
+										cu_msg.enabled,
+										cu_msg.htlc_minimum_msat,
+										cu_msg.htlc_maximum_msat,
+										cu_msg.fee_base_msat,
+										cu_msg.fee_proportional_millionths,
+										cu_msg.cltv_expiry_delta
+									     )
+									   )
 									+ Boss::log( bus, Debug
 										   , "FundsMover[%s]: "
-										     "feedback: clboss "
+										     "feedback: "
 										     "update_channel %s/%d "
 										     "enabled=%d "
 										     "base=%umsat prop=%uppm "
@@ -1682,6 +1822,35 @@ private:
 						);
 			}
 
+			/* Bound the retry chain.  askrene is deterministic
+			 * (no randomization in its MCF), so a retry only
+			 * helps if some layer or override changed -- and
+			 * several failure classes above deliberately write
+			 * nothing this attempt's getroutes consults: 202
+			 * writes no feedback at all, NODE disables land
+			 * only in the AskreneUpdates store when
+			 * updates_layer is empty, and a forwarder
+			 * alternating two signed policies never triggers
+			 * the repeat-update exclusion.  The legacy code
+			 * guaranteed termination by growing its excludes
+			 * vector on every 202/204; without an equivalent
+			 * invariant, cap the chain.  Sized above
+			 * max_safe_hops so the one-hop-per-retry
+			 * convergence of policy overrides can complete on
+			 * the longest route we would send.
+			 */
+			auto constexpr max_retries = std::size_t(24);
+			++retries;
+			if (retries >= max_retries)
+				return std::move(act)
+				     + std::move(feedback)
+				     + Boss::log( bus, Info
+						, "FundsMover[%s]: %zu "
+						  "retries without success; "
+						  "giving up."
+						, attempt_tag().c_str()
+						, retries
+						);
 			return std::move(act)
 			     + std::move(feedback)
 			     + getroute();
@@ -1815,6 +1984,7 @@ Attempter::run( S::Bus& bus
 	      , Ln::Amount orig_budget
 	      , Ln::Amount orig_amount
 	      , std::uint64_t min_prob_ppm
+	      , std::string updates_layer
 	      ) {
 	auto impl = std::make_shared<Impl>( bus
 					  , rpc
@@ -1834,6 +2004,7 @@ Attempter::run( S::Bus& bus
 					  , orig_budget
 					  , orig_amount
 					  , min_prob_ppm
+					  , std::move(updates_layer)
 					  );
 	return impl->run();
 }

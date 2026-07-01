@@ -5,13 +5,16 @@
 #include"Boss/Mod/FundsMover/create_label.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/ModG/RebalanceUnmanagerProxy.hpp"
+#include"Boss/ModG/ReqResp.hpp"
 #include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/ManifestOption.hpp"
 #include"Boss/Msg/Manifestation.hpp"
 #include"Boss/Msg/Option.hpp"
 #include"Boss/Msg/OptionType.hpp"
 #include"Boss/Msg/ProvideDeletablePaymentLabelFilter.hpp"
+#include"Boss/Msg/RequestAskreneUpdates.hpp"
 #include"Boss/Msg/RequestMoveFunds.hpp"
+#include"Boss/Msg/ResponseAskreneUpdates.hpp"
 #include"Boss/Msg/ResponseMoveFunds.hpp"
 #include"Boss/Msg/SolicitDeletablePaymentLabelFilter.hpp"
 #include"Boss/Msg/TimerRandomHourly.hpp"
@@ -48,8 +51,28 @@ private:
 	 * it.
 	 */
 	bool layer_ready;
+	/* True only once create_clboss_layer() has actually succeeded.
+	 * layer_ready alone also goes true on the degraded (RpcError)
+	 * path so wait_for_ready() cannot livelock; this flag drives
+	 * the per-move retry in ensure_clboss_layer(), because the
+	 * Attempter names the clboss layer in every getroutes
+	 * unconditionally and a permanently-absent layer would fail
+	 * them all.
+	 */
+	bool layer_created;
+	/* Downgrades repeat create-layer failures to Debug so a CLN
+	 * without askrene does not log an Error per move request.
+	 */
+	bool layer_error_logged;
 
 	Boss::ModG::RebalanceUnmanagerProxy unmanager;
+	/* Shared request/response to Boss::Mod::AskreneUpdates for the
+	 * still-fresh learned updates each attempt projects into its own
+	 * private askrene layer.  Held here (module lifetime) and passed by
+	 * reference into each Runner/Attempter, which are short-lived.  */
+	Boss::ModG::ReqResp< Msg::RequestAskreneUpdates
+			   , Msg::ResponseAskreneUpdates
+			   > updates_rr;
 
 	/* Cutoff (seconds) for askrene-age on the clboss layer.  Dynamic
 	 * via clboss-classic-layer-age-secs; default 43200 (12h).  See
@@ -90,8 +113,8 @@ private:
 				Json::Out::direct(aging_window_secs),
 				"Cutoff (seconds) for periodic askrene-age on "
 				"the persistent clboss layer (the classic "
-				"rebalancer's failure/transit feedback plus "
-				"ActiveProber's probe results).  Entries older "
+				"rebalancer's failure/transit feedback).  "
+				"Entries older "
 				"than this are trimmed once per "
 				"TimerRandomHourly tick -- the pass cadence is "
 				"fixed, so this sets only the expiration age "
@@ -290,6 +313,8 @@ private:
 			     >([this](Msg::RequestMoveFunds const& m) {
 			auto msg = std::make_shared<Msg::RequestMoveFunds>(m);
 			return wait_for_ready().then([this]() {
+				return ensure_clboss_layer();
+			}).then([this]() {
 				return unmanager.get_unmanaged();
 			}).then([this, msg](std::set<Ln::NodeId> const* unmanaged) {
 				auto un_s = (unmanaged->count(msg->source) != 0);
@@ -368,6 +393,7 @@ private:
 							    , claimer
 							    , *msg
 							    , min_prob_ppm
+							    , updates_rr
 							    );
 				return Runner::start(runner);
 			});
@@ -505,12 +531,14 @@ private:
 	}
 
 	/* Ensure the persistent "clboss" askrene layer exists.  Called
-	 * once at startup, fire-and-forget.  Idempotent: when persistent
-	 * is true, askrene-create-layer succeeds even if the layer
-	 * already exists.  Failures (e.g. CLN < v24.11 where the RPC
-	 * does not exist) are logged but non-fatal -- subsequent
-	 * getroutes calls will simply not benefit from the
-	 * failure-learning layer.
+	 * at startup (fire-and-forget) and retried per move request by
+	 * ensure_clboss_layer() until a create succeeds.  Idempotent:
+	 * when persistent is true, askrene-create-layer succeeds even
+	 * if the layer already exists.  Failures (e.g. CLN < v24.11
+	 * where the RPC does not exist) are logged but non-fatal --
+	 * getroutes calls then fail naming the absent layer until a
+	 * later create succeeds (on CLN without askrene, getroutes
+	 * itself is equally absent, so nothing additional is lost).
 	 */
 	Ev::Io<void> create_clboss_layer() {
 		return Ev::lift().then([this]() {
@@ -582,6 +610,7 @@ private:
 				   );
 		}).then([this]() {
 			layer_ready = true;
+			layer_created = true;
 			return Ev::lift();
 		}).catching<RpcError>([this](RpcError const& e) {
 			/* Mark ready even on failure: degraded mode (no
@@ -590,12 +619,32 @@ private:
 			 * wait_for_ready() on CLN < v24.11.
 			 */
 			layer_ready = true;
-			return Boss::log( bus, Error
+			auto level = layer_error_logged ? Debug : Error;
+			layer_error_logged = true;
+			return Boss::log( bus, level
 					, "FundsMover: askrene-create-layer "
 					  "(clboss) failed: %s; failure-"
 					  "learning will not be available."
 					, Util::stringify(e.error).c_str()
 					);
+		});
+	}
+
+	/* Retry a failed startup create_clboss_layer() before running a
+	 * move.  A transient failure at startup would otherwise leave
+	 * every getroutes for the plugin's whole lifetime naming an
+	 * absent layer (the Attempter names the clboss layer
+	 * unconditionally), silently turning degraded mode into
+	 * no-rebalance mode.  create is idempotent, so repeated or
+	 * concurrent calls are safe; on CLN without askrene this costs
+	 * one failing RPC per move request (logged at Error only the
+	 * first time), and those moves were doomed regardless.
+	 */
+	Ev::Io<void> ensure_clboss_layer() {
+		return Ev::lift().then([this]() {
+			if (layer_created)
+				return Ev::lift();
+			return create_clboss_layer();
 		});
 	}
 
@@ -609,7 +658,10 @@ public:
 			   , claimer(bus_)
 			   , rpc(nullptr)
 			   , layer_ready(false)
+			   , layer_created(false)
+			   , layer_error_logged(false)
 			   , unmanager(bus_)
+			   , updates_rr(bus_)
 			   { start(); }
 };
 
