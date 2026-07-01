@@ -1,7 +1,11 @@
 #include"Boss/Mod/AskreneLayer.hpp"
+#include"Boss/Mod/AskreneUpdates.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Mod/XMoveFunds/Claimer.hpp"
 #include"Boss/Mod/XMoveFunds/Main.hpp"
+#include"Boss/ModG/ReqResp.hpp"
+#include"Boss/Msg/AskreneChannelUpdate.hpp"
+#include"Boss/Msg/AskreneNodeDisableUpdate.hpp"
 #include"Boss/Msg/CommandFail.hpp"
 #include"Boss/Msg/CommandRequest.hpp"
 #include"Boss/Msg/CommandResponse.hpp"
@@ -10,6 +14,8 @@
 #include"Boss/Msg/ManifestOption.hpp"
 #include"Boss/Msg/Manifestation.hpp"
 #include"Boss/Msg/Option.hpp"
+#include"Boss/Msg/RequestAskreneUpdates.hpp"
+#include"Boss/Msg/ResponseAskreneUpdates.hpp"
 #include"Boss/Msg/TimerRandomHourly.hpp"
 #include"Boss/Msg/XRebalanceAttribution.hpp"
 #include"Boss/Msg/XRebalanceLayerAged.hpp"
@@ -330,6 +336,12 @@ private:
 	Boss::Mod::Rpc* rpc;
 	Ln::NodeId self_id;
 	Claimer claimer;
+	/* Shared request/response to Boss::Mod::AskreneUpdates for the
+	 * still-fresh learned node-disable / channel-update overrides that
+	 * each plan projects into its own private askrene layer.  */
+	Boss::ModG::ReqResp< Msg::RequestAskreneUpdates
+			   , Msg::ResponseAskreneUpdates
+			   > updates_rr;
 	/* True once create_xrebalance_layer() has resolved (either by
 	 * successfully creating/finding the persistent layer, or by
 	 * logging a non-fatal RpcError on older CLN).  Gated on by
@@ -1418,11 +1430,8 @@ private:
 				if (std::string(enode) == std::string(self_id))
 					return;
 				actions.push_back(
-				    Boss::Mod::AskreneLayer::disable_node(
-					*rpc,
-					Boss::Mod::AskreneLayer::
-					    xrebalance_layer_name,
-					enode));
+				    bus.raise(Msg::AskreneNodeDisableUpdate{
+					enode}));
 				auto node_amount = Ln::Amount::msat(1);
 				if (eidx < askrene_path.size()
 				 && askrene_path[eidx].has("amount_in_msat"))
@@ -1528,17 +1537,14 @@ private:
 				/* Stale outbound fee: refresh the outgoing channel. */
 				if (have_cu) {
 					actions.push_back(
-					    Boss::Mod::AskreneLayer::update_channel(
-						*rpc,
-						Boss::Mod::AskreneLayer::
-						    xrebalance_layer_name,
+					    bus.raise(Msg::AskreneChannelUpdate{
 						Ln::Scid(echan_str), edir,
 						cu.enabled,
 						Ln::Amount::msat(cu.htlc_minimum_msat),
 						Ln::Amount::msat(cu.htlc_maximum_msat),
 						Ln::Amount::msat(cu.fee_base_msat),
 						cu.fee_proportional_millionths,
-						cu.cltv_expiry_delta));
+						cu.cltv_expiry_delta}));
 					return;
 				}
 				/* else: fall through to the capacity constraint. */
@@ -1558,11 +1564,7 @@ private:
 				ChanUpdate cu;
 				if (parse_chan_update(raw, cu)) {
 					actions.push_back(
-					    Boss::Mod::AskreneLayer::
-						update_channel(
-						*rpc,
-						Boss::Mod::AskreneLayer::
-						    xrebalance_layer_name,
+					    bus.raise(Msg::AskreneChannelUpdate{
 						Ln::Scid(echan_str), edir,
 						cu.enabled,
 						Ln::Amount::msat(
@@ -1572,7 +1574,7 @@ private:
 						Ln::Amount::msat(
 						    cu.fee_base_msat),
 						cu.fee_proportional_millionths,
-						cu.cltv_expiry_delta));
+						cu.cltv_expiry_delta}));
 					return;
 				}
 				/* Fall through to inform-constrained
@@ -1636,7 +1638,9 @@ private:
 	 * Includes auto.localchans, the persistent xrebalance
 	 * layer, and the per-request transient layer. */
 	Ev::Io<Jsmn::Object>
-	call_getroutes(std::string transient, Params const& p) {
+	call_getroutes( std::string transient
+		      , std::string updates_layer
+		      , Params const& p) {
 		auto parms = Json::Out();
 		auto obj = parms.start_object();
 		obj.field("source", std::string(self_id));
@@ -1647,6 +1651,12 @@ private:
 		la.entry(std::string("auto.localchans"));
 		la.entry(Boss::Mod::AskreneLayer::
 			     xrebalance_layer_name);
+		/* Learned node-disable / channel-update overrides, projected
+		 * into a private per-request layer by AskreneUpdates.  Before
+		 * the self-mask transient so that transient overrides still
+		 * win.  Omitted when askrene is unavailable (empty name).  */
+		if (!updates_layer.empty())
+			la.entry(updates_layer);
 		la.entry(transient);
 		la.end_array();
 		obj.field("maxfee_msat",
@@ -2413,16 +2423,27 @@ private:
 		auto exec_done = std::make_shared<bool>(false);
 		auto err_msg = std::make_shared<std::string>();
 		auto err_code = std::make_shared<int>(0);
+		/* Private, uuid-named layer holding the still-fresh learned
+		 * node-disable / channel-update overrides that AskreneUpdates
+		 * projects for this request; named only by this request's
+		 * getroutes and removed alongside the self-mask transient.  */
+		auto updates_layer = std::make_shared<std::string>();
 
 		return create_transient_layer(transient
-		).then([this, p, transient]() {
+		).then([this]() {
+			return updates_rr.execute(
+				Msg::RequestAskreneUpdates{ nullptr });
+		}).then([this](Msg::ResponseAskreneUpdates data) {
+			return Boss::Mod::AskreneUpdates::open_layer(*rpc, data);
+		}).then([this, updates_layer](std::string ul) {
+			*updates_layer = std::move(ul);
 			return list_my_channels();
 		}).then([this, p, transient, channels]
 			(Jsmn::Object c) {
 			*channels = c;
 			return write_masks(transient, c, *p);
-		}).then([this, p, transient]() {
-			return call_getroutes(transient, *p);
+		}).then([this, p, transient, updates_layer]() {
+			return call_getroutes(transient, *updates_layer, *p);
 		}).then([routes](Jsmn::Object r) {
 			*routes = r;
 			return Ev::lift();
@@ -2442,8 +2463,10 @@ private:
 					*exec_done = true;
 					return Ev::lift();
 				});
-		}).then([this, transient]() {
-			return remove_layer(transient);
+		}).then([this, transient, updates_layer]() {
+			return remove_layer(transient)
+			     + Boss::Mod::AskreneUpdates::close_layer(
+					*rpc, *updates_layer);
 		}).then([this, p, id, routes, channels, exec_result,
 			 exec_done, err_msg, err_code]() {
 			if (*err_code != 0) {
@@ -2550,6 +2573,7 @@ public:
 		: bus(bus_)
 		, rpc(nullptr)
 		, claimer(bus_)
+		, updates_rr(bus_)
 		, layer_ready(false)
 		, aging_window_secs(3600)
 		, part_wait_secs(180.0)
