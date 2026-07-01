@@ -1,5 +1,6 @@
 #include"Boss/Mod/ActiveProber.hpp"
 #include"Boss/Mod/AmountSettingsHandler.hpp"
+#include"Boss/Mod/AskreneUpdates.hpp"
 #include"Boss/Mod/AutoDisconnector.hpp"
 #include"Boss/Mod/AvailableRpcCommandsAnnouncer.hpp"
 #include"Boss/Mod/BlockTracker.hpp"
@@ -209,6 +210,7 @@ std::shared_ptr<void> all( std::ostream& cout
 
 	/* Channel balancing.  */
 	all->install<RebalanceModeManager>(bus);
+	all->install<AskreneUpdates>(bus);
 	all->install<FundsMover::Main>(bus);
 	all->install<MoveFundsCommand>(bus);
 	all->install<EarningsTracker>(bus);
