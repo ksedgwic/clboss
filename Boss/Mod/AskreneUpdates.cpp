@@ -3,14 +3,22 @@
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/AskreneChannelUpdate.hpp"
 #include"Boss/Msg/AskreneNodeDisableUpdate.hpp"
+#include"Boss/Msg/CommandFail.hpp"
+#include"Boss/Msg/CommandRequest.hpp"
+#include"Boss/Msg/CommandResponse.hpp"
 #include"Boss/Msg/DbResource.hpp"
+#include"Boss/Msg/Init.hpp"
+#include"Boss/Msg/ManifestCommand.hpp"
 #include"Boss/Msg/ManifestOption.hpp"
 #include"Boss/Msg/Manifestation.hpp"
 #include"Boss/Msg/Option.hpp"
 #include"Boss/Msg/OptionType.hpp"
+#include"Boss/Msg/ProvideStatus.hpp"
 #include"Boss/Msg/RequestAskreneUpdates.hpp"
 #include"Boss/Msg/ResponseAskreneUpdates.hpp"
+#include"Boss/Msg/SolicitStatus.hpp"
 #include"Boss/Msg/TimerRandomHourly.hpp"
+#include"Boss/concurrent.hpp"
 #include"Boss/log.hpp"
 #include"Ev/Io.hpp"
 #include"Jsmn/Object.hpp"
@@ -25,6 +33,7 @@
 #include<cinttypes>
 #include<cstdint>
 #include<string>
+#include<vector>
 
 namespace {
 
@@ -46,6 +55,7 @@ private:
 	S::Bus& bus;
 	std::function<double()> get_now;
 	Sqlite3::Db db;
+	Boss::Mod::Rpc* rpc;
 
 	std::uint64_t node_disable_age_secs;
 	std::uint64_t channel_update_age_secs;
@@ -57,9 +67,27 @@ private:
 			db = r.db;
 			return init();
 		});
+		bus.subscribe<Msg::Init
+			     >([this](Msg::Init const& init) {
+			rpc = &init.rpc;
+			return Boss::concurrent(sweep_stale_layers());
+		});
 		bus.subscribe<Msg::Manifestation
 			     >([this](Msg::Manifestation const&) {
-			return bus.raise(Msg::ManifestOption{
+			return bus.raise(Msg::ManifestCommand{
+				"clboss-askrene-updates",
+				"[hours]",
+				"Show the learned askrene updates CLBOSS is "
+				"applying: the node disables and channel_update "
+				"overrides still within their projection window "
+				"(what a rebalance getroutes gets right now), "
+				"each with its age, occurrence count and -- for "
+				"channels -- the overridden policy.  Optional "
+				"{hours} widens the view to the last {hours} "
+				"hours of the retained log, so aged-out entries "
+				"appear too (projected=false).  Read-only.",
+				false
+			}) + bus.raise(Msg::ManifestOption{
 				"clboss-node-disable-age-secs",
 				Msg::OptionType_Int,
 				Json::Out::direct(default_node_disable_age_secs),
@@ -139,6 +167,22 @@ private:
 				return Ev::lift();
 			return prune();
 		});
+		bus.subscribe<Msg::SolicitStatus
+			     >([this](Msg::SolicitStatus const&) {
+			if (!db)
+				return Ev::lift();
+			return status();
+		});
+		bus.subscribe<Msg::CommandRequest
+			     >([this](Msg::CommandRequest const& req) {
+			if (req.command != "clboss-askrene-updates")
+				return Ev::lift();
+			if (!db)
+				return bus.raise(Msg::CommandResponse{
+					req.id, Json::Out::empty_object()
+				});
+			return report(req);
+		});
 	}
 
 	/* Parse and apply one *-age-secs / retain-secs option, tolerating
@@ -147,12 +191,19 @@ private:
 				  , std::uint64_t& target
 				  , char const* name
 				  ) {
-		auto secs = std::uint64_t(0);
+		/* Signed so a negative value is rejected below rather than
+		 * wrapping to a huge unsigned: std::stoull accepts a leading
+		 * minus and negates modulo 2^64, and the double->uint64
+		 * conversion of a negative is undefined.  Matches the
+		 * FundsMover option handlers.  A wrapped-huge window would
+		 * silently project every retained row into every rebalance
+		 * layer.  */
+		auto secs = std::int64_t(0);
 		try {
 			if (o.value.is_number()) {
-				secs = std::uint64_t(double(o.value));
+				secs = std::int64_t(double(o.value));
 			} else if (o.value.is_string()) {
-				secs = std::stoull(std::string(o.value));
+				secs = std::stoll(std::string(o.value));
 			} else {
 				return Boss::log( bus, Warn
 						, "AskreneUpdates: %s: "
@@ -168,13 +219,13 @@ private:
 					, name, e.what(), target
 					);
 		}
-		if (secs == 0)
+		if (secs <= 0)
 			return Boss::log( bus, Warn
 					, "AskreneUpdates: %s: must be > 0; "
 					  "keeping %" PRIu64 "."
 					, name, target
 					);
-		target = secs;
+		target = std::uint64_t(secs);
 		return Boss::log( bus, Info
 				, "AskreneUpdates: %s = %" PRIu64 " seconds."
 				, name, target
@@ -213,6 +264,56 @@ private:
 			    ON "AskreneChannelUpdates" (time);
 			)QRY");
 			tx.commit();
+			return Ev::lift();
+		});
+	}
+
+	/* Remove stale private per-request layers left over by a previous
+	 * run.  Runner (FundsMover) and XMoveFunds normally remove their
+	 * clboss-updates-tmp-<uuid> layers when a request finishes, but an
+	 * exception escaping mid-request skips those continuations -- in
+	 * particular, a plugin stop with moves in flight throws
+	 * Boss::Shutdown into every pending RPC, and cleanup at shutdown
+	 * cannot work anyway since the Rpc module is already rejecting new
+	 * commands by then.  The layers are non-persistent, so a lightningd
+	 * restart clears them; a clboss-only restart does not, and repeated
+	 * redeploys accumulate junk in askrene-listlayers.  Sweeping at
+	 * init restores the invariant that only in-flight requests hold
+	 * private layers.  */
+	Ev::Io<void> sweep_stale_layers() {
+		return rpc->command( "askrene-listlayers"
+				   , Json::Out::empty_object()
+				   ).then([this](Jsmn::Object res) {
+			auto stale = std::vector<std::string>();
+			try {
+				auto layers = res["layers"];
+				for (auto l : layers) {
+					auto name = std::string(l["layer"]);
+					if (name.rfind("clboss-updates-tmp-", 0) == 0)
+						stale.push_back(name);
+				}
+			} catch (std::exception const&) {
+				return Boss::log( bus, Warn
+						, "AskreneUpdates: unexpected "
+						  "askrene-listlayers response; "
+						  "skipping stale-layer sweep."
+						);
+			}
+			if (stale.empty())
+				return Ev::lift();
+			auto act = Ev::lift();
+			for (auto const& name : stale)
+				act = std::move(act)
+				    + AskreneUpdates::close_layer(*rpc, name);
+			return std::move(act)
+			     + Boss::log( bus, Info
+					, "AskreneUpdates: removed %zu stale "
+					  "clboss-updates-tmp layer(s) left "
+					  "by a previous run."
+					, stale.size()
+					);
+		}).catching<RpcError>([](RpcError const&) {
+			/* CLN without askrene: nothing to sweep.  */
 			return Ev::lift();
 		});
 	}
@@ -268,9 +369,16 @@ private:
 					  ](Sqlite3::Tx tx) {
 			auto resp = Msg::ResponseAskreneUpdates{requester, {}, {}};
 
+			/* INDEXED BY the bare (time) index: the planner
+			 * otherwise picks the (node, time) index and
+			 * full-scans it with time>= demoted to a per-row
+			 * filter -- the whole retained table (30d) walked
+			 * per projection instead of just the window (1h).
+			 */
 			auto nq = tx.query(R"QRY(
 			SELECT DISTINCT node
 			  FROM "AskreneNodeDisableUpdates"
+			       INDEXED BY idx_askrenenodedisableupdates_time
 			 WHERE time >= :cutoff;
 			)QRY");
 			nq.bind(":cutoff", node_cutoff);
@@ -280,11 +388,17 @@ private:
 
 			/* Latest override per (scid, dir) still in window.
 			 * sqlite fills the bare columns from the MAX(time)
-			 * row of each group.  */
+			 * row of each group (preserved under INDEXED BY).
+			 * The bare (time) index is forced for the same
+			 * reason as the node query above: the planner's
+			 * choice, (scid, dir, time), degrades to a
+			 * full-index scan with time>= as a per-row filter.
+			 */
 			auto cq = tx.query(R"QRY(
 			SELECT scid, dir, enabled, htlc_min_msat, htlc_max_msat
 			     , base_fee_msat, prop_fee_ppm, cltv_delta, MAX(time)
 			  FROM "AskreneChannelUpdates"
+			       INDEXED BY idx_askrenechannelupdates_time
 			 WHERE time >= :cutoff
 			 GROUP BY scid, dir;
 			)QRY");
@@ -341,6 +455,258 @@ private:
 		});
 	}
 
+	/* clboss-status block: counts of what is stored and, within the
+	 * projection windows, what is being applied right now.  */
+	Ev::Io<void> status() {
+		auto now = std::uint64_t(get_now());
+		auto ncut = (now > node_disable_age_secs)
+			  ? now - node_disable_age_secs : std::uint64_t(0);
+		auto ccut = (now > channel_update_age_secs)
+			  ? now - channel_update_age_secs : std::uint64_t(0);
+		return db.transact().then([this, now, ncut, ccut
+					  ](Sqlite3::Tx tx) {
+			auto out = Json::Out();
+			auto obj = out.start_object();
+
+			/* Scalar subqueries instead of one aggregate pass:
+			 * MIN/MAX become O(1) index seeks, the projected
+			 * count reads only the window via the (time)
+			 * index, and the distinct counts scan a covering
+			 * index without materializing per-row values.  The
+			 * previous whole-table aggregate form cost
+			 * clboss-status a full-table scan (with a string
+			 * concatenation per row on the channel side).  */
+			auto nf = tx.query(R"QRY(
+			SELECT (SELECT COUNT(*)
+				  FROM "AskreneNodeDisableUpdates")
+			     , (SELECT COUNT(*)
+				  FROM (SELECT DISTINCT node
+					  FROM "AskreneNodeDisableUpdates"))
+			     , COALESCE((SELECT MIN(time)
+					   FROM "AskreneNodeDisableUpdates"), 0)
+			     , COALESCE((SELECT MAX(time)
+					   FROM "AskreneNodeDisableUpdates"), 0)
+			     , (SELECT COUNT(DISTINCT node)
+				  FROM "AskreneNodeDisableUpdates"
+				       INDEXED BY idx_askrenenodedisableupdates_time
+				 WHERE time >= :cut);
+			)QRY");
+			nf.bind(":cut", ncut);
+			for (auto& r : nf.execute()) {
+				auto nd = obj.start_object("node_disables");
+				nd
+					.field("rows", r.get<std::uint64_t>(0))
+					.field( "distinct_nodes"
+					      , r.get<std::uint64_t>(1))
+					.field( "projected_nodes"
+					      , r.get<std::uint64_t>(4))
+					.field("window_secs", node_disable_age_secs)
+					.field( "oldest_time"
+					      , r.get<std::uint64_t>(2))
+					.field( "newest_time"
+					      , r.get<std::uint64_t>(3))
+					;
+				nd.end_object();
+			}
+
+			auto cf = tx.query(R"QRY(
+			SELECT (SELECT COUNT(*)
+				  FROM "AskreneChannelUpdates")
+			     , (SELECT COUNT(*)
+				  FROM (SELECT DISTINCT scid, dir
+					  FROM "AskreneChannelUpdates"))
+			     , COALESCE((SELECT MIN(time)
+					   FROM "AskreneChannelUpdates"), 0)
+			     , COALESCE((SELECT MAX(time)
+					   FROM "AskreneChannelUpdates"), 0)
+			     , (SELECT COUNT(*)
+				  FROM (SELECT DISTINCT scid, dir
+					  FROM "AskreneChannelUpdates"
+					       INDEXED BY idx_askrenechannelupdates_time
+					 WHERE time >= :cut));
+			)QRY");
+			cf.bind(":cut", ccut);
+			for (auto& r : cf.execute()) {
+				auto cu = obj.start_object("channel_updates");
+				cu
+					.field("rows", r.get<std::uint64_t>(0))
+					.field( "distinct_channel_dirs"
+					      , r.get<std::uint64_t>(1))
+					.field( "projected_channel_dirs"
+					      , r.get<std::uint64_t>(4))
+					.field( "window_secs"
+					      , channel_update_age_secs)
+					.field( "oldest_time"
+					      , r.get<std::uint64_t>(2))
+					.field( "newest_time"
+					      , r.get<std::uint64_t>(3))
+					;
+				cu.end_object();
+			}
+
+			obj.field("retain_secs", retain_secs);
+			obj.field("now", now);
+			obj.end_object();
+			tx.commit();
+
+			return bus.raise(Msg::ProvideStatus{
+				"askrene_updates", std::move(out)
+			});
+		});
+	}
+
+	/* clboss-askrene-updates command: list the updates being applied
+	 * now (default) or, with {hours}, everything in the last {hours}
+	 * hours of the retained log (with projected=false for aged-out
+	 * rows).  Node disables grouped per node; channel updates grouped
+	 * per (scid, dir) with the latest overridden policy.  */
+	Ev::Io<void> report(Msg::CommandRequest const& req) {
+		auto id = req.id;
+		auto paramfail = [this, id]() {
+			return bus.raise(Msg::CommandFail{
+				id, -32602, "Parameter failure",
+				Json::Out::empty_object()
+			});
+		};
+
+		auto hours = double(0.0);
+		auto hours_j = Jsmn::Object();
+		auto params = req.params;
+		if (params.is_object()) {
+			auto known = std::size_t(0);
+			if (params.has("hours")) {
+				hours_j = params["hours"];
+				++known;
+			}
+			if (params.size() != known)
+				return paramfail();
+		} else if (params.is_array()) {
+			if (params.size() > 1)
+				return paramfail();
+			for (auto p : params)
+				hours_j = p;
+		}
+		if (!hours_j.is_null()) {
+			if (!hours_j.is_number())
+				return paramfail();
+			hours = double(hours_j);
+			if (hours <= 0)
+				return paramfail();
+			/* Clamp to the retention window: beyond it a
+			 * wider view adds nothing (rows are pruned), and
+			 * an unbounded value would make the
+			 * double->uint64 conversion of hours*3600 below
+			 * undefined.  Clamping rather than failing --
+			 * "everything retained" is the obvious intent of
+			 * a huge value.  */
+			if (hours * 3600.0 > double(retain_secs))
+				hours = double(retain_secs) / 3600.0;
+		}
+
+		auto now = std::uint64_t(get_now());
+		/* With {hours}, both kinds use that window; otherwise each
+		 * uses its own projection window (the applied-now view).  */
+		auto ncut = std::uint64_t(0);
+		auto ccut = std::uint64_t(0);
+		if (hours > 0) {
+			auto w = std::uint64_t(hours * 3600.0);
+			ncut = (w < now) ? now - w : std::uint64_t(0);
+			ccut = ncut;
+		} else {
+			ncut = (now > node_disable_age_secs)
+			     ? now - node_disable_age_secs : std::uint64_t(0);
+			ccut = (now > channel_update_age_secs)
+			     ? now - channel_update_age_secs : std::uint64_t(0);
+		}
+
+		return db.transact().then([this, id, now, ncut, ccut
+					  ](Sqlite3::Tx tx) {
+			auto out = Json::Out();
+			auto obj = out.start_object();
+
+			auto nf = tx.query(R"QRY(
+			SELECT node, COUNT(*), MAX(time)
+			  FROM "AskreneNodeDisableUpdates"
+			 WHERE time >= :cut
+			 GROUP BY node
+			 ORDER BY MAX(time) DESC;
+			)QRY");
+			nf.bind(":cut", ncut);
+			auto narr = obj.start_array("node_disables");
+			for (auto& r : nf.execute()) {
+				auto node = r.get<std::string>(0);
+				auto occ = r.get<std::uint64_t>(1);
+				auto last = r.get<std::uint64_t>(2);
+				auto age = (now >= last) ? now - last
+							 : std::uint64_t(0);
+				auto o = narr.start_object();
+				o
+					.field("node", node)
+					.field("occurrences", occ)
+					.field("last_time", last)
+					.field("age_secs", age)
+					.field( "projected"
+					      , age <= node_disable_age_secs)
+					;
+				o.end_object();
+			}
+			narr.end_array();
+
+			auto cf = tx.query(R"QRY(
+			SELECT scid, dir, enabled, htlc_min_msat, htlc_max_msat
+			     , base_fee_msat, prop_fee_ppm, cltv_delta
+			     , COUNT(*), MAX(time)
+			  FROM "AskreneChannelUpdates"
+			 WHERE time >= :cut
+			 GROUP BY scid, dir
+			 ORDER BY MAX(time) DESC;
+			)QRY");
+			cf.bind(":cut", ccut);
+			auto carr = obj.start_array("channel_updates");
+			for (auto& r : cf.execute()) {
+				auto ndx = 0;
+				auto scid = r.get<std::string>(ndx++);
+				auto dir = r.get<std::uint32_t>(ndx++);
+				auto enabled = r.get<int>(ndx++);
+				auto hmin = r.get<std::uint64_t>(ndx++);
+				auto hmax = r.get<std::uint64_t>(ndx++);
+				auto base = r.get<std::uint64_t>(ndx++);
+				auto prop = r.get<std::uint64_t>(ndx++);
+				auto cltv = r.get<std::uint64_t>(ndx++);
+				auto occ = r.get<std::uint64_t>(ndx++);
+				auto last = r.get<std::uint64_t>(ndx++);
+				auto age = (now >= last) ? now - last
+							 : std::uint64_t(0);
+				auto o = carr.start_object();
+				o
+					.field("scid", scid)
+					.field("dir", dir)
+					.field("enabled", enabled != 0)
+					.field("htlc_min_msat", hmin)
+					.field("htlc_max_msat", hmax)
+					.field("base_fee_msat", base)
+					.field("prop_fee_ppm", prop)
+					.field("cltv_delta", cltv)
+					.field("occurrences", occ)
+					.field("last_time", last)
+					.field("age_secs", age)
+					.field( "projected"
+					      , age <= channel_update_age_secs)
+					;
+				o.end_object();
+			}
+			carr.end_array();
+
+			obj.field("now", now);
+			obj.end_object();
+			tx.commit();
+
+			return bus.raise(Msg::CommandResponse{
+				id, std::move(out)
+			});
+		});
+	}
+
 public:
 	Impl() =delete;
 	Impl(Impl&&) =delete;
@@ -350,6 +716,7 @@ public:
 	Impl(S::Bus& bus_, std::function<double()> get_now_)
 		: bus(bus_)
 		, get_now(std::move(get_now_))
+		, rpc(nullptr)
 		, node_disable_age_secs(default_node_disable_age_secs)
 		, channel_update_age_secs(default_channel_update_age_secs)
 		, retain_secs(default_retain_secs) { start(); }
