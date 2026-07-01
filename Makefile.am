@@ -71,6 +71,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/AmountSettingsHandler.hpp \
 	Boss/Mod/AskreneLayer.cpp \
 	Boss/Mod/AskreneLayer.hpp \
+	Boss/Mod/AskreneUpdates.cpp \
+	Boss/Mod/AskreneUpdates.hpp \
 	Boss/Mod/AutoDisconnector.cpp \
 	Boss/Mod/AutoDisconnector.hpp \
 	Boss/Mod/AvailableRpcCommandsAnnouncer.cpp \
@@ -289,6 +291,8 @@ libclboss_la_SOURCES = \
 	Boss/ModG/Swapper.hpp \
 	Boss/Msg/AcceptSwapQuotation.hpp \
 	Boss/Msg/AmountSettings.hpp \
+	Boss/Msg/AskreneChannelUpdate.hpp \
+	Boss/Msg/AskreneNodeDisableUpdate.hpp \
 	Boss/Msg/AvailableRpcCommands.hpp \
 	Boss/Msg/Begin.hpp \
 	Boss/Msg/Block.hpp \
@@ -346,6 +350,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/RaisePeerComplaint.hpp \
 	Boss/Msg/ReleaseHtlcAccepted.hpp \
 	Boss/Msg/ReqRespTraits.hpp \
+	Boss/Msg/RequestAskreneUpdates.hpp \
 	Boss/Msg/RequestChannelCreation.hpp \
 	Boss/Msg/RequestConnect.hpp \
 	Boss/Msg/RequestDowser.hpp \
@@ -361,6 +366,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/RequestRebalanceUnmanaged.hpp \
 	Boss/Msg/RequestRpcCommand.hpp \
 	Boss/Msg/RequestSelfUptime.hpp \
+	Boss/Msg/ResponseAskreneUpdates.hpp \
 	Boss/Msg/ResponseConnect.hpp \
 	Boss/Msg/ResponseDowser.hpp \
 	Boss/Msg/ResponseEarningsInfo.hpp \
