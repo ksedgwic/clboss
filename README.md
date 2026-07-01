@@ -599,6 +599,45 @@ startup default, or at runtime with
 
     lightning-cli setconfig clboss-classic-layer-age-secs <seconds>
 
+### `--clboss-node-disable-age-secs=<seconds>` and `--clboss-channel-update-age-secs=<seconds>`
+
+Both rebalancers learn, from routing-failure feedback, node disables (NODE-level
+failures) and channel-update policy overrides.  `askrene` does not age these out
+on its own (unlike the inform-channel constraints in the `clboss` and
+`clboss-xrebalance` layers), so CLBOSS keeps them in its own store and, for each
+`getroutes`, projects the still-fresh ones into a private, single-use `askrene`
+layer.  These two options set how long after its most recent occurrence each
+kind keeps being applied:
+
+* `--clboss-node-disable-age-secs` — a disabled node stops being avoided once
+  this elapses with no fresh NODE-level failure (default `3600`, one hour).
+* `--clboss-channel-update-age-secs` — a learned channel-update override
+  (fees, HTLC bounds, enabled flag) stops being applied and the channel reverts
+  to its gossip policy once this elapses with no fresh update (default `3600`,
+  one hour).
+
+A recovered node or channel therefore becomes routable/normal again within one
+interval, without any layer being wiped.
+
+Both are *dynamic* options: set them in the `lightningd` config for the startup
+default, or at runtime with
+
+    lightning-cli setconfig clboss-node-disable-age-secs <seconds>
+    lightning-cli setconfig clboss-channel-update-age-secs <seconds>
+
+### `--clboss-update-retain-secs=<seconds>`
+
+How long the learned node-disable and channel-update rows are kept in the CLBOSS
+database before being pruned.  This is independent of the projection windows
+above: the rows are retained well past when they stop being applied, so the
+history can be inspected (which nodes churn, which channels re-price).  The
+default is `2592000` (thirty days).
+
+This is a *dynamic* option: set it in the `lightningd` config for the
+startup default, or at runtime with
+
+    lightning-cli setconfig clboss-update-retain-secs <seconds>
+
 ### `--clboss-min-rebalance-ppm=<ppm>`
 
 Sets the minimum fee budget, expressed as parts-per-million of the amount

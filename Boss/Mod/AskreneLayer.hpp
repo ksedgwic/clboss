@@ -12,6 +12,15 @@ namespace Boss { namespace Mod { class Rpc; } }
 
 namespace Boss { namespace Mod { namespace AskreneLayer {
 
+/* The node disables (NODE-level failures) and channel_update policy
+ * overrides both rebalancers learn are NOT held in a shared askrene layer.
+ * askrene-age never removes them (they carry no timestamp, unlike the
+ * inform-channel constraints), so instead of accumulating forever in a
+ * layer they are kept in CLBOSS's own store, Boss::Mod::AskreneUpdates,
+ * which ages them and projects the still-fresh ones into a private,
+ * per-request layer for each getroutes.  See that module for the scheme.
+ */
+
 /* Name of the persistent askrene layer that CLBOSS subsystems
  * write failure-feedback and (optionally) success-observations
  * into.  Following the xpay convention -- the layer is named
