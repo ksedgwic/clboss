@@ -2,6 +2,8 @@
 #include"Boss/Mod/FundsMover/Attempter.hpp"
 #include"Boss/Mod/FundsMover/create_label.hpp"
 #include"Boss/Mod/Rpc.hpp"
+#include"Boss/Msg/AskreneChannelUpdate.hpp"
+#include"Boss/Msg/AskreneNodeDisableUpdate.hpp"
 #include"Boss/log.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/now.hpp"
@@ -12,6 +14,7 @@
 #include"Ln/NodeId.hpp"
 #include"Ln/Preimage.hpp"
 #include"Ln/Scid.hpp"
+#include"S/Bus.hpp"
 #include"Sha256/Hash.hpp"
 #include"Util/Str.hpp"
 #include"Util/stringify.hpp"
@@ -268,6 +271,13 @@ private:
 	/* Details of the first channel from us to source.  */
 	Ln::Scid first_scid;
 
+	/* Private, uuid-named askrene layer (created/removed by the Runner)
+	 * this attempt names in its getroutes `layers` array and writes its
+	 * learned node-disable / channel-update overrides into.  Empty when
+	 * askrene is unavailable, in which case it is simply not named or
+	 * written.  */
+	std::string updates_layer;
+
 	bool ok;
 
 	Ln::Amount dest_amount;
@@ -360,6 +370,7 @@ public:
 	    , Ln::Amount orig_budget_
 	    , Ln::Amount orig_amount_
 	    , std::uint64_t min_prob_ppm_
+	    , std::string updates_layer_
 	    ) : bus(bus_)
 	      , rpc(rpc_)
 	      , self_id(std::move(self_id_))
@@ -378,6 +389,7 @@ public:
 	      , proportional_fee(proportional_fee_)
 	      , cltv_delta(cltv_delta_)
 	      , first_scid(first_scid_)
+	      , updates_layer(std::move(updates_layer_))
 	      , ok(false)
 	      , attempt_uuid(std::string(Uuid::random()).substr(0, 8))
 	      { }
@@ -545,6 +557,12 @@ private:
 			 * to cover that plus its real fee.
 			 */
 			la.entry(Boss::Mod::AskreneLayer::clboss_layer_name);
+			/* This attempt's private updates layer (node disables
+			 * + channel-update overrides, seeded from AskreneUpdates
+			 * and appended to during retries).  Omitted when askrene
+			 * is unavailable (empty name).  */
+			if (!updates_layer.empty())
+				la.entry(updates_layer);
 			la.end_array();
 			obj.field("maxfee_msat", route_maxfee.to_msat());
 			obj.field("final_cltv", cltv_delta + 14);
@@ -1339,25 +1357,29 @@ private:
 					     ;
 				/* 0x2000 == NODE level error.  */
 				if ((fail & 0x2000)) {
-					/* Persistent disable_node is correct
-					 * for NODE-level failures and is also
-					 * consulted by this Attempter's own
-					 * subsequent getroutes calls (the
-					 * clboss layer is in the layers
-					 * array), so no separate transient
-					 * write is needed for this case.
+					/* Persist the node-disable via
+					 * AskreneUpdates (which ages and
+					 * re-projects it across attempts), and
+					 * -- if this attempt has a private layer
+					 * -- write it there too so this attempt's
+					 * own retries route around the dead node.
 					 */
-					feedback = Boss::Mod::AskreneLayer::disable_node(
-						rpc,
-						Boss::Mod::AskreneLayer::clboss_layer_name,
-						enode
-					)
-					+ Boss::log( bus, Debug
-						   , "FundsMover[%s]: feedback: "
-						     "disable_node %s on clboss"
-						   , attempt_tag().c_str()
-						   , std::string(enode).c_str()
-						   );
+					feedback =
+						bus.raise(Msg::AskreneNodeDisableUpdate{
+							enode
+						})
+						+ ( updates_layer.empty()
+						  ? Ev::lift()
+						  : Boss::Mod::AskreneLayer::disable_node(
+							rpc, updates_layer, enode
+						    )
+						  )
+						+ Boss::log( bus, Debug
+							   , "FundsMover[%s]: feedback: "
+							     "disable_node %s"
+							   , attempt_tag().c_str()
+							   , std::string(enode).c_str()
+							   );
 				} else {
 					/* Non-NODE 204 failure feedback policy.
 					 *
@@ -1559,29 +1581,45 @@ private:
 								/* New or changed
 								 * channel_update.  Cache it
 								 * for apply_policy_overrides
-								 * on the next retry, and
-								 * mirror to the clboss
-								 * layer (for other CLBOSS
-								 * subsystems that consult
-								 * the layer).
+								 * on the next retry; persist it
+								 * via AskreneUpdates (aged and
+								 * re-projected across attempts);
+								 * and -- if this attempt has a
+								 * private layer -- apply it there
+								 * too so this attempt's retries
+								 * use the fresher policy.
 								 */
 								policy_overrides[key] = cu;
+								auto cu_msg = Msg::AskreneChannelUpdate{
+									echan,
+									std::uint32_t(edir),
+									cu.enabled,
+									Ln::Amount::msat(cu.htlc_minimum_msat),
+									Ln::Amount::msat(cu.htlc_maximum_msat),
+									Ln::Amount::msat(cu.fee_base_msat),
+									cu.fee_proportional_millionths,
+									cu.cltv_expiry_delta
+								};
 								feedback = std::move(feedback)
-									 + Boss::Mod::AskreneLayer::update_channel(
+									 + bus.raise(Msg::AskreneChannelUpdate{ cu_msg })
+									 + ( updates_layer.empty()
+									   ? Ev::lift()
+									   : Boss::Mod::AskreneLayer::update_channel(
 										rpc,
-										Boss::Mod::AskreneLayer::clboss_layer_name,
-										echan,
-										std::uint32_t(edir),
-										cu.enabled,
-										Ln::Amount::msat(cu.htlc_minimum_msat),
-										Ln::Amount::msat(cu.htlc_maximum_msat),
-										Ln::Amount::msat(cu.fee_base_msat),
-										cu.fee_proportional_millionths,
-										cu.cltv_expiry_delta
-									)
+										updates_layer,
+										cu_msg.scid,
+										cu_msg.direction,
+										cu_msg.enabled,
+										cu_msg.htlc_minimum_msat,
+										cu_msg.htlc_maximum_msat,
+										cu_msg.fee_base_msat,
+										cu_msg.fee_proportional_millionths,
+										cu_msg.cltv_expiry_delta
+									     )
+									   )
 									+ Boss::log( bus, Debug
 										   , "FundsMover[%s]: "
-										     "feedback: clboss "
+										     "feedback: "
 										     "update_channel %s/%d "
 										     "enabled=%d "
 										     "base=%umsat prop=%uppm "
@@ -1815,6 +1853,7 @@ Attempter::run( S::Bus& bus
 	      , Ln::Amount orig_budget
 	      , Ln::Amount orig_amount
 	      , std::uint64_t min_prob_ppm
+	      , std::string updates_layer
 	      ) {
 	auto impl = std::make_shared<Impl>( bus
 					  , rpc
@@ -1834,6 +1873,7 @@ Attempter::run( S::Bus& bus
 					  , orig_budget
 					  , orig_amount
 					  , min_prob_ppm
+					  , std::move(updates_layer)
 					  );
 	return impl->run();
 }

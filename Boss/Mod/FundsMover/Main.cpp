@@ -5,13 +5,16 @@
 #include"Boss/Mod/FundsMover/create_label.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/ModG/RebalanceUnmanagerProxy.hpp"
+#include"Boss/ModG/ReqResp.hpp"
 #include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/ManifestOption.hpp"
 #include"Boss/Msg/Manifestation.hpp"
 #include"Boss/Msg/Option.hpp"
 #include"Boss/Msg/OptionType.hpp"
 #include"Boss/Msg/ProvideDeletablePaymentLabelFilter.hpp"
+#include"Boss/Msg/RequestAskreneUpdates.hpp"
 #include"Boss/Msg/RequestMoveFunds.hpp"
+#include"Boss/Msg/ResponseAskreneUpdates.hpp"
 #include"Boss/Msg/ResponseMoveFunds.hpp"
 #include"Boss/Msg/SolicitDeletablePaymentLabelFilter.hpp"
 #include"Boss/Msg/TimerRandomHourly.hpp"
@@ -50,6 +53,13 @@ private:
 	bool layer_ready;
 
 	Boss::ModG::RebalanceUnmanagerProxy unmanager;
+	/* Shared request/response to Boss::Mod::AskreneUpdates for the
+	 * still-fresh learned updates each attempt projects into its own
+	 * private askrene layer.  Held here (module lifetime) and passed by
+	 * reference into each Runner/Attempter, which are short-lived.  */
+	Boss::ModG::ReqResp< Msg::RequestAskreneUpdates
+			   , Msg::ResponseAskreneUpdates
+			   > updates_rr;
 
 	/* Cutoff (seconds) for askrene-age on the clboss layer.  Dynamic
 	 * via clboss-classic-layer-age-secs; default 43200 (12h).  See
@@ -368,6 +378,7 @@ private:
 							    , claimer
 							    , *msg
 							    , min_prob_ppm
+							    , updates_rr
 							    );
 				return Runner::start(runner);
 			});
@@ -610,6 +621,7 @@ public:
 			   , rpc(nullptr)
 			   , layer_ready(false)
 			   , unmanager(bus_)
+			   , updates_rr(bus_)
 			   { start(); }
 };
 

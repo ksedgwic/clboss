@@ -83,6 +83,13 @@ public:
 	    * a smaller, more-probable amount.  0 disables.  Snapshot of
 	    * clboss-min-rebalance-prob-ppm. */
 	   , std::uint64_t min_prob_ppm
+	   /* Name of the private, uuid-named askrene layer this attempt
+	    * includes in its getroutes `layers` array and writes the
+	    * node-disable / channel-update overrides it learns into.
+	    * Created and removed by the Runner (seeded with the still-fresh
+	    * persisted updates); empty when askrene is unavailable, in
+	    * which case the attempt simply omits it.  */
+	   , std::string updates_layer
 	   );
 };
 
