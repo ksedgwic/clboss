@@ -101,6 +101,21 @@ further.
 Installing
 ----------
 
+### Requirements
+
+CLBOSS requires **Core Lightning v26.06 or later**.  Its rebalancer
+and probing subsystems build routes from the `getroutes` per-hop
+fields `node_id_out` / `amount_out_msat` / `cltv_out`, which shipped
+in v26.06; the deprecated pre-v26.06 fields carry one-hop-shifted
+values that would misprice routes and poison CLBOSS's
+failure-learning askrene layer.  CLBOSS checks the CLN version at
+startup and refuses to run on older nodes — before creating or
+modifying any on-disk state.  If (and only if) your older CLN carries
+a backport of the v26.06 `getroutes` fields, you can bypass the
+startup check with `--clboss-skip-cln-version-check`; every
+`getroutes` response is still verified even with the check skipped.
+Users on older CLN releases should stay on CLBOSS 0.16.x.
+
 From an [official source release](https://github.com/ZmnSCPxj/clboss/releases), just:
 
     ./configure && make

@@ -293,30 +293,39 @@ private:
 			return rpc.command("getroutes", std::move(pj));
 		}).then([this](Jsmn::Object res) {
 			try {
-				/* getroutes path[] hop fields were renamed
-				 * in CLN v26.06.  Which names actually get
-				 * emitted depends on the CLN version AND
-				 * whether the node runs with developer
-				 * mode (which suppresses deprecated
-				 * outputs):
-				 *
-				 *   v26.04                  -> old names only
-				 *   v26.06+ no developer    -> both names emitted
-				 *   v26.06+ developer=true  -> new names only
-				 *
-				 * Bridge by preferring the new name, falling
-				 * back to the old.  TODO: drop the fallback
-				 * once CLN v26.04 is no longer supported and
-				 * the old names are gone for good in v27.06.
-				 *
-				 * short_channel_id_dir is older (v24.11)
-				 * and is emitted unconditionally.
+				/* getroutes path[] hop fields node_id_out /
+				 * amount_out_msat / cltv_out shipped in CLN
+				 * v26.06 (short_channel_id_dir is older,
+				 * v24.11, and unconditional).  The
+				 * deprecated pre-v26.06 names carry
+				 * one-hop-shifted in-side values that must
+				 * never feed a sendpay route, so there is
+				 * deliberately NO fallback: the Initiator
+				 * version gate refuses stock older CLN at
+				 * startup, and this check keeps a bypassed
+				 * gate (clboss-skip-cln-version-check) loud
+				 * instead of subtly wrong.
 				 */
 				auto path0 = res["routes"][0]["path"][0];
+				if ( !path0.has("node_id_out")
+				  || !path0.has("amount_out_msat")
+				  || !path0.has("cltv_out")
+				   ) {
+					if (!to_try.empty())
+						to_try.pop();
+					return Boss::log( bus, Error
+							, "ActiveProber: getroutes "
+							  "hop lacks node_id_out/"
+							  "amount_out_msat/cltv_out; "
+							  "CLBOSS requires CLN "
+							  "v26.06+ (or a backport of "
+							  "those getroutes fields)."
+							).then([]() {
+						return Ev::lift(false);
+					});
+				}
 				id1 = Ln::NodeId(std::string(
-					path0.has("node_id_out")
-						? path0["node_id_out"]
-						: path0["next_node_id"]
+					path0["node_id_out"]
 				));
 				/* short_channel_id_dir is "SCID/dir"; split
 				 * into the SCID and the direction.  If
@@ -337,14 +346,10 @@ private:
 					sdir.substr(slash + 1)
 				));
 				amount1 = Ln::Amount::object(
-					path0.has("amount_out_msat")
-						? path0["amount_out_msat"]
-						: path0["amount_msat"]
+					path0["amount_out_msat"]
 				);
 				delay1 = std::uint32_t(double(
-					path0.has("cltv_out")
-						? path0["cltv_out"]
-						: path0["delay"]
+					path0["cltv_out"]
 				));
 			} catch (std::exception const& _) {
 				/* Broaden catch to std::exception so we also
