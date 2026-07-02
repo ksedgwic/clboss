@@ -1,4 +1,5 @@
 #include"Boss/Mod/ActiveProber.hpp"
+#include"Boss/Mod/AskreneLayer.hpp"
 #include"Boss/Mod/ChannelCandidateInvestigator/Main.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/Init.hpp"
@@ -72,6 +73,11 @@ private:
 
 	Ln::NodeId peer;
 
+	/* Name of the self-exclusion layer to pass to getroutes, or
+	 * empty to probe without one (askrene unavailable).  Resolved
+	 * once per Run via AskreneLayer::ensure_self_layer.  */
+	std::string exclude_layer;
+
 	Secp256k1::Random& random;
 
 	Run( ActiveProber& prober
@@ -95,7 +101,17 @@ public:
 
 	Ev::Io<void> run() {
 		auto self = shared_from_this();
-		return self->core_run().then([self]() {
+		/* Resolve the self-exclusion layer once per Run: the
+		 * probe's getroutes must not pick path[0] = peer->us
+		 * (the legacy getroute passed exclude=[self_id]).  */
+		return AskreneLayer::ensure_self_layer( self->rpc
+						      , self->self_id
+						      ).then([self](bool ready) {
+			self->exclude_layer = ready
+				? AskreneLayer::self_layer_name
+				: std::string();
+			return self->core_run();
+		}).then([self]() {
 			return Ev::lift();
 		});
 	}
@@ -236,37 +252,45 @@ private:
 		return Ev::yield().then([this]() {
 			auto const& dest = to_try.front();
 
-			auto parms = Json::Out()
-				.start_object()
-					.field("source", std::string(peer))
-					.field("destination", std::string(dest))
-					.field("amount_msat", amount.to_msat())
-					/* No layers: source is a remote node
-					 * (peer), not us, so the
-					 * auto.localchans / auto.sourcefree
-					 * helpers do not apply -- they would
-					 * inject our private local channels
-					 * and zero out the source's outgoing
-					 * fees, either of which could make
-					 * askrene pick a path[0] that the
-					 * peer cannot actually reach via
-					 * public topology (and could even
-					 * produce a route that loops back
-					 * through us).
-					 */
-					.start_array("layers").end_array()
-					/* Generous max-fee tolerance for a
-					 * probe; askrene optimizes for
-					 * cheaper paths anyway via its
-					 * probability scoring.
-					 */
-					.field("maxfee_msat",
-					       (amount * 0.01).to_msat())
-					.field("final_cltv", 14)
-					.field("maxparts", 1)
-				.end_object()
-				;
-			return rpc.command("getroutes", std::move(parms));
+			auto pj = Json::Out();
+			auto obj = pj.start_object();
+			obj.field("source", std::string(peer));
+			obj.field("destination", std::string(dest));
+			obj.field("amount_msat", amount.to_msat());
+			/* No auto.localchans / auto.sourcefree: source is
+			 * a remote node (peer), not us, so those
+			 * local-source helpers would inject our private
+			 * local channels and zero out the source's
+			 * outgoing fees, either of which could make
+			 * askrene pick a path[0] that the peer cannot
+			 * actually reach via public topology.
+			 *
+			 * The self-exclusion layer IS passed (when
+			 * askrene accepted it): our public channels are
+			 * in the gossip map like anyone else's, so
+			 * without it askrene can pick path[0] = peer->us,
+			 * degenerating the probe into a circular
+			 * us->peer->us payment that measures our own
+			 * shared channel's peer->us balance instead of
+			 * the peer's outward reach -- and
+			 * SendpayResultMonitor then credits the peer with
+			 * destination_reached for it.  The legacy
+			 * getroute call excluded self for the same
+			 * reason.
+			 */
+			auto la = obj.start_array("layers");
+			if (!exclude_layer.empty())
+				la.entry(exclude_layer);
+			la.end_array();
+			/* Generous max-fee tolerance for a probe; askrene
+			 * optimizes for cheaper paths anyway via its
+			 * probability scoring.
+			 */
+			obj.field("maxfee_msat", (amount * 0.01).to_msat());
+			obj.field("final_cltv", 14);
+			obj.field("maxparts", 1);
+			obj.end_object();
+			return rpc.command("getroutes", std::move(pj));
 		}).then([this](Jsmn::Object res) {
 			try {
 				/* getroutes path[] hop fields were renamed
