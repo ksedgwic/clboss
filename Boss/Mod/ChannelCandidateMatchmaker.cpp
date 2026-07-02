@@ -128,20 +128,31 @@ private:
 				  ).then([this](Jsmn::Object res) {
 			auto patron = Ln::NodeId();
 			try {
-				/* getroutes' path[K].node_id_out was added
-				 * v26.06; the deprecated old name is
-				 * next_node_id, kept through v27.06 except
-				 * when developer mode suppresses
-				 * deprecated outputs.  Prefer the new
-				 * name, fall back to the old.  TODO: drop
-				 * the fallback once v26.04 is no longer
-				 * supported.
+				/* getroutes' path[K].node_id_out shipped in
+				 * CLN v26.06.  No fallback to the
+				 * deprecated next_node_id: the Initiator
+				 * version gate refuses stock older CLN at
+				 * startup, and this check keeps a bypassed
+				 * gate (clboss-skip-cln-version-check)
+				 * loud instead of subtly wrong.
 				 */
 				auto path0 = res["routes"][0]["path"][0];
+				if (!path0.has("node_id_out"))
+					return Boss::log( bus, Error
+							, "ChannelCandidateMatchmaker: "
+							  "getroutes hop lacks "
+							  "node_id_out; CLBOSS "
+							  "requires CLN v26.06+ (or "
+							  "a backport of the "
+							  "getroutes fields)."
+							).then([]()
+								-> Ev::Io<void>{
+						throw RpcError( "getroutes"
+							      , Jsmn::Object()
+							      );
+					});
 				patron = Ln::NodeId(std::string(
-					path0.has("node_id_out")
-						? path0["node_id_out"]
-						: path0["next_node_id"]
+					path0["node_id_out"]
 				));
 			} catch (std::exception const&) {
 				/* Jsmn::TypeError from the field access OR

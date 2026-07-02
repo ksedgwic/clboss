@@ -637,33 +637,47 @@ private:
 				if (!path.is_array() || path.size() == 0)
 					throw Jsmn::TypeError();
 
-				/* getroutes path[] hop fields were renamed
-				 * in CLN v26.06.  Which set of names
-				 * actually appears in the response
-				 * depends on the CLN version AND whether
-				 * the node runs with developer mode
-				 * (which suppresses deprecated outputs):
-				 *
-				 *   v26.04                  -> old only
-				 *   v26.06+ no developer    -> both emitted
-				 *   v26.06+ developer=true  -> new only
-				 *
-				 * Bridge by preferring the new name,
-				 * falling back to the old.  TODO: drop
-				 * the fallback once CLN v26.04 is no
-				 * longer supported and the old names are
-				 * removed in v27.06.
-				 *
-				 * short_channel_id_dir is older (v24.11)
-				 * and is emitted unconditionally.
+				/* getroutes path[] hop fields node_id_out /
+				 * amount_out_msat / cltv_out shipped in
+				 * CLN v26.06 (short_channel_id_dir is
+				 * older, v24.11, and unconditional).  The
+				 * deprecated pre-v26.06 names carry
+				 * one-hop-shifted in-side values that
+				 * must never be spliced into a sendpay
+				 * route, so there is deliberately NO
+				 * fallback: the Initiator version gate
+				 * refuses stock older CLN at startup, and
+				 * this per-response check keeps a
+				 * bypassed gate (clboss-skip-cln-version-
+				 * check) loud instead of subtly wrong.
 				 */
 				route.clear();
 				for (auto hop_j : path) {
+					if ( !hop_j.has("node_id_out")
+					  || !hop_j.has("amount_out_msat")
+					  || !hop_j.has("cltv_out")
+					   ) {
+						return Boss::log( bus, Error
+								, "FundsMover[%s]: "
+								  "getroutes hop lacks "
+								  "node_id_out/"
+								  "amount_out_msat/"
+								  "cltv_out; CLBOSS "
+								  "requires CLN v26.06+ "
+								  "(or a backport of "
+								  "those getroutes "
+								  "fields).  Refusing to "
+								  "build a route from "
+								  "the deprecated "
+								  "shifted fields."
+								, attempt_tag().c_str()
+								).then([]() {
+							return Ev::lift(false);
+						});
+					}
 					Hop hop;
 					hop.id = Ln::NodeId(std::string(
-						hop_j.has("node_id_out")
-							? hop_j["node_id_out"]
-							: hop_j["next_node_id"]
+						hop_j["node_id_out"]
 					));
 					auto sdir = std::string(
 						hop_j["short_channel_id_dir"]
@@ -678,14 +692,10 @@ private:
 						std::stoul(sdir.substr(slash + 1))
 					);
 					hop.amount_msat = Ln::Amount::object(
-						hop_j.has("amount_out_msat")
-							? hop_j["amount_out_msat"]
-							: hop_j["amount_msat"]
+						hop_j["amount_out_msat"]
 					);
 					hop.delay = std::uint32_t(double(
-						hop_j.has("cltv_out")
-							? hop_j["cltv_out"]
-							: hop_j["delay"]
+						hop_j["cltv_out"]
 					));
 					route.push_back(hop);
 				}
