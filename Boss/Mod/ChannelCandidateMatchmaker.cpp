@@ -1,4 +1,5 @@
 #include"Boss/Mod/ChannelCandidateMatchmaker.hpp"
+#include"Boss/Mod/GetroutesFirstHop.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/AmountSettings.hpp"
 #include"Boss/Msg/Init.hpp"
@@ -128,21 +129,15 @@ private:
 				  ).then([this](Jsmn::Object res) {
 			auto patron = Ln::NodeId();
 			try {
-				/* getroutes' path[K].node_id_out was added
-				 * v26.06; the deprecated old name is
-				 * next_node_id, kept through v27.06 except
-				 * when developer mode suppresses
-				 * deprecated outputs.  Prefer the new
-				 * name, fall back to the old.  TODO: drop
-				 * the fallback once v26.04 is no longer
-				 * supported.
-				 */
-				auto path0 = res["routes"][0]["path"][0];
-				patron = Ln::NodeId(std::string(
-					path0.has("node_id_out")
-						? path0["node_id_out"]
-						: path0["next_node_id"]
-				));
+				/* GetroutesFirstHop reads the v26.06
+				 * node_id_out, deriving it from the
+				 * deprecated next_node_id on a stock
+				 * v26.04 response; a route carrying
+				 * neither form throws into the handler
+				 * below.  */
+				patron = GetroutesFirstHop(
+					res["routes"][0]
+				).node_id_out;
 			} catch (std::exception const&) {
 				/* Jsmn::TypeError from the field access OR
 				 * std::range_error (via BacktraceException)

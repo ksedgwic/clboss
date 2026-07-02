@@ -101,6 +101,26 @@ further.
 Installing
 ----------
 
+### Requirements
+
+CLBOSS supports **Core Lightning v26.04 or later**; that is the
+oldest release it is tested against.  Its probing subsystems build
+routes from the `getroutes` per-hop out-side fields (`node_id_out` /
+`amount_out_msat` / `cltv_out`): on v26.06 and later these are read
+directly, and on older versions they are derived from the deprecated
+per-hop fields, which carry the same values one hop over.
+
+At startup CLBOSS checks the CLN version.  From v25.09 up to v26.04
+it starts with a warning that the version is untested.  Older than
+v25.09 it refuses to run — before creating or modifying any on-disk
+state — because `getroutes` gained the `maxparts` parameter in
+v25.09 and CLBOSS passes it on every call, so probing, dowsing, and
+candidate matchmaking would all fail.  If (and only if) your older
+CLN carries backports of what CLBOSS needs (askrene `getroutes` with
+`maxparts`, `xpay`), you can bypass the refusal with
+`--clboss-skip-cln-version-check`.  Users on older CLN releases
+should stay on CLBOSS 0.16.x.
+
 From an [official source release](https://github.com/ZmnSCPxj/clboss/releases), just:
 
     ./configure && make

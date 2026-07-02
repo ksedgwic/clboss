@@ -18,6 +18,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   drop below twice the minimum channel size between the decider's
   trigger and planning (#137).
 
+### Changed
+
+- **BREAKING**: CLBOSS now requires **Core Lightning v25.09 or
+  later**, and **v26.04 or later** is the tested floor.  The probing
+  subsystems build routes from the `getroutes` per-hop out-side
+  fields (`node_id_out` / `amount_out_msat` / `cltv_out`): on v26.06
+  and later these are read directly, and on older versions they are
+  derived from the deprecated per-hop fields, which carry the same
+  values one hop over.  At startup, CLN older than v25.09 is refused
+  before any on-disk state is created or modified, because
+  `getroutes` gained `maxparts` in v25.09 and CLBOSS passes it on
+  every call (note: with `important-plugin`, a refused start stops
+  lightningd itself); versions from v25.09 up to v26.04 start with a
+  warning that the version is untested.  Operators running an older
+  CLN that carries backports of what CLBOSS needs (askrene
+  `getroutes` with `maxparts`, `xpay`) can bypass the refusal with
+  `--clboss-skip-cln-version-check`.  Users on older CLN releases
+  should stay on CLBOSS 0.16.x, which uses the legacy
+  `getroute`/`pay` APIs that older CLN still provides.
+
 ## [0.16.3] - 2026-08-18: "Tougher Than the Race"
 
 ### Security

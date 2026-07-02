@@ -169,6 +169,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/FundsMover/Runner.hpp \
 	Boss/Mod/FundsMover/create_label.cpp \
 	Boss/Mod/FundsMover/create_label.hpp \
+	Boss/Mod/GetroutesFirstHop.cpp \
+	Boss/Mod/GetroutesFirstHop.hpp \
 	Boss/Mod/HtlcAcceptor.cpp \
 	Boss/Mod/HtlcAcceptor.hpp \
 	Boss/Mod/InitialConnect.cpp \
@@ -623,6 +625,7 @@ TESTS = \
 	tests/boss/test_feemodderbypricetheory \
 	tests/boss/test_forwardfeemonitor \
 	tests/boss/test_getmanifest \
+	tests/boss/test_getroutesfirsthop \
 	tests/boss/test_invoicepayer_decodepay \
 	tests/boss/test_initialrebalancer \
 	tests/boss/test_initiator_listconfigs_proxy \

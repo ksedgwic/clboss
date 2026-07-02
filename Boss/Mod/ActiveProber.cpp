@@ -1,6 +1,7 @@
 #include"Boss/Mod/ActiveProber.hpp"
 #include"Boss/Mod/AskreneLayer.hpp"
 #include"Boss/Mod/ChannelCandidateInvestigator/Main.hpp"
+#include"Boss/Mod/GetroutesFirstHop.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/ProbeActively.hpp"
@@ -293,31 +294,21 @@ private:
 			return rpc.command("getroutes", std::move(pj));
 		}).then([this](Jsmn::Object res) {
 			try {
-				/* getroutes path[] hop fields were renamed
-				 * in CLN v26.06.  Which names actually get
-				 * emitted depends on the CLN version AND
-				 * whether the node runs with developer
-				 * mode (which suppresses deprecated
-				 * outputs):
-				 *
-				 *   v26.04                  -> old names only
-				 *   v26.06+ no developer    -> both names emitted
-				 *   v26.06+ developer=true  -> new names only
-				 *
-				 * Bridge by preferring the new name, falling
-				 * back to the old.  TODO: drop the fallback
-				 * once CLN v26.04 is no longer supported and
-				 * the old names are gone for good in v27.06.
-				 *
-				 * short_channel_id_dir is older (v24.11)
-				 * and is emitted unconditionally.
-				 */
-				auto path0 = res["routes"][0]["path"][0];
-				id1 = Ln::NodeId(std::string(
-					path0.has("node_id_out")
-						? path0["node_id_out"]
-						: path0["next_node_id"]
-				));
+				/* GetroutesFirstHop reads the v26.06
+				 * out-side hop fields (node_id_out /
+				 * amount_out_msat / cltv_out), deriving
+				 * them from the deprecated trio on a
+				 * stock v26.04 response
+				 * (short_channel_id_dir is older, v24.11,
+				 * and unconditional).  A route carrying
+				 * neither form throws into the handler
+				 * below.  */
+				auto route = res["routes"][0];
+				auto hop0 = GetroutesFirstHop(route);
+				id1 = std::move(hop0.node_id_out);
+				amount1 = hop0.amount_out;
+				delay1 = hop0.cltv_out;
+				auto path0 = route["path"][0];
 				/* short_channel_id_dir is "SCID/dir"; split
 				 * into the SCID and the direction.  If
 				 * the slash is missing the response is
@@ -335,16 +326,6 @@ private:
 				chan1 = Ln::Scid(sdir.substr(0, slash));
 				direction1 = std::uint32_t(std::stoul(
 					sdir.substr(slash + 1)
-				));
-				amount1 = Ln::Amount::object(
-					path0.has("amount_out_msat")
-						? path0["amount_out_msat"]
-						: path0["amount_msat"]
-				);
-				delay1 = std::uint32_t(double(
-					path0.has("cltv_out")
-						? path0["cltv_out"]
-						: path0["delay"]
 				));
 			} catch (std::exception const& _) {
 				/* Broaden catch to std::exception so we also

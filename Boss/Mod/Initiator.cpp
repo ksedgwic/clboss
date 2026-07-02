@@ -7,6 +7,7 @@
 #include"Boss/Msg/EndOfOptions.hpp"
 #include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/ManifestOption.hpp"
+#include"Boss/Msg/Manifestation.hpp"
 #include"Boss/Msg/Option.hpp"
 #include"Boss/Msg/ProvideStatus.hpp"
 #include"Boss/Msg/SolicitStatus.hpp"
@@ -29,6 +30,7 @@
 #include"Util/make_unique.hpp"
 #include<algorithm>
 #include<assert.h>
+#include<cstdio>
 #include<set>
 #include<sstream>
 #include<stdlib.h>
@@ -68,6 +70,9 @@ private:
 
 	std::string proxy;
 	bool always_use_proxy;
+	/* Set from the clboss-skip-cln-version-check flag at init;
+	 * see check_cln_version() below.  */
+	bool skip_version_check;
 	std::unique_ptr<Net::Connector> connector;
 
 	Secp256k1::Random random;
@@ -109,6 +114,104 @@ private:
 		});
 	}
 
+	/* CLBOSS supports CLN v26.04 and newer.  The getroutes parse
+	 * sites (GetroutesFirstHop) read the v26.06 out-side hop
+	 * fields (node_id_out / amount_out_msat / cltv_out) and
+	 * otherwise derive them from the deprecated trio.
+	 *
+	 * Below v26.04 the startup check has two tiers:
+	 *
+	 * - v25.09 up to v26.04: expected to work (the parse
+	 *   handles both hop-field forms) but untested.  Warn and
+	 *   proceed.
+	 *
+	 * - Older than v25.09: refuse to start, before any on-disk
+	 *   state is created or modified.  getroutes gained
+	 *   maxparts in v25.09 and CLBOSS passes it on every call,
+	 *   so every call would fail -- and the getroutes callers
+	 *   treat RPC errors as normal "no route" answers (the
+	 *   askrene idiom), so probing, dowsing, and candidate
+	 *   matchmaking would go quietly dead instead of failing
+	 *   loudly.
+	 *
+	 * clboss-skip-cln-version-check bypasses the refusal for
+	 * operators whose older CLN carries backports of what CLBOSS
+	 * needs (askrene getroutes with maxparts, xpay -- the
+	 * version string alone cannot show that).  An unparseable
+	 * version string is treated the same fail-open way -- custom
+	 * builds deserve a warning, not a lockout.
+	 */
+	Ev::Io<void> check_cln_version(Jsmn::Object info) {
+		auto version = std::string();
+		if (info.has("version") && info["version"].is_string())
+			version = std::string(info["version"]);
+		if (skip_version_check)
+			return Boss::log( bus, Info
+					, "Initiator: clboss-skip-cln-"
+					  "version-check set; not enforcing "
+					  "the CLN v25.09 minimum against "
+					  "\"%s\"."
+					, version.c_str()
+					);
+		auto major = unsigned(0);
+		auto minor = unsigned(0);
+		if (std::sscanf(version.c_str(), "v%u.%u", &major, &minor) != 2)
+			return Boss::log( bus, Warn
+					, "Initiator: unrecognized CLN "
+					  "version \"%s\"; proceeding -- the "
+					  "getroutes parse accepts both the "
+					  "v26.06 and v26.04 hop-field forms "
+					  "and fails per request otherwise."
+					, version.c_str()
+					);
+		auto ym = major * 100 + minor;
+		if (ym >= 2604)
+			return Ev::lift();
+		if (ym >= 2509)
+			return Boss::log( bus, Warn
+					, "Initiator: CLN %s is older than "
+					  "v26.04, the oldest release CLBOSS "
+					  "is tested against; proceeding.  "
+					  "The getroutes parse accepts both "
+					  "the v26.06 and v26.04 hop-field "
+					  "forms."
+					, version.c_str()
+					);
+		return refuse_to_start( std::string("Initiator: CLN ")
+				      + version
+				      + " is older than v25.09, which CLBOSS "
+					"requires: every getroutes call "
+					"CLBOSS makes passes maxparts, added "
+					"in v25.09, so probing, dowsing, and "
+					"candidate matchmaking would all "
+					"fail.  Refusing to start; no state "
+					"was created or modified.  Upgrade "
+					"CLN (v26.04 or newer is the tested "
+					"floor), or -- only if your CLN "
+					"carries backports of what CLBOSS "
+					"needs (askrene getroutes with "
+					"maxparts, xpay) -- start with "
+					"clboss-skip-cln-version-check."
+				      );
+	}
+	/* Same log-flush-then-abort dance as error() above: give the
+	 * output machinery a chance to push the Error line to
+	 * lightningd before the process exits.  */
+	Ev::Io<void> refuse_to_start(std::string reason) {
+		return Boss::log( bus, Boss::Error
+				, "%s"
+				, reason.c_str()
+				).then([]() {
+			auto act = Ev::lift();
+			for (auto i = 0; i < 32; ++i)
+				act += Ev::yield();
+			return act;
+		}).then([]() {
+			abort();
+			return Ev::lift();
+		});
+	}
+
 	void setup_proxy(std::string proxy) {
 		auto host = std::string();
 		auto port = int();
@@ -144,6 +247,7 @@ public:
 	      , initted(false)
 	      , proxy("")
 	      , always_use_proxy(false)
+	      , skip_version_check(false)
 	      {
 		assert(open_rpc_socket);
 
@@ -257,28 +361,6 @@ public:
 						, "RPC socket opened."
 						);
 			}).then([this]() {
-				db = Sqlite3::Db("data.clboss");
-				return db.transact();
-			}).then([this](Sqlite3::Tx tx) {
-				tx.query_execute("PRAGMA application_id = 0x424F5353;");
-				tx.query_execute("PRAGMA user_version = 0x2020434C;");
-				tx.commit();
-				return Boss::log( bus, Debug
-						, "Database file opened."
-						);
-			}).then([this]() {
-				return bus.raise(Msg::DbResource{db});
-			}).then([this]() {
-				return Boss::Signer( "keys.clboss"
-						   , random
-						   , db
-						   ).construct();
-			}).then([this](std::unique_ptr<Secp256k1::SignerIF> n_signer) {
-				signer = std::move(n_signer);
-				return Boss::log( bus, Debug
-						, "Privkey file loaded."
-						);
-			}).then([this]() {
 				return rpc->command( "getinfo"
 						   , Json::Out::empty_object()
 						   );
@@ -310,7 +392,34 @@ public:
 					Net::DirectConnector
 				>();
 
-				return Ev::lift();
+				/* CLN version gate.  Deliberately ahead
+				 * of the database and signer steps below:
+				 * a refusal must leave no on-disk trace
+				 * (no data.clboss, no schema, no
+				 * keys.clboss).  */
+				return check_cln_version(info);
+			}).then([this]() {
+				db = Sqlite3::Db("data.clboss");
+				return db.transact();
+			}).then([this](Sqlite3::Tx tx) {
+				tx.query_execute("PRAGMA application_id = 0x424F5353;");
+				tx.query_execute("PRAGMA user_version = 0x2020434C;");
+				tx.commit();
+				return Boss::log( bus, Debug
+						, "Database file opened."
+						);
+			}).then([this]() {
+				return bus.raise(Msg::DbResource{db});
+			}).then([this]() {
+				return Boss::Signer( "keys.clboss"
+						   , random
+						   , db
+						   ).construct();
+			}).then([this](std::unique_ptr<Secp256k1::SignerIF> n_signer) {
+				signer = std::move(n_signer);
+				return Boss::log( bus, Debug
+						, "Privkey file loaded."
+						);
 			}).then([this]() {
 				return rpc->command( "listconfigs"
 						   , Json::Out::empty_object()
@@ -407,6 +516,21 @@ public:
 			options.insert(o.name);
 			return Ev::lift();
 		});
+
+		bus.subscribe<Msg::Manifestation
+			     >([this](Msg::Manifestation const&) {
+			return bus.raise(Msg::ManifestOption{
+				"clboss-skip-cln-version-check",
+				Msg::OptionType_Flag,
+				Json::Out::direct(false),
+				"Skip the CLN >= v25.09 startup check.  ONLY "
+				"for CLN builds older than v25.09 that carry "
+				"backports of what CLBOSS needs (askrene "
+				"getroutes with maxparts, xpay).  v26.04 or "
+				"newer is the tested floor.",
+				false
+			});
+		});
 	}
 
 private:
@@ -423,6 +547,17 @@ private:
 			if (!options_j.has(o))
 				continue;
 			auto value = options_j[o];
+			/* Stashed directly rather than via a Msg::Option
+			 * subscription: the version gate consults it
+			 * before most modules are even listening, and
+			 * Initiator itself owns the option.  */
+			if (o == "clboss-skip-cln-version-check") {
+				if (value.is_boolean())
+					skip_version_check = !!value;
+				else if (value.is_string())
+					skip_version_check =
+						std::string(value) == "true";
+			}
 			rv += bus.raise(Msg::Option{o, std::move(value)});
 		}
 		return rv;
