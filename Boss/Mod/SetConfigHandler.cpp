@@ -9,6 +9,7 @@
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
 #include"S/Bus.hpp"
+#include<memory>
 
 namespace {
 
@@ -85,15 +86,36 @@ void SetConfigHandler::start() {
 		auto value = params.has("val")
 			? params["val"]
 			: Jsmn::Object();
+		/* Rejection back-channel: bus.raise() completes only
+		 * after every subscriber has run, so the owner's verdict
+		 * is in reject_reason by the time we acknowledge.
+		 * Failing the command matters beyond cosmetics:
+		 * lightningd persists the new value (configvar_save)
+		 * only on a success response, so a blanket ack would
+		 * record values clboss never applied -- and a
+		 * non-numeric value persisted for an int-typed option
+		 * even fails lightningd's own option parse on the next
+		 * start.  */
+		auto reject_reason = std::make_shared<std::string>();
 		return Boss::log( bus, Debug
 				, "SetConfigHandler: dispatching setconfig "
 				  "'%s'"
 				, name.c_str()
 				)
-		     + bus.raise(Boss::Msg::Option{name, std::move(value)})
-		     + bus.raise(Boss::Msg::CommandResponse{
+		     + bus.raise(Boss::Msg::Option{
+				name, std::move(value), reject_reason
+		       })
+		     + Ev::lift().then([this, id, reject_reason]() {
+			if (!reject_reason->empty())
+				return bus.raise(Boss::Msg::CommandFail{
+					id, RPC_INVALID_PARAMS,
+					"setconfig: " + *reject_reason,
+					Json::Out::empty_object()
+				});
+			return bus.raise(Boss::Msg::CommandResponse{
 				id, Json::Out::empty_object()
-		       });
+			});
+		     });
 	});
 }
 

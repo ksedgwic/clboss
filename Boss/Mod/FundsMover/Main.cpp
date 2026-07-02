@@ -177,6 +177,9 @@ private:
 				} else if (o.value.is_string()) {
 					secs = std::stoll(std::string(o.value));
 				} else {
+					o.reject("clboss-classic-layer-age-"
+						 "secs: unsupported value "
+						 "type");
 					return Boss::log( bus, Warn
 							, "FundsMover: clboss-"
 							  "classic-layer-age-secs: "
@@ -186,6 +189,8 @@ private:
 							);
 				}
 			} catch (std::exception const& e) {
+				o.reject("clboss-classic-layer-age-secs: "
+					 "not a valid number");
 				return Boss::log( bus, Warn
 						, "FundsMover: clboss-classic-"
 						  "layer-age-secs: parse error "
@@ -195,6 +200,8 @@ private:
 						);
 			}
 			if (secs <= 0) {
+				o.reject("clboss-classic-layer-age-secs: "
+					 "must be > 0");
 				return Boss::log( bus, Warn
 						, "FundsMover: clboss-classic-"
 						  "layer-age-secs: must be > 0; "
@@ -230,6 +237,8 @@ private:
 				} else if (o.value.is_string()) {
 					ppm = std::stoll(std::string(o.value));
 				} else {
+					o.reject("clboss-min-rebalance-ppm: "
+						 "unsupported value type");
 					return Boss::log( bus, Warn
 							, "FundsMover: clboss-min-"
 							  "rebalance-ppm: unsupported "
@@ -239,6 +248,8 @@ private:
 							);
 				}
 			} catch (std::exception const& e) {
+				o.reject("clboss-min-rebalance-ppm: "
+					 "not a valid number");
 				return Boss::log( bus, Warn
 						, "FundsMover: clboss-min-rebalance-"
 						  "ppm: parse error '%s'; keeping %"
@@ -248,6 +259,8 @@ private:
 						);
 			}
 			if (ppm < 0) {
+				o.reject("clboss-min-rebalance-ppm: "
+					 "must be >= 0");
 				return Boss::log( bus, Warn
 						, "FundsMover: clboss-min-rebalance-"
 						  "ppm: must be >= 0; keeping %"
@@ -277,6 +290,9 @@ private:
 				} else if (o.value.is_string()) {
 					ppm = std::stoll(std::string(o.value));
 				} else {
+					o.reject("clboss-min-rebalance-prob-"
+						 "ppm: unsupported value "
+						 "type");
 					return Boss::log( bus, Warn
 							, "FundsMover: clboss-min-"
 							  "rebalance-prob-ppm: "
@@ -286,6 +302,8 @@ private:
 							);
 				}
 			} catch (std::exception const& e) {
+				o.reject("clboss-min-rebalance-prob-ppm: "
+					 "not a valid number");
 				return Boss::log( bus, Warn
 						, "FundsMover: clboss-min-rebalance-"
 						  "prob-ppm: parse error '%s'; "
@@ -295,6 +313,8 @@ private:
 						);
 			}
 			if (ppm < 0) {
+				o.reject("clboss-min-rebalance-prob-ppm: "
+					 "must be >= 0");
 				return Boss::log( bus, Warn
 						, "FundsMover: clboss-min-rebalance-"
 						  "prob-ppm: must be >= 0; keeping %"

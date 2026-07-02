@@ -2,6 +2,7 @@
 #define BOSS_MSG_OPTION_HPP
 
 #include"Jsmn/Object.hpp"
+#include<memory>
 #include<string>
 
 namespace Boss { namespace Msg {
@@ -27,6 +28,29 @@ namespace Boss { namespace Msg {
 struct Option {
 	std::string name;
 	Jsmn::Object value;
+	/* Rejection back-channel, non-null only on the setconfig path
+	 * (Boss::Mod::SetConfigHandler allocates it; init-time Option
+	 * raises leave it null).  The subscriber that owns `name` and
+	 * rejects `value` reports the reason via reject();
+	 * SetConfigHandler then fails the setconfig command.  Failing
+	 * matters beyond cosmetics: lightningd persists a setconfig
+	 * value (configvar_save) only on a success response, so
+	 * acking a rejected value records it in config.setconfig and
+	 * listconfigs forever -- and a non-numeric value persisted
+	 * for an int-typed option even fails lightningd's own option
+	 * parse on the NEXT start.  Owners that accept the value
+	 * leave it untouched.
+	 */
+	std::shared_ptr<std::string> reject_reason;
+
+	/* For the owning subscriber: report rejection of a dynamic
+	 * update.  No-op at init time (null reject_reason), where
+	 * quietly keeping the default is the correct behaviour.
+	 */
+	void reject(std::string reason) const {
+		if (reject_reason)
+			*reject_reason = std::move(reason);
+	}
 };
 
 }}
