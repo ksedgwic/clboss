@@ -129,6 +129,35 @@ Ev::Io<void> update_channel( Boss::Mod::Rpc& rpc
 			   , std::uint16_t cltv_expiry_delta
 			   );
 
+/* --- self-exclusion layer ------------------------------------------
+ *
+ * Name of the tiny persistent askrene layer whose only content is our
+ * own node in disabled_nodes.  Modules whose getroutes must never
+ * route through us as a middle hop -- Dowser capacity probes and
+ * ActiveProber probes, whose askrene source is a REMOTE node -- pass
+ * this layer.  The legacy getroute calls expressed the same intent
+ * with exclude=[self_id]; askrene has no inline equivalent, only
+ * layers.  Kept separate from the clboss layer (whose disabled_nodes
+ * also carries self) because that layer's learned constraints would
+ * bias what the probes measure; this one is pure self-exclusion.
+ */
+extern std::string const self_layer_name;
+
+/* Ensure self_layer_name exists and carries our node in its
+ * disabled_nodes (idempotent create; the disable is deduped via
+ * is_node_disabled, since askrene appends without deduping).
+ * Resolves true when the layer is ready to be named in a getroutes
+ * layers array; false when askrene is unavailable (RpcError), in
+ * which case the caller must omit the layer -- naming an absent
+ * layer is a hard getroutes error -- and degrade to probing without
+ * self-exclusion.  Cheap enough to call per probe: create is a no-op
+ * on an existing persistent layer, and the dedup check dumps only
+ * this one-entry layer.
+ */
+Ev::Io<bool> ensure_self_layer( Boss::Mod::Rpc& rpc
+			      , Ln::NodeId self_id
+			      );
+
 }}}
 
 #endif /* !defined(BOSS_MOD_ASKRENELAYER_HPP_) */

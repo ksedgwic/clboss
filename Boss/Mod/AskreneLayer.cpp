@@ -194,4 +194,37 @@ disable_node( Boss::Mod::Rpc& rpc
 	});
 }
 
+std::string const self_layer_name = "clboss-self";
+
+Ev::Io<bool>
+ensure_self_layer( Boss::Mod::Rpc& rpc
+		 , Ln::NodeId self_id
+		 ) {
+	auto parms = Json::Out()
+		.start_object()
+			.field("layer", self_layer_name)
+			.field("persistent", true)
+		.end_object()
+		;
+	return rpc.command( "askrene-create-layer"
+			  , std::move(parms)
+			  ).then([&rpc, self_id](Jsmn::Object _) {
+		return is_node_disabled(rpc, self_layer_name, self_id);
+	}).then([&rpc, self_id](bool already) {
+		if (already)
+			return Ev::lift();
+		return disable_node(rpc, self_layer_name, self_id);
+	}).then([]() {
+		return Ev::lift(true);
+	}).catching<RpcError>([](RpcError const&) {
+		/* No askrene (CLN < v24.11) or create failed: the caller
+		 * probes without the layer, as the code did before this
+		 * layer existed.  is_node_disabled and disable_node
+		 * swallow their own RpcErrors, so this catch fires only
+		 * for create-layer -- if the disable is silently lost,
+		 * the layer still exists and naming it stays safe.  */
+		return Ev::lift(false);
+	});
+}
+
 }}}

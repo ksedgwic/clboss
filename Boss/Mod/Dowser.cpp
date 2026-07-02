@@ -1,3 +1,4 @@
+#include"Boss/Mod/AskreneLayer.hpp"
 #include"Boss/Mod/Dowser.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/ModG/ReqResp.hpp"
@@ -92,6 +93,11 @@ private:
 
 	Ln::Amount amount;
 	Ln::Amount probe_amount;
+	/* Name of the self-exclusion layer to pass to getroutes, or
+	 * empty to probe without one (askrene unavailable).  Resolved
+	 * by Dowser::start() via AskreneLayer::ensure_self_layer
+	 * before the Run starts.  */
+	std::string exclude_layer;
 
 public:
 	Run( S::Bus& bus_
@@ -122,8 +128,11 @@ public:
 			   )
 	     { }
 
-	Ev::Io<void> run(Boss::Mod::Rpc& rpc_) {
+	Ev::Io<void> run( Boss::Mod::Rpc& rpc_
+			, std::string exclude_layer_
+			) {
 		rpc = &rpc_;
+		exclude_layer = std::move(exclude_layer_);
 		auto self = shared_from_this();
 		return Ev::lift().then([self]() {
 			return self->probe();
@@ -143,29 +152,38 @@ private:
 	 * does multi-path enumeration natively (CLN >= v24.08, getroutes).
 	 */
 	Ev::Io<void> probe() {
-		auto params = Json::Out()
-			.start_object()
-				.field("source", std::string(fromid))
-				.field("destination", std::string(toid))
-				.field("amount_msat", probe_amount.to_msat())
-				/* No auto.localchans / auto.sourcefree here:
-				 * `fromid` is the probe SOURCE and is a remote
-				 * node (a channel candidate/proposal target),
-				 * not us, so those local-source helpers would
-				 * model a remote node as ourselves and bias the
-				 * flow estimate.  Same reasoning as the empty
-				 * layers in ChannelCandidateMatchmaker. */
-				.start_array("layers")
-				.end_array()
-				.field( "maxfee_msat"
-				      , probe_maxfee(probe_amount).to_msat()
-				      )
-				.field("final_cltv", probe_final_cltv)
-				.field("maxparts", probe_maxparts)
-			.end_object()
-			;
+		auto pj = Json::Out();
+		auto obj = pj.start_object();
+		obj.field("source", std::string(fromid));
+		obj.field("destination", std::string(toid));
+		obj.field("amount_msat", probe_amount.to_msat());
+		/* No auto.localchans / auto.sourcefree here: `fromid` is
+		 * the probe SOURCE and is a remote node (a channel
+		 * candidate/proposal target), not us, so those
+		 * local-source helpers would model a remote node as
+		 * ourselves and bias the flow estimate.  Same reasoning
+		 * as the empty layers in ChannelCandidateMatchmaker.
+		 *
+		 * The self-exclusion layer IS passed (when askrene
+		 * accepted it): our public channels are in the gossip
+		 * map like anyone else's, so without it part of the
+		 * fromid->toid flow can ride through our own node -- the
+		 * dowse then counts our own liquidity toward the
+		 * candidate's capacity, retaining weak candidates and
+		 * over-sizing their channels.  The legacy getroute call
+		 * excluded self for the same reason.  */
+		auto la = obj.start_array("layers");
+		if (!exclude_layer.empty())
+			la.entry(exclude_layer);
+		la.end_array();
+		obj.field( "maxfee_msat"
+			 , probe_maxfee(probe_amount).to_msat()
+			 );
+		obj.field("final_cltv", probe_final_cltv);
+		obj.field("maxparts", probe_maxparts);
+		obj.end_object();
 		return rpc->command( "getroutes"
-				   , std::move(params)
+				   , std::move(pj)
 				   ).then([this](Jsmn::Object res) {
 			auto delivered = Ln::Amount::sat(0);
 			if (res.is_object() && res.has("routes")) {
@@ -278,6 +296,7 @@ void Dowser::start() {
 	bus.subscribe<Msg::Init
 		     >([this](Msg::Init const& init) {
 		rpc = &init.rpc;
+		self_id = init.self_id;
 		return Ev::lift();
 	});
 	bus.subscribe<Msg::RequestDowser
@@ -288,8 +307,21 @@ void Dowser::start() {
 						);
 		return Ev::lift().then([this]() {
 			return wait_for_rpc(rpc);
-		}).then([this, run]() {
-			return Boss::concurrent(run->run(*rpc));
+		}).then([this]() {
+			/* The probe must not route through us; the shared
+			 * self-exclusion layer expresses the legacy
+			 * exclude=[self_id] in askrene terms.  false =
+			 * askrene unavailable; probe without it (the
+			 * getroutes will fail on such CLN anyway).  */
+			return Boss::Mod::AskreneLayer::ensure_self_layer(
+				*rpc, self_id
+			);
+		}).then([this, run](bool ready) {
+			return Boss::concurrent(run->run(
+				*rpc,
+				ready ? Boss::Mod::AskreneLayer::self_layer_name
+				      : std::string()
+			));
 		});
 	});
 
