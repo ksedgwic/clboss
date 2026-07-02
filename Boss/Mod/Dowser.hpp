@@ -1,6 +1,7 @@
 #ifndef BOSS_MOD_DOWSER_HPP
 #define BOSS_MOD_DOWSER_HPP
 
+#include"Ln/NodeId.hpp"
 #include<memory>
 
 namespace Boss { namespace Mod { class Rpc; }}
@@ -18,6 +19,7 @@ class Dowser {
 private:
 	S::Bus& bus;
 	Boss::Mod::Rpc* rpc;
+	Ln::NodeId self_id;
 
 	class CommandImpl;
 	std::unique_ptr<CommandImpl> cmdimpl;
