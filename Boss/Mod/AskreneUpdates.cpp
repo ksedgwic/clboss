@@ -205,6 +205,8 @@ private:
 			} else if (o.value.is_string()) {
 				secs = std::stoll(std::string(o.value));
 			} else {
+				o.reject( std::string(name)
+					+ ": unsupported value type");
 				return Boss::log( bus, Warn
 						, "AskreneUpdates: %s: "
 						  "unsupported value type; "
@@ -213,18 +215,22 @@ private:
 						);
 			}
 		} catch (std::exception const& e) {
+			o.reject( std::string(name)
+				+ ": not a valid number");
 			return Boss::log( bus, Warn
 					, "AskreneUpdates: %s: parse error "
 					  "'%s'; keeping %" PRIu64 "."
 					, name, e.what(), target
 					);
 		}
-		if (secs <= 0)
+		if (secs <= 0) {
+			o.reject(std::string(name) + ": must be > 0");
 			return Boss::log( bus, Warn
 					, "AskreneUpdates: %s: must be > 0; "
 					  "keeping %" PRIu64 "."
 					, name, target
 					);
+		}
 		target = std::uint64_t(secs);
 		return Boss::log( bus, Info
 				, "AskreneUpdates: %s = %" PRIu64 " seconds."
