@@ -58,7 +58,15 @@ private:
 				return Ev::lift();
 			auto s = std::string(o.value);
 			auto m = RebalanceMode();
-			if (!rebalance_mode_from_string(s, m))
+			if (!rebalance_mode_from_string(s, m)) {
+				/* No double quotes in the message:
+				 * lightningd forwards plugin setconfig
+				 * errors as the raw JSON-escaped token
+				 * (plugin_setconfig_done uses the wire
+				 * bytes verbatim), so embedded quotes
+				 * reach the user doubled-escaped.  */
+				o.reject( option_name + ": unrecognized "
+					  "value '" + s + "'");
 				return Boss::log( bus, Error
 						, "RebalanceModeManager: "
 						  "ignoring unrecognized "
@@ -68,6 +76,7 @@ private:
 						, s.c_str()
 						, rebalance_mode_to_string(mode)
 						);
+			}
 			if (m == mode)
 				return Ev::lift();
 			mode = m;

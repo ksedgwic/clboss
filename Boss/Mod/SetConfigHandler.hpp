@@ -26,6 +26,14 @@ namespace Boss { namespace Mod {
  * updates MUST tolerate both shapes in its Msg::Option handler --
  * inspect `o.value.is_string()` and parse from the string form
  * when appropriate.
+ *
+ * A handler that REJECTS a dynamic value keeps its current setting
+ * and MUST also report the rejection via Msg::Option::reject(), so
+ * the setconfig command fails and lightningd does not persist the
+ * value.  A silently-acked rejected value lands in config.setconfig
+ * and diverges from the running configuration; a non-numeric value
+ * persisted for an int-typed option even fails lightningd's own
+ * option parse on the next start.
  */
 class SetConfigHandler {
 private:
