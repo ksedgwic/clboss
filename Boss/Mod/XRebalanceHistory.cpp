@@ -130,14 +130,22 @@ private:
 			 * path encodes the value as a JSON string.
 			 * Tolerate both (same as
 			 * clboss-xrebalance-age-secs).  */
-			auto secs = std::uint64_t(0);
+			/* Signed so a negative value is rejected below
+			 * rather than wrapping to a huge unsigned
+			 * (std::stoull accepts a leading minus and
+			 * negates modulo 2^64).  */
+			long long secs = 0;
 			try {
 				if (o.value.is_number()) {
-					secs = std::uint64_t(double(o.value));
+					secs = static_cast<long long>(
+					    double(o.value));
 				} else if (o.value.is_string()) {
-					secs = std::stoull(
+					secs = std::stoll(
 					    std::string(o.value));
 				} else {
+					o.reject("clboss-xrebalance-history-"
+						 "age-secs: unsupported value "
+						 "type");
 					return Boss::log( bus, Warn
 							, "XRebalanceHistory: "
 							  "clboss-xrebalance-"
@@ -149,6 +157,8 @@ private:
 							);
 				}
 			} catch (std::exception const& e) {
+				o.reject("clboss-xrebalance-history-age-secs: "
+					 "not a valid number");
 				return Boss::log( bus, Warn
 						, "XRebalanceHistory: clboss-"
 						  "xrebalance-history-age-secs: "
@@ -158,7 +168,9 @@ private:
 						, history_age_secs
 						);
 			}
-			if (secs == 0) {
+			if (secs <= 0) {
+				o.reject("clboss-xrebalance-history-age-secs: "
+					 "must be > 0");
 				return Boss::log( bus, Warn
 						, "XRebalanceHistory: clboss-"
 						  "xrebalance-history-age-secs: "
@@ -167,7 +179,7 @@ private:
 						, history_age_secs
 						);
 			}
-			history_age_secs = secs;
+			history_age_secs = std::uint64_t(secs);
 			return Boss::log( bus, Info
 					, "XRebalanceHistory: retention = "
 					  "%" PRIu64 " seconds"

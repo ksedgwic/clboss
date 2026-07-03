@@ -23,6 +23,7 @@
 #include"Sqlite3.hpp"
 #include"Util/make_unique.hpp"
 #include<cinttypes>
+#include<cmath>
 #include<cstdint>
 #include<map>
 #include<string>
@@ -60,11 +61,14 @@ bool parse_double(Jsmn::Object const& v, double& out) {
 	try {
 		if (v.is_number()) {
 			out = double(v);
-			return true;
+			return std::isfinite(out);
 		}
 		if (v.is_string()) {
+			/* stod accepts "nan" and "inf"; a NaN stored in
+			 * an option silently defeats every subsequent
+			 * range check (comparisons are all false).  */
 			out = std::stod(std::string(v));
-			return true;
+			return std::isfinite(out);
 		}
 	} catch (std::exception const&) { }
 	return false;
@@ -72,11 +76,24 @@ bool parse_double(Jsmn::Object const& v, double& out) {
 bool parse_u64(Jsmn::Object const& v, std::uint64_t& out) {
 	try {
 		if (v.is_number()) {
-			out = std::uint64_t(double(v));
+			/* Reject negatives and non-finite before the
+			 * conversion: double->uint64 of either is
+			 * undefined, and stoull-style wrapping would
+			 * silently accept -1 as ~1.8e19.  */
+			auto d = double(v);
+			if (!std::isfinite(d) || d < 0)
+				return false;
+			out = std::uint64_t(d);
 			return true;
 		}
 		if (v.is_string()) {
-			out = std::stoull(std::string(v));
+			/* Signed parse so a negative is rejected rather
+			 * than wrapped (std::stoull accepts a leading
+			 * minus and negates modulo 2^64).  */
+			auto s = std::stoll(std::string(v));
+			if (s < 0)
+				return false;
+			out = std::uint64_t(s);
 			return true;
 		}
 	} catch (std::exception const&) { }
@@ -265,7 +282,8 @@ private:
 		if (o.name == opt_horizon_max) {
 			auto v = std::uint64_t(0);
 			if (!parse_u64(o.value, v))
-				return bad_option(o.name);
+				return bad_option(o, "must be a "
+						     "non-negative integer");
 			horizon_max_secs = v;
 			if (horizon_max_secs == 0)
 				return Boss::log( bus, Info
@@ -280,7 +298,7 @@ private:
 		if (o.name == opt_horizon_frac) {
 			auto v = double(0.0);
 			if (!parse_double(o.value, v) || v <= 0)
-				return bad_option(o.name);
+				return bad_option(o, "must be a number > 0");
 			horizon_frac = v;
 			return Boss::log( bus, Info
 					, "XRebalancePredictor: horizon "
@@ -290,7 +308,8 @@ private:
 		if (o.name == opt_min_samples) {
 			auto v = std::uint64_t(0);
 			if (!parse_u64(o.value, v) || v < 1)
-				return bad_option(o.name);
+				return bad_option(o, "must be an "
+						     "integer >= 1");
 			min_samples = v;
 			return Boss::log( bus, Info
 					, "XRebalancePredictor: min "
@@ -300,7 +319,7 @@ private:
 		if (o.name == opt_wall_margin) {
 			auto v = double(0.0);
 			if (!parse_double(o.value, v) || v <= 0)
-				return bad_option(o.name);
+				return bad_option(o, "must be a number > 0");
 			wall_margin = v;
 			return Boss::log( bus, Info
 					, "XRebalancePredictor: wall "
@@ -310,7 +329,7 @@ private:
 		if (o.name == opt_floor_factor) {
 			auto v = double(0.0);
 			if (!parse_double(o.value, v) || v < 0)
-				return bad_option(o.name);
+				return bad_option(o, "must be a number >= 0");
 			floor_factor = v;
 			if (floor_factor == 0)
 				return Boss::log( bus, Info
@@ -325,11 +344,18 @@ private:
 		return Ev::lift();
 	}
 
-	Ev::Io<void> bad_option(std::string const& name) {
+	Ev::Io<void> bad_option( Msg::Option const& o
+			       , char const* reason
+			       ) {
+		/* Report the rejection so SetConfigHandler fails the
+		 * setconfig command and lightningd does not persist the
+		 * value (no-op at init time).  */
+		o.reject(o.name + ": " + reason);
 		return Boss::log( bus, Warn
-				, "XRebalancePredictor: %s: could not "
-				  "parse value; keeping current setting."
-				, name.c_str());
+				, "XRebalancePredictor: %s: %s; "
+				  "keeping current setting."
+				, o.name.c_str()
+				, reason);
 	}
 
 	Ev::Io<void> run(std::uint64_t cutoff) {

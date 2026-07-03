@@ -23,6 +23,7 @@
 #include"Util/Str.hpp"
 #include"Util/make_unique.hpp"
 #include<algorithm>
+#include<cmath>
 #include<ctime>
 #include<limits>
 #include<map>
@@ -229,16 +230,20 @@ private:
 					lo = std::stod(s.substr(0, colon));
 					hi = std::stod(s.substr(colon + 1));
 				} catch (std::exception const&) {
+					o.reject(o.name + ": invalid range");
 					return Boss::log( bus, Error
 							, "XRebalancer: ignoring invalid "
 							  "%s range \"%s\"."
 							, o.name.c_str(), s.c_str() );
 				}
-				if (!(lo > 0.0) || !(hi > 0.0))
+				if (!(lo > 0.0) || !(hi > 0.0)) {
+					o.reject( o.name + ": range bounds "
+						  "must be > 0");
 					return Boss::log( bus, Error
 							, "XRebalancer: %s range bounds "
 							  "must be > 0; ignoring \"%s\"."
 							, o.name.c_str(), s.c_str() );
+				}
 				if (hi < lo) { auto t = lo; lo = hi; hi = t; }
 				size_factor = lo;
 				size_factor_hi = hi;
@@ -255,10 +260,16 @@ private:
 		 * requires >= 1), and store as an integer.  */
 		if (o.name == opt_maxparts) {
 			auto s = std::string(o.value);
-			auto v = double(0.0);
+			auto v = std::nan("");
 			try {
 				v = std::stod(s);
-			} catch (std::exception const&) {
+			} catch (std::exception const&) { }
+			/* stod accepts "nan"/"inf", and casting a
+			 * non-finite or out-of-range double to uint32 is
+			 * undefined -- fold those into the invalid path
+			 * and clamp the survivors before the cast.  */
+			if (!std::isfinite(v)) {
+				o.reject(o.name + ": not a valid number");
 				return Boss::log( bus, Error
 						, "XRebalancer: ignoring invalid "
 						  "%s value \"%s\"."
@@ -266,6 +277,7 @@ private:
 			}
 			v = std::round(v);
 			if (v < 1.0) v = 1.0;
+			if (v > 1000000.0) v = 1000000.0;
 			maxparts = std::uint32_t(v);
 			return Boss::log( bus, Info
 					, "XRebalancer: %s set to %u."
@@ -281,10 +293,16 @@ private:
 		else return Ev::lift();
 
 		auto s = std::string(o.value);
-		auto v = double(0.0);
+		auto v = std::nan("");
 		try {
 			v = std::stod(s);
-		} catch (std::exception const&) {
+		} catch (std::exception const&) { }
+		/* Non-finite folds into the invalid path: stod accepts
+		 * "nan"/"inf", and a NaN would slip through every
+		 * clamping comparison below (all false) straight into
+		 * the stored setting.  */
+		if (!std::isfinite(v)) {
+			o.reject(o.name + ": not a valid number");
 			return Boss::log( bus, Error
 					, "XRebalancer: ignoring invalid %s "
 					  "value \"%s\"."
@@ -292,12 +310,14 @@ private:
 					);
 		}
 		if (o.name == opt_size_factor) {
-			if (!(v > 0.0))
+			if (!(v > 0.0)) {
+				o.reject(o.name + ": must be > 0");
 				return Boss::log( bus, Error
 						, "XRebalancer: %s must be > 0; "
 						  "ignoring \"%s\"."
 						, o.name.c_str(), s.c_str()
 						);
+			}
 		} else if (o.name == opt_fill_loc || o.name == opt_drain_loc) {
 			if (v < 0.0)        v = 0.0;
 			else if (v > 100.0) v = 100.0;

@@ -41,6 +41,7 @@
 #include<algorithm>
 #include<chrono>
 #include<cinttypes>
+#include<cmath>
 #include<ctime>
 #include<limits>
 #include<memory>
@@ -2672,6 +2673,8 @@ public:
 				} else if (o.value.is_string()) {
 					secs = std::stoll(std::string(o.value));
 				} else {
+					o.reject("clboss-xrebalance-age-secs: "
+						 "unsupported value type");
 					return Boss::log( bus, Warn
 							, "XMoveFunds: "
 							  "clboss-xrebalance-"
@@ -2683,6 +2686,8 @@ public:
 							);
 				}
 			} catch (std::exception const& e) {
+				o.reject("clboss-xrebalance-age-secs: "
+					 "not a valid number");
 				return Boss::log( bus, Warn
 						, "XMoveFunds: clboss-"
 						  "xrebalance-age-secs: "
@@ -2693,6 +2698,8 @@ public:
 						);
 			}
 			if (secs <= 0) {
+				o.reject("clboss-xrebalance-age-secs: "
+					 "must be > 0");
 				return Boss::log( bus, Warn
 						, "XMoveFunds: clboss-"
 						  "xrebalance-age-secs: "
@@ -2722,6 +2729,9 @@ public:
 				} else if (o.value.is_string()) {
 					secs = std::stod(std::string(o.value));
 				} else {
+					o.reject("clboss-xrebalance-part-"
+						 "wait-secs: unsupported "
+						 "value type");
 					return Boss::log( bus, Warn
 							, "XMoveFunds: clboss-"
 							  "xrebalance-part-wait-"
@@ -2732,6 +2742,8 @@ public:
 							);
 				}
 			} catch (std::exception const& e) {
+				o.reject("clboss-xrebalance-part-wait-secs: "
+					 "not a valid number");
 				return Boss::log( bus, Warn
 						, "XMoveFunds: clboss-"
 						  "xrebalance-part-wait-secs: "
@@ -2741,7 +2753,13 @@ public:
 						, part_wait_secs
 						);
 			}
-			if (secs <= 0.0) {
+			/* !(> 0) rather than (<= 0), and isfinite: stod
+			 * accepts "nan"/"inf", and either stored here
+			 * becomes a nonsense wait budget (NaN slips every
+			 * comparison; inf waits forever).  */
+			if (!std::isfinite(secs) || !(secs > 0.0)) {
+				o.reject("clboss-xrebalance-part-wait-secs: "
+					 "must be a finite number > 0");
 				return Boss::log( bus, Warn
 						, "XMoveFunds: clboss-"
 						  "xrebalance-part-wait-secs: "
