@@ -485,6 +485,8 @@ libclboss_la_SOURCES = \
 	Ln/HtlcAccepted.hpp \
 	Ln/NodeId.cpp \
 	Ln/NodeId.hpp \
+	Ln/OnionError.cpp \
+	Ln/OnionError.hpp \
 	Ln/Preimage.cpp \
 	Ln/Preimage.hpp \
 	Ln/Scid.cpp \
@@ -692,6 +694,7 @@ TESTS = \
 	tests/ln/test_commandid \
 	tests/ln/test_htlcaccepted \
 	tests/ln/test_nodeid \
+	tests/ln/test_onionerror \
 	tests/ln/test_scid \
 	tests/net/test_ipaddr \
 	tests/net/test_ipaddroronion \

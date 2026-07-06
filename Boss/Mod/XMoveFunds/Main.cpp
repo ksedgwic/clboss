@@ -30,6 +30,7 @@
 #include"Ln/Amount.hpp"
 #include"Ln/CommandId.hpp"
 #include"Ln/NodeId.hpp"
+#include"Ln/OnionError.hpp"
 #include"Ln/Preimage.hpp"
 #include"Ln/Scid.hpp"
 #include"S/Bus.hpp"
@@ -58,167 +59,13 @@ namespace {
  * (e.g. Dowser, MoveFundsCommand). */
 constexpr int RPC_INVALID_PARAMS = -32602;
 
-/* Parsed channel_update fields fed back into askrene via
- * AskreneLayer::update_channel after a sendpay 204 with an
- * onion-error failcode that carries a channel_update payload.
- * Mirrors the subset of BOLT 07 channel_update fields askrene-
- * update-channel accepts.
- *
- * Duplicated from FundsMover/Attempter.cpp for now -- both
- * sites parse the same wire format with the same field set.
- * Pulling the parser into a shared module (Util/, Ln/, or a
- * new Boss/Mod/ChanUpdate) is a separate cleanup tracked
- * apart from xrebalance work. */
-struct ChanUpdate {
-	bool          enabled;
-	std::uint16_t cltv_expiry_delta;
-	std::uint64_t htlc_minimum_msat;
-	std::uint32_t fee_base_msat;
-	std::uint32_t fee_proportional_millionths;
-	std::uint64_t htlc_maximum_msat;
-	/* bLIP-18 inbound fees (TLV 55555), signed.  has_inbound_fee
-	 * is false when the channel_update carries no such TLV. */
-	bool          has_inbound_fee                     = false;
-	std::int32_t  inbound_fee_base_msat               = 0;
-	std::int32_t  inbound_fee_proportional_millionths = 0;
-};
-
-/* Read a big-endian unsigned integer of 1..8 bytes from `data`
- * starting at `offset`.  Caller ensures the read is in-bounds.
- */
-std::uint64_t read_be( std::uint8_t const* data
-		     , std::size_t offset
-		     , std::size_t nbytes
-		     ) {
-	auto v = std::uint64_t(0);
-	for (auto i = std::size_t(0); i < nbytes; ++i)
-		v = (v << 8) | std::uint64_t(data[offset + i]);
-	return v;
-}
-
-/* Read a BOLT 01 BigSize at `pos` in `data` (size `size`), advancing
- * `pos` past it.  Returns false if truncated. */
-bool read_bigsize( std::uint8_t const* data
-		 , std::size_t size
-		 , std::size_t& pos
-		 , std::uint64_t& out
-		 ) {
-	if (pos >= size)
-		return false;
-	auto first = data[pos];
-	auto nbytes = std::size_t( first < 0xfd ? 0
-				 : first == 0xfd ? 2
-				 : first == 0xfe ? 4
-				 :                 8 );
-	if (nbytes == 0) {
-		out = first;
-		pos += 1;
-		return true;
-	}
-	if (pos + 1 + nbytes > size)
-		return false;
-	out = read_be(data, pos + 1, nbytes);
-	pos += 1 + nbytes;
-	return true;
-}
-
-/* Parse a BOLT 04 onion failure payload (the `raw_message` hex
- * from sendpay_failure data) and extract the embedded BOLT 07
- * channel_update fields.  Returns true on success and writes the
- * parsed values into `out`; returns false if the hex is malformed,
- * the failcode does not carry a channel_update, or the payload is
- * truncated.
- *
- * Wire layout of the onion failure for the relevant failcodes:
- *
- *   2  failcode
- *   X  variable per-failcode header:
- *        0x1007 / 0x100e:                  0 bytes
- *        0x100b / 0x100c (amount):         8 bytes htlc_msat
- *        0x100d (cltv):                    4 bytes cltv_expiry
- *   2  channel_update length (big-endian)
- *   N  channel_update bytes
- *
- * channel_update wire layout (BOLT 07), 128 bytes after the
- * optional 2-byte 0x0102 type prefix.  We only need the policy
- * fields (offset 109 onwards in the body), so we skip past
- * signature (64), chain_hash (32), short_channel_id (8),
- * timestamp (4), and message_flags (1).  The 2-byte type prefix
- * is present in CLN-issued channel_updates and absent in
- * LND-pre-v0.18 ones; detect by sniffing the first two bytes.
- */
-bool parse_chan_update( std::string const& raw_message_hex
-		      , ChanUpdate& out
-		      ) {
-	std::vector<std::uint8_t> bytes;
-	try {
-		bytes = Util::Str::hexread(raw_message_hex);
-	} catch (std::exception const&) {
-		return false;
-	}
-	if (bytes.size() < 4)
-		return false;
-
-	auto failcode = std::uint16_t((bytes[0] << 8) | bytes[1]);
-	auto header   = std::size_t(0);
-	switch (failcode) {
-	case 0x1007: case 0x100e:           header = 0; break;
-	case 0x100b: case 0x100c:           header = 8; break;
-	case 0x100d:                        header = 4; break;
-	default:                            return false;
-	}
-	auto pos = std::size_t(2) + header;
-	if (bytes.size() < pos + 2)
-		return false;
-	auto cu_len = std::size_t((bytes[pos] << 8) | bytes[pos + 1]);
-	pos += 2;
-	if (cu_len == 0 || bytes.size() < pos + cu_len)
-		return false;
-
-	auto cu      = bytes.data() + pos;
-	auto cu_size = cu_len;
-	/* Skip the optional 2-byte type prefix 0x0102 if present. */
-	if (cu_size >= 2 && cu[0] == 0x01 && cu[1] == 0x02) {
-		cu      += 2;
-		cu_size -= 2;
-	}
-	if (cu_size < 136)
-		return false;
-
-	auto channel_flags = cu[109];
-	out.enabled                     = !(channel_flags & 0x02);
-	out.cltv_expiry_delta           = std::uint16_t(read_be(cu, 110, 2));
-	out.htlc_minimum_msat           = read_be(cu, 112, 8);
-	out.fee_base_msat               = std::uint32_t(read_be(cu, 120, 4));
-	out.fee_proportional_millionths = std::uint32_t(read_be(cu, 124, 4));
-	out.htlc_maximum_msat           = read_be(cu, 128, 8);
-
-	/* Scan the trailing TLV stream for bLIP-18 inbound fees
-	 * (type 55555): value is [i32 base][i32 prop], both signed. */
-	out.has_inbound_fee                    = false;
-	out.inbound_fee_base_msat              = 0;
-	out.inbound_fee_proportional_millionths = 0;
-	auto tpos = std::size_t(136);
-	while (tpos < cu_size) {
-		auto ttype = std::uint64_t(0);
-		auto tlen  = std::uint64_t(0);
-		if (!read_bigsize(cu, cu_size, tpos, ttype))
-			break;
-		if (!read_bigsize(cu, cu_size, tpos, tlen))
-			break;
-		if (tpos + tlen > cu_size)
-			break;
-		if (ttype == 55555 && tlen >= 8) {
-			out.has_inbound_fee = true;
-			out.inbound_fee_base_msat =
-			    std::int32_t(std::uint32_t(read_be(cu, tpos, 4)));
-			out.inbound_fee_proportional_millionths =
-			    std::int32_t(std::uint32_t(read_be(cu, tpos + 4, 4)));
-		}
-		tpos += tlen;
-	}
-	return true;
-}
+/* Onion-error interpretation (ChanUpdate, parse_chan_update,
+ * failcode_name) lives in Ln/OnionError.  FundsMover/Attempter.cpp
+ * still carries its own copy of the parser; switching it to the
+ * shared module is deferred until Track A is next touched. */
+using Ln::OnionError::ChanUpdate;
+using Ln::OnionError::parse_chan_update;
+using Ln::OnionError::failcode_name;
 
 /* Decode either a single scid string or an array of scid strings
  * from a JSON value into a vector.  Throws on type/format error
@@ -1130,13 +977,12 @@ private:
 	 *     lookup fails -- a strictly safer signal than no
 	 *     feedback at all.
 	 *
-	 * Mirrors the simpler half of FundsMover/Attempter.cpp's
-	 * 204 handling; we deliberately skip the
-	 * channel_update-refresh branch (parse_chan_update +
-	 * update_channel with policy fields) for now -- the manual
-	 * xmovefunds primitive does not yet retry, so the inform-
-	 * constrained path alone is sufficient to make the NEXT
-	 * manual invocation pick a different route. */
+	 * Mirrors FundsMover/Attempter.cpp's 204 handling, including
+	 * the channel_update-refresh branch (parse_chan_update +
+	 * Msg::AskreneChannelUpdate with policy fields) -- but unlike
+	 * the Attempter there is no retry within one invocation; the
+	 * refresh lands in the AskreneUpdates store and benefits the
+	 * NEXT invocation via its projected private layer. */
 	/* Concise one-line failure summary for the response's errors[]
 	 * (and thus the XRebalancer "reason:" log line, so a single
 	 * grep XRebalancer shows how close the part got).  For a 204 it
@@ -1171,12 +1017,14 @@ private:
 					    (eidx < route_hops)
 					    ? (route_hops - eidx)
 					    : std::size_t(0);
+					auto fc = std::uint16_t(double(
+					    data["failcode"]));
 					auto os = std::ostringstream();
 					os << "204 from_target=" << from_target
-					   << " failcode=0x" << std::hex
-					   << std::uint16_t(double(
-						data["failcode"]))
-					   << std::dec << " node="
+					   << " failcode=0x" << std::hex << fc
+					   << std::dec
+					   << "(" << failcode_name(fc) << ")"
+					   << " node="
 					   << std::string(data["erring_node"]);
 					return os.str();
 				}
@@ -1248,7 +1096,9 @@ private:
 						 : std::size_t(0);
 				auto sum = std::ostringstream();
 				sum << "XMoveFunds: 204 failcode=0x" << std::hex << fail
-				    << std::dec << " erring=" << echan_str << "/" << edir
+				    << std::dec
+				    << "(" << failcode_name(fail) << ")"
+				    << " erring=" << echan_str << "/" << edir
 				    << " node=" << std::string(enode)
 				    << " from_target=" << from_target
 				    << " alloc_fee="
@@ -1287,6 +1137,7 @@ private:
 				auto os = std::ostringstream();
 				os << "XMoveFunds: 204 picture failcode=0x"
 				   << std::hex << fail << std::dec
+				   << "(" << failcode_name(fail) << ")"
 				   << " erring_index=" << eidx
 				   << " erring_channel=" << echan_str
 				   << "/" << edir
