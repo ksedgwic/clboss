@@ -1497,17 +1497,18 @@ private:
 		auto obj = parms.start_object();
 		obj.field("source", std::string(self_id));
 		obj.field("destination", std::string(self_id));
-		/* Circular (self-rebalance) routing is an explicit opt-in
-		 * on the patched askrene: getroutes rejects source ==
-		 * destination unless allow_circular is set.  Older patch
-		 * versions (pre allow_circular) reject the unknown
-		 * parameter instead, so this clboss requires a CLN whose
-		 * circular patch has the parameter. */
-		obj.field("allow_circular", true);
 		obj.field("amount_msat",
 			  std::uint64_t(p.amount.to_msat()));
 		auto la = obj.start_array("layers");
 		la.entry(std::string("auto.localchans"));
+		/* Circular (self-rebalance) routing is an explicit
+		 * opt-in: getroutes rejects source == destination
+		 * unless the auto.allow_circular layer is present.
+		 * This is the reviewed interface -- the earlier
+		 * allow_circular parameter is gone -- so this clboss
+		 * requires a CLN lineage carrying the reviewed
+		 * circular patch. */
+		la.entry(std::string("auto.allow_circular"));
 		la.entry(Boss::Mod::AskreneLayer::
 			     xrebalance_layer_name);
 		/* Learned node-disable / channel-update overrides, projected
