@@ -700,35 +700,6 @@ private:
 				);
 	}
 
-	/* Given the askrene route's last visible hop (whose
-	 * node_id_out is the fill peer the cycle terminates at),
-	 * locate the dest_scid that connects us to that peer.  Used
-	 * to find the channel for the closing hop of the circular
-	 * cycle. */
-	std::string
-	find_fill_scid(Jsmn::Object const& channels,
-		       std::set<std::string> const& dest_set,
-		       Ln::NodeId const& fill_peer) {
-		for (auto i = std::size_t(0); i < channels.size(); ++i) {
-			auto ch = channels[i];
-			if (!ch.has("short_channel_id")
-			    || !ch.has("peer_id"))
-				continue;
-			auto scid_str =
-			    std::string(ch["short_channel_id"]);
-			if (!dest_set.count(scid_str))
-				continue;
-			auto peer = Ln::NodeId(
-			    std::string(ch["peer_id"]));
-			if (peer == fill_peer)
-				return scid_str;
-		}
-		throw std::runtime_error(
-			"could not find a dest_scid matching the "
-			"askrene route's last fill peer "
-			+ std::string(fill_peer));
-	}
-
 	/* Convert an askrene path hop into a sendpay-format hop
 	 * object.  See Boss/Mod/FundsMover/Attempter.cpp::make_route
 	 * for the field convention. */
@@ -759,68 +730,28 @@ private:
 
 	/* Build the full sendpay route array for one askrene route.
 	 *
-	 * The patched askrene (branch circular-askrene4) splices a
-	 * fake destination node (circular_fake_us_in_id) plus mirror
-	 * channels onto it before running MCF, then returns the
-	 * complete s -> t flow WITHOUT stripping the trailing fake
-	 * mirror hop.  The last hop of every circular-mode route is
-	 * therefore the fake mirror: synthetic scid, node_id_out =
-	 * the fake destination, but amount_in_msat /
-	 * amount_out_msat / cltv_in / cltv_out all computed with
-	 * fill_peer's actual policy (so amount_in - amount_out =
-	 * fill_peer's real fee).
+	 * The reviewed askrene circular patch returns every hop in
+	 * real terms: the final hop names the actual (fill_peer ->
+	 * us) return channel the route was priced against, with
+	 * node_id_out our own id and amount_in / amount_out / cltv
+	 * computed with fill_peer's real policy (amount_in -
+	 * amount_out = fill_peer's real fee).  The path therefore
+	 * maps 1:1 into sendpay format.
 	 *
-	 * For each real network hop in path[0..N-2] we just copy as
-	 * sendpay format.  For the last hop (path[N-1] = fake
-	 * mirror) we REPLACE its identity fields with the caller's
-	 * chosen real closing channel + our self_id, but KEEP the
-	 * mirror's amount_msat and delay -- those values came out of
-	 * MCF accounting for fill_peer's fee and CLTV delta and are
-	 * exactly what CLN needs for the closing onion hop.
-	 *
-	 * The earlier strip-then-append design used route.amount_msat
-	 * (= the pre-fee amount fill_peer received) as the closing
-	 * hop amount_msat, which meant we offered 0 fee to fill_peer
-	 * and got WIRE_FEE_INSUFFICIENT on every retry once fill_peer
-	 * was charging anything.  Replacing the mirror in-place fixes
-	 * the math without requiring callers to know about the fake
-	 * scid or to look up fill_peer's policy themselves. */
+	 * Do NOT strip the final hop: its amount_out is the amount
+	 * actually delivered back to us and its amount_in carries
+	 * fill_peer's fee.  An earlier design stripped it and
+	 * re-appended a hop built from route.amount_msat (the
+	 * pre-fee amount), which offered 0 fee to fill_peer and got
+	 * WIRE_FEE_INSUFFICIENT on every retry once fill_peer was
+	 * charging anything. */
 	Json::Out
-	build_sendpay_route(Jsmn::Object const& askrene_route,
-			    std::string const& fill_scid,
-			    Ln::NodeId const& fill_peer) {
+	build_sendpay_route(Jsmn::Object const& askrene_route) {
 		auto ret = Json::Out();
 		auto arr = ret.start_array();
 		auto path = askrene_route["path"];
-		auto last_idx = path.size() - 1;
-		for (auto i = std::size_t(0); i < path.size(); ++i) {
-			if (i == last_idx) {
-				/* Replace the fake mirror with the
-				 * real closing hop, keeping the
-				 * mirror's MCF-computed amounts and
-				 * delays. */
-				auto hop = path[i];
-				auto amount_out = Ln::Amount::object(
-				    hop["amount_out_msat"]);
-				auto cltv_out = std::uint32_t(
-				    double(hop["cltv_out"]));
-				arr.start_object()
-						.field("id",
-						       std::string(self_id))
-						.field("channel", fill_scid)
-						.field("direction",
-						       peer_to_us_dir(
-							   fill_peer))
-						.field("amount_msat",
-						       amount_out.to_msat())
-						.field("delay", cltv_out)
-						.field("style",
-						       std::string("tlv"))
-					.end_object();
-			} else {
-				arr.entry(askrene_hop_to_sendpay(path[i]));
-			}
-		}
+		for (auto i = std::size_t(0); i < path.size(); ++i)
+			arr.entry(askrene_hop_to_sendpay(path[i]));
 		arr.end_array();
 		return ret;
 	}
@@ -964,9 +895,8 @@ private:
 	 *
 	 *     The per-hop amount is recovered from the askrene path
 	 *     by indexing with erring_index.  CLN's erring_index is
-	 *     the 0-based position in the sendpay route, which is the
-	 *     askrene path with its fake last hop rewritten in place
-	 *     into the real closing hop -- so the sendpay route and
+	 *     the 0-based position in the sendpay route, which maps
+	 *     the askrene path 1:1 -- so the sendpay route and
 	 *     the askrene path are index-aligned over [0,
 	 *     askrene_path.size()).  Position K
 	 *     in the askrene path is the K-th forwarding edge;
@@ -986,7 +916,7 @@ private:
 	/* Concise one-line failure summary for the response's errors[]
 	 * (and thus the XRebalancer "reason:" log line, so a single
 	 * grep XRebalancer shows how close the part got).  For a 204 it
-	 * carries from_target (hops short of delivery, 1 = the closing
+	 * carries from_target (hops short of delivery, 1 = the final
 	 * hop itself), the failcode and the erring node; anything else
 	 * falls back to the stringified error. */
 	std::string
@@ -1005,12 +935,12 @@ private:
 				 && data.has("failcode")) {
 					auto eidx = std::size_t(double(
 					    data["erring_index"]));
-					/* build_sendpay_route rewrites the fake
-					 * last hop in place, so the sendpay route
-					 * is exactly askrene_path.size() hops and
-					 * the closing (delivery) hop sits at index
-					 * size()-1.  from_target=1 is that closing
-					 * hop. */
+					/* The sendpay route maps the askrene
+					 * path 1:1, so it is exactly
+					 * askrene_path.size() hops and the
+					 * final (delivery) hop sits at index
+					 * size()-1.  from_target=1 is that
+					 * final hop. */
 					auto route_hops =
 					    askrene_path.size();
 					auto from_target =
@@ -1081,15 +1011,14 @@ private:
 					    askrene_path[eidx]["amount_out_msat"]).to_msat();
 					alloc = (in >= out) ? in - out : std::uint64_t(0);
 				}
-				/* How many hops short of delivery the failure was:
-				 * build_sendpay_route rewrites the fake last hop
-				 * of the askrene path in place into the real
-				 * closing hop back to us, so the sendpay route is
-				 * exactly askrene_path.size() hops and the final
-				 * (delivery) hop is at index size()-1.
-				 * from_target=1 means that closing hop itself
-				 * failed (as close as it gets); 5 means it died 5
-				 * hops from completing. */
+				/* How many hops short of delivery the failure
+				 * was: the sendpay route maps the askrene path
+				 * 1:1, so it is exactly askrene_path.size()
+				 * hops and the final (delivery) hop is at
+				 * index size()-1.  from_target=1 means the
+				 * final hop itself failed (as close as it
+				 * gets); 5 means it died 5 hops from
+				 * completing. */
 				auto route_hops = askrene_path.size();
 				auto from_target = (eidx < route_hops)
 						 ? (route_hops - eidx)
@@ -1655,13 +1584,12 @@ private:
 	/* Drive the sendpay + waitsendpay sequence for one or more
 	 * askrene-returned routes (multi-part for MPP).  All parts
 	 * share payment_hash + payment_secret + groupid + label;
-	 * each part gets a unique partid.  Each route's closing hop
-	 * (fill_peer -> self_id) is appended before sendpay is
-	 * called.  Returns a JSON object with per-part status. */
+	 * each part gets a unique partid.  Each route converts 1:1
+	 * into sendpay format after its final (return) hop is
+	 * validated.  Returns a JSON object with per-part status. */
 	Ev::Io<Json::Out>
 	do_execute(std::shared_ptr<Params> p,
-		   std::shared_ptr<Jsmn::Object> askrene_response,
-		   std::shared_ptr<Jsmn::Object> channels) {
+		   std::shared_ptr<Jsmn::Object> askrene_response) {
 		auto routes = (*askrene_response)["routes"];
 		auto num_parts = routes.size();
 		auto multi = num_parts > 1;
@@ -1769,12 +1697,13 @@ private:
 			auto partid = multi ? (i + 1) : 0;
 
 			/* Build the sendpay route off the askrene
-			 * route.  The patched askrene leaves a fake
-			 * mirror hop at path[N-1] -- its node_id_in is
-			 * the real fill peer (= the last real
-			 * forwarder), its node_id_out is the synthetic
-			 * circular_fake_us_in_id.  We look up the fill
-			 * peer via node_id_in. */
+			 * route.  The final hop comes back in real
+			 * terms (reviewed circular patch): node_id_out
+			 * is our own id and short_channel_id_dir names
+			 * the actual return channel the route was
+			 * priced against -- with parallel channels to
+			 * the same fill peer, only askrene knows which
+			 * one it chose. */
 			auto path = route_obj["path"];
 			if (path.size() == 0) {
 				err_msgs->push_back(
@@ -1789,10 +1718,10 @@ private:
 			 * identical sphinx backtrace; recurred 2026-06-12 on a
 			 * 24-hop xmovefunds part.
 			 *
-			 * build_sendpay_route rewrites the fake mirror hop in
-			 * place, so the sendpay route is exactly path.size()
-			 * hops -- the same count CLN reports as "Sending ...
-			 * over N hops".  Skip any part longer than the safe
+			 * build_sendpay_route maps the askrene path 1:1, so
+			 * the sendpay route is exactly path.size() hops --
+			 * the same count CLN reports as "Sending ... over N
+			 * hops".  Skip any part longer than the safe
 			 * bound rather than hand it to sendpay and crash CLN;
 			 * 20 hops gives a comfortable margin under the lowest
 			 * observed crashing length (24).  Mirrors the same
@@ -1860,25 +1789,38 @@ private:
 				}
 			}
 
+			/* Validate the final hop before trusting the
+			 * route: an untranslated final hop means this
+			 * clboss is paired with a CLN lineage older
+			 * than the reviewed circular patch, and a
+			 * return channel outside dest_scids should be
+			 * impossible given the transient masks. */
 			auto last = path[path.size() - 1];
-			auto fill_peer = Ln::NodeId(
-			    std::string(last["node_id_in"]));
-			std::string fill_scid;
-			try {
-				fill_scid = find_fill_scid(
-				    *channels, *dest_set, fill_peer);
-			} catch (std::exception const& ex) {
-				err_msgs->push_back(ex.what());
+			auto last_out = Ln::NodeId(
+			    std::string(last["node_id_out"]));
+			if (last_out != self_id) {
+				err_msgs->push_back(
+				    "askrene final hop does not return "
+				    "to us (untranslated response? "
+				    "this clboss requires the reviewed "
+				    "circular patch): node_id_out="
+				    + std::string(last_out));
+				continue;
+			}
+			auto last_scidd =
+			    std::string(last["short_channel_id_dir"]);
+			auto return_scid =
+			    last_scidd.substr(0, last_scidd.find('/'));
+			if (!dest_set->count(return_scid)) {
+				err_msgs->push_back(
+				    "askrene return channel "
+				    + return_scid
+				    + " is not among dest_scids");
 				continue;
 			}
 
-			/* build_sendpay_route reads the closing hop's
-			 * amount_msat / delay from the fake mirror at
-			 * path[N-1] (left in place by the patched
-			 * askrene), so no extra params here.  See the
-			 * function's doc for why this is correct. */
-			auto sendpay_route = build_sendpay_route(
-			    route_obj, fill_scid, fill_peer);
+			auto sendpay_route =
+			    build_sendpay_route(route_obj);
 
 			/* Extract this part's network middle hops for
 			 * later positive reinforcement.  Iterate the
@@ -1887,19 +1829,17 @@ private:
 			 * the typical circular self-pay this drops the
 			 * head hop (us->drain_peer) and keeps the rest
 			 * of the path through to the last forwarder
-			 * arriving at fill_peer.  amount_out_msat is
+			 * arriving at the fill peer.  amount_out_msat is
 			 * what each hop forwarded -- that is the
 			 * lower-bound capacity claim. */
 			for (auto j = std::size_t(0); j < path.size(); ++j) {
 				/* Skip the final hop outright: it is the
 				 * cycle's return into our own fill channel,
 				 * and auto.localchans owns local capacity
-				 * truth.  The askrene path names it by the
-				 * fake mirror scid, which our_scids cannot
-				 * catch, so without this the success
-				 * feedback writes inform-unconstrained
-				 * entries for a channel that does not
-				 * exist. */
+				 * truth -- there is nothing to reinforce
+				 * here.  (Belt and braces: its real scid is
+				 * a dest_scid, so the our_scids filter below
+				 * would drop it anyway.) */
 				if (j + 1 == path.size())
 					continue;
 				auto hop_j = path[j];
@@ -2291,7 +2231,6 @@ private:
 		    + "-tmp-"
 		    + std::string(Uuid::random());
 		auto routes = std::make_shared<Jsmn::Object>();
-		auto channels = std::make_shared<Jsmn::Object>();
 		auto exec_result = std::make_shared<Json::Out>();
 		auto exec_done = std::make_shared<bool>(false);
 		auto err_msg = std::make_shared<std::string>();
@@ -2311,9 +2250,8 @@ private:
 		}).then([this, updates_layer](std::string ul) {
 			*updates_layer = std::move(ul);
 			return list_my_channels();
-		}).then([this, p, transient, channels]
+		}).then([this, p, transient]
 			(Jsmn::Object c) {
-			*channels = c;
 			return write_masks(transient, c, *p);
 		}).then([this, p, transient, updates_layer]() {
 			return call_getroutes(transient, *updates_layer, *p);
@@ -2325,11 +2263,11 @@ private:
 			*err_code = -32603;
 			*err_msg = Util::stringify(e.error);
 			return Ev::lift();
-		}).then([this, p, routes, channels, exec_result,
+		}).then([this, p, routes, exec_result,
 			 exec_done, err_code]() {
 			if (*err_code != 0 || !p->execute)
 				return Ev::lift();
-			return do_execute(p, routes, channels)
+			return do_execute(p, routes)
 				.then([exec_result, exec_done]
 				    (Json::Out r) {
 					*exec_result = std::move(r);
@@ -2340,7 +2278,7 @@ private:
 			return remove_layer(transient)
 			     + Boss::Mod::AskreneUpdates::close_layer(
 					*rpc, *updates_layer);
-		}).then([this, p, id, routes, channels, exec_result,
+		}).then([this, p, id, routes, exec_result,
 			 exec_done, err_msg, err_code]() {
 			if (*err_code != 0) {
 				return bus.raise(Msg::CommandFail{
