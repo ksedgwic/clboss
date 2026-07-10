@@ -1713,7 +1713,9 @@ private:
 		 * with their carried amount).  Stored as
 		 * (scid, direction, amount).  Hops whose scid is in
 		 * our_scids are filtered out -- that drops the local
-		 * us->drain_peer hop at the head of every askrene path. */
+		 * us->drain_peer hop at the head of every askrene path --
+		 * and the final hop (the return into our own fill
+		 * channel) is skipped explicitly. */
 		auto per_part_middle = std::make_shared<
 		    std::vector<std::vector<
 			std::tuple<Ln::Scid,
@@ -1888,6 +1890,17 @@ private:
 			 * what each hop forwarded -- that is the
 			 * lower-bound capacity claim. */
 			for (auto j = std::size_t(0); j < path.size(); ++j) {
+				/* Skip the final hop outright: it is the
+				 * cycle's return into our own fill channel,
+				 * and auto.localchans owns local capacity
+				 * truth.  The askrene path names it by the
+				 * fake mirror scid, which our_scids cannot
+				 * catch, so without this the success
+				 * feedback writes inform-unconstrained
+				 * entries for a channel that does not
+				 * exist. */
+				if (j + 1 == path.size())
+					continue;
 				auto hop_j = path[j];
 				auto scidd =
 				    std::string(hop_j["short_channel_id_dir"]);
