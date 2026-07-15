@@ -121,6 +121,32 @@ int main() {
 		assert(res2.size() == 0);
 
 		tx.commit();
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+
+		/* When no candidate has a positive score, channeling
+		 * should fall back to returning all candidates.  */
+		s.add_candidate( tx
+			       , ProposeChannelCandidates{A, B}
+			       );
+		s.add_candidate( tx
+			       , ProposeChannelCandidates{C, D}
+			       );
+		s.update_score(tx, C, -1, -6, 24);
+		auto res = s.get_for_channeling(tx);
+		assert(res.size() == 2);
+		assert(std::any_of( res.begin(), res.end()
+				  , [](ProposeChannelCandidates n) {
+					return n.proposal == A;
+				    }
+				  ));
+		assert(std::any_of( res.begin(), res.end()
+				  , [](ProposeChannelCandidates n) {
+					return n.proposal == C;
+				    }
+				  ));
+
+		tx.commit();
 
 		return Ev::lift(0);
 	});
