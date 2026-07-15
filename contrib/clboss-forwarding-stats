@@ -2,7 +2,7 @@
 
 # This script produces a summary of channel forwarding stats
 #
-# - Displays PeerID, SCID, and Alias for each channel
+# - Displays SCID and Alias (or the full PeerID with --ids) for each channel
 # - Uses `clboss-recent-earnings` to limit the history considered
 #
 # The channels at the top of the list are good, the ones at the bottom are bad.
@@ -222,6 +222,11 @@ def main():
         "--sort", choices=["fral", "tral"], default="fral",
         help="Column to sort by (default: fral).",
     )
+    parser.add_argument(
+        "--ids", action="store_true",
+        help="Show full peer node ids instead of aliases "
+             "(paste-ready for commands that take a nodeid).",
+    )
 
     args = parser.parse_args()
 
@@ -389,7 +394,10 @@ def main():
         tralstr = f"{tral:.3f}" if tral is not None else "--"
         fwded = peer.get("in_forwarded", 0) + peer.get("out_forwarded", 0)
         netearnings = peer_net_earnings(peer)
-        alias = pad_string(peer["alias"], max_alias_length)
+        if args.ids:
+            alias = peer_id
+        else:
+            alias = pad_string(peer["alias"], max_alias_length)
         opener = "L" if channels[short_channel_id]["opener"] == "local" else "R"
         agestr = str(int(peer_age_days(peer)))
         opdaysstr = f"{op_days:.1f}"
@@ -414,9 +422,10 @@ def main():
         )
 
     # Print the table without grid
+    id_col = "PeerID" if args.ids else "Alias"
     table_str = tabulate(
         table_data,
-        headers=["Alias", "SCID", "O", "curr_to_us", "avg_to_us", "Age", "OpDays", "Forwarded", "NetEarn", "FRAL**", "TRAL*"],
+        headers=[id_col, "SCID", "O", "curr_to_us", "avg_to_us", "Age", "OpDays", "Forwarded", "NetEarn", "FRAL**", "TRAL*"],
         tablefmt="plain",
         stralign="left",
         numalign="right",

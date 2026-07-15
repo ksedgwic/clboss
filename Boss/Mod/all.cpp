@@ -60,6 +60,7 @@
 #include"Boss/Mod/PeerFromScidMapper.hpp"
 #include"Boss/Mod/PeerMetrician.hpp"
 #include"Boss/Mod/PeerStatistician.hpp"
+#include"Boss/Mod/PeerTrackRecord.hpp"
 #include"Boss/Mod/RebalanceModeManager.hpp"
 #include"Boss/Mod/RebalanceUnmanager.hpp"
 #include"Boss/Mod/Reconnector.hpp"
@@ -162,6 +163,7 @@ std::shared_ptr<void> all( std::ostream& cout
 	auto investigator = all->install< ChannelCandidateInvestigator::Main
 					>(bus, *imon);
 	all->install<ChannelCreationDecider>(bus);
+	all->install<PeerTrackRecord>(bus);
 	all->install<ChannelCreator::Main>(bus, *waiter, *investigator);
 	all->install<ChannelCandidateMatchmaker>(bus);
 	all->install<Dowser>(bus);
