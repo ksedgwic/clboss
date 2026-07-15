@@ -640,6 +640,51 @@ The defaults depend on the network:
 Setting the option to `-1` reverts to the built-in network-specific
 default.
 
+### `--clboss-candidate-record-window-days=<days>`, `--clboss-candidate-keeper-tral-bps=<bps>`, `--clboss-candidate-min-record-days=<days>`
+
+When CLBOSS selects which investigated candidates to actually open
+channels to, it partitions them by their earnings *track record*: what
+a previous (now closed) channel with that node earned for us, net of
+rebalance costs.  Candidates with a proven good record ("keepers") are
+funded first, candidates with no usable history next, and candidates
+with a poor record are used only when no better candidate can absorb
+the available funds.
+
+The judgment metric is TRAL — annualized net return on liquidity, in
+basis points — the same metric reported by the
+`contrib/clboss-forwarding-stats` tool.  It is computed over a sliding
+window from the daily earnings buckets and the (roughly hourly) fee
+monitor records, counting only the days a channel actually operated
+within the window, so partially-overlapping or mid-window-closed
+channels are annualized fairly.
+
+* `clboss-candidate-record-window-days` — how many days of history to
+  consider.  Default `180`.
+* `clboss-candidate-keeper-tral-bps` — TRAL at or above which a
+  candidate's record marks it a keeper.  Default `50` (0.5%/year).
+* `clboss-candidate-min-record-days` — minimum observed operational
+  days within the window before the record is trusted; below this the
+  candidate is treated as having no record.  Default `7`.
+
+All three are *dynamic* options: set them in the `lightningd` config
+for the startup default, or change them at runtime without a restart
+with
+
+    lightning-cli setconfig clboss-candidate-keeper-tral-bps <bps>
+
+### `clboss-track-record`
+
+Shows the earnings track record and verdict for a single node, exactly
+as the channel-open candidate selection would judge it:
+
+    lightning-cli clboss-track-record nodeid=<nodeid>
+
+The output includes the verdict (`keeper`, `no-record`, or
+`underperformer`), the computed `tral_bps`, the observed operational
+days, the net earnings in the window, and the current values of the
+three `clboss-candidate-*` options above — handy when tuning them at
+runtime with `setconfig`.
+
 ### `clboss-recent-earnings`, `clboss-earnings-history`
 
 As of CLBOSS version 0.14, earnings and expenditures are tracked on a daily basis.

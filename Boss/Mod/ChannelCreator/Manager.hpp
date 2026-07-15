@@ -4,7 +4,9 @@
 #include"Boss/Mod/ChannelCreator/Reprioritizer.hpp"
 #include"Boss/ModG/ReqResp.hpp"
 #include"Boss/Msg/RequestDowser.hpp"
+#include"Boss/Msg/RequestPeerTrackRecord.hpp"
 #include"Boss/Msg/ResponseDowser.hpp"
+#include"Boss/Msg/ResponsePeerTrackRecord.hpp"
 #include"Ln/NodeId.hpp"
 #include<memory>
 #include<utility>
@@ -40,6 +42,9 @@ private:
 	Ln::NodeId self;
 
 	ModG::ReqResp<Msg::RequestDowser, Msg::ResponseDowser> dowser;
+	ModG::ReqResp< Msg::RequestPeerTrackRecord
+		     , Msg::ResponsePeerTrackRecord
+		     > track_record;
 
 	std::unique_ptr<Boss::Mod::ChannelCreator::Reprioritizer> reprioritizer;
 
@@ -56,6 +61,9 @@ private:
 	/* Perform reprioritization and log it.  */
 	Ev::Io<std::vector<std::pair<Ln::NodeId, Ln::NodeId>>>
 	reprioritize(std::vector<std::pair<Ln::NodeId, Ln::NodeId>>);
+	/* Partition proposals by earnings track record and log it.  */
+	Ev::Io<std::vector<std::pair<Ln::NodeId, Ln::NodeId>>>
+	prioritize_by_track_record(std::vector<std::pair<Ln::NodeId, Ln::NodeId>>);
 
 public:
 	Manager() =delete;
@@ -72,6 +80,7 @@ public:
 		 , carpenter(carpenter_)
 		 , self()
 		 , dowser(bus)
+		 , track_record(bus)
 		 {
 		start();
 	}

@@ -246,6 +246,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/PeerMetrician.hpp \
 	Boss/Mod/PeerStatistician.cpp \
 	Boss/Mod/PeerStatistician.hpp \
+	Boss/Mod/PeerTrackRecord.cpp \
+	Boss/Mod/PeerTrackRecord.hpp \
 	Boss/Mod/Reconnector.cpp \
 	Boss/Mod/Reconnector.hpp \
 	Boss/Mod/RegularActiveProbe.cpp \
@@ -360,6 +362,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/RequestNewaddr.hpp \
 	Boss/Msg/RequestPeerFromScid.hpp \
 	Boss/Msg/RequestPeerMetrics.hpp \
+	Boss/Msg/RequestPeerTrackRecord.hpp \
 	Boss/Msg/RequestPeerStatistics.hpp \
 	Boss/Msg/RequestRebalanceMode.hpp \
 	Boss/Msg/RequestRebalanceUnmanaged.hpp \
@@ -374,6 +377,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/ResponseNewaddr.hpp \
 	Boss/Msg/ResponsePeerFromScid.hpp \
 	Boss/Msg/ResponsePeerMetrics.hpp \
+	Boss/Msg/ResponsePeerTrackRecord.hpp \
 	Boss/Msg/ResponsePeerStatistics.hpp \
 	Boss/Msg/ResponseRebalanceMode.hpp \
 	Boss/Msg/ResponseRebalanceUnmanaged.hpp \
@@ -401,6 +405,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/TimerRandomDaily.hpp \
 	Boss/Msg/TimerRandomHourly.hpp \
 	Boss/Msg/TimerTwiceDaily.hpp \
+	Boss/Msg/TrackRecord.hpp \
 	Boss/RebalanceMode.hpp \
 	Boss/Shutdown.hpp \
 	Boss/Signer.cpp \
@@ -641,6 +646,7 @@ TESTS = \
 	tests/boss/test_peerjudge_datagatherer \
 	tests/boss/test_peerstatistician \
 	tests/boss/test_peercomplaintsdesk_main \
+	tests/boss/test_peertrackrecord \
 	tests/boss/test_peercomplaintsdesk_recorder \
 	tests/boss/test_reqresp \
 	tests/boss/test_rpc \
