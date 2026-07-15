@@ -129,7 +129,7 @@ Secretary::get_for_channeling(Sqlite3::Tx& tx) {
 		 ORDER BY score DESC
 		     ;
 	)QRY").execute();
-	for (auto& r : res1)
+	for (auto& r : res2)
 		rv.emplace_back(Msg::ProposeChannelCandidates{
 			Ln::NodeId(r.get<std::string>(0)),
 			Ln::NodeId(r.get<std::string>(1))
