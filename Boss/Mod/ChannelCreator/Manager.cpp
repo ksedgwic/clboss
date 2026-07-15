@@ -22,6 +22,7 @@
 #include"Util/make_unique.hpp"
 #include<algorithm>
 #include<assert.h>
+#include<cmath>
 #include<sstream>
 
 namespace {
@@ -183,6 +184,19 @@ Manager::on_request_channel_creation(Ln::Amount amt) {
 		 * nodes with similar locations.
 		 */
 		return reprioritize(std::move(proposals));
+	}).then([this](std::vector<std::pair<Ln::NodeId, Ln::NodeId>> proposals) {
+		/* Finally, partition by earnings track record, so
+		 * proven earners are funded first and known
+		 * underperformers only when nothing else can absorb
+		 * the funds.  This runs after the rearranger and
+		 * reprioritizer on purpose: those two only perturb
+		 * the order, and must not promote a candidate across
+		 * a track-record tier boundary.  The Planner consumes
+		 * proposals in order until funds run out, so placing
+		 * a tier last implements "only if there are no
+		 * others" without an outright veto.
+		 */
+		return prioritize_by_track_record(std::move(proposals));
 	}).then([ num_chans
 		, amt
 		, dowser_func
@@ -327,6 +341,104 @@ Manager::reprioritize(std::vector<std::pair<Ln::NodeId, Ln::NodeId>> proposals_v
 				       );
 	}).then([proposals]() {
 		return Ev::lift(std::move(*proposals));
+	});
+}
+Ev::Io<std::vector<std::pair<Ln::NodeId, Ln::NodeId>>>
+Manager::prioritize_by_track_record(std::vector<std::pair<Ln::NodeId, Ln::NodeId>> proposals_v) {
+	typedef std::vector<std::pair<Ln::NodeId, Ln::NodeId>> Proposals;
+
+	if (proposals_v.empty())
+		return Ev::lift(std::move(proposals_v));
+
+	auto nodes = std::vector<Ln::NodeId>();
+	for (auto const& p : proposals_v)
+		nodes.push_back(p.first);
+	auto proposals = std::make_shared<Proposals>(std::move(proposals_v));
+
+	return track_record.execute(Msg::RequestPeerTrackRecord{
+		nullptr, std::move(nodes)
+	}).then([ this
+		, proposals
+		](Msg::ResponsePeerTrackRecord resp) {
+		auto keepers = Proposals();
+		auto no_records = Proposals();
+		auto underperformers = Proposals();
+
+		/* Per-tier report text; nodes within a tier keep their
+		 * relative order from the earlier stages.  */
+		auto keepers_s = std::string();
+		auto no_records_s = std::string();
+		auto underperformers_s = std::string();
+		auto append = []( std::string& s
+				, std::string const& entry
+				) {
+			if (!s.empty())
+				s += ", ";
+			s += entry;
+		};
+
+		for (auto const& p : *proposals) {
+			auto rec = Msg::TrackRecord{
+				Msg::TrackRecordVerdict::NoRecord,
+				0.0, 0.0, 0
+			};
+			auto it = resp.records.find(p.first);
+			if (it != resp.records.end())
+				rec = it->second;
+
+			auto os = std::ostringstream();
+			os << p.first;
+			if (rec.verdict != Msg::TrackRecordVerdict::NoRecord)
+				os << "(" << std::showpos
+				   << (long long) std::llround(rec.tral_bps)
+				   << std::noshowpos << "bps/"
+				   << (long long) std::llround(rec.op_days)
+				   << "d)"
+				   ;
+
+			switch (rec.verdict) {
+			case Msg::TrackRecordVerdict::Keeper:
+				keepers.push_back(p);
+				append(keepers_s, os.str());
+				break;
+			case Msg::TrackRecordVerdict::NoRecord:
+				no_records.push_back(p);
+				append(no_records_s, os.str());
+				break;
+			case Msg::TrackRecordVerdict::Underperformer:
+				underperformers.push_back(p);
+				append(underperformers_s, os.str());
+				break;
+			}
+		}
+
+		auto report = std::string();
+		if (!keepers_s.empty())
+			report += "keepers: " + keepers_s + "; ";
+		if (!no_records_s.empty())
+			report += "no record: " + no_records_s + "; ";
+		if (!underperformers_s.empty())
+			report += "underperformers: "
+				+ underperformers_s + "; "
+				;
+		/* Trim the trailing "; ".  */
+		report.erase(report.size() - 2);
+
+		*proposals = std::move(keepers);
+		proposals->insert( proposals->end()
+				 , no_records.begin(), no_records.end()
+				 );
+		proposals->insert( proposals->end()
+				 , underperformers.begin()
+				 , underperformers.end()
+				 );
+
+		return Boss::log( bus, Info
+				, "ChannelCreator: Track records: %s"
+				, report.c_str()
+				).then([proposals]() {
+			return Ev::lift(std::move(*proposals));
+		});
 	});
 }
 
