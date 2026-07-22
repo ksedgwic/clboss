@@ -17,12 +17,21 @@ namespace Boss {
  *                    XMoveFunds primitive -- "xpay, for rebalancing");
  *                    deliberate, non-JIT.  Tuned by the clboss-xrebalance-*
  *                    options.
+ *   - `xrebalance2`: the same XRebalancer driver, executing through the
+ *                    external `xrebalance` plugin (layer-splitting on
+ *                    stock askrene) instead of the in-clboss XMoveFunds
+ *                    primitive.  Requires the xrebalance plugin to be
+ *                    loaded into lightningd; constraint knowledge and
+ *                    failure feedback live in the plugin, so the
+ *                    in-clboss layer machinery (including the
+ *                    predictor) stays idle.
  *   - `off`        : no autonomous rebalancing at all; also the supported
  *                    way to disable the rebalancer entirely.
  */
 enum class RebalanceMode {
 	classic,
 	xrebalance,
+	xrebalance2,
 	off
 };
 
@@ -32,9 +41,10 @@ constexpr RebalanceMode default_rebalance_mode = RebalanceMode::classic;
 inline
 char const* rebalance_mode_to_string(RebalanceMode m) {
 	switch (m) {
-	case RebalanceMode::classic:    return "classic";
-	case RebalanceMode::xrebalance: return "xrebalance";
-	case RebalanceMode::off:        return "off";
+	case RebalanceMode::classic:     return "classic";
+	case RebalanceMode::xrebalance:  return "xrebalance";
+	case RebalanceMode::xrebalance2: return "xrebalance2";
+	case RebalanceMode::off:         return "off";
 	}
 	return "classic";
 }
@@ -49,6 +59,10 @@ bool rebalance_mode_from_string(std::string const& s, RebalanceMode& out) {
 	}
 	if (s == "xrebalance") {
 		out = RebalanceMode::xrebalance;
+		return true;
+	}
+	if (s == "xrebalance2") {
+		out = RebalanceMode::xrebalance2;
 		return true;
 	}
 	if (s == "off") {

@@ -49,7 +49,7 @@ auto constexpr default_window_days = double(90.0);
 /* Tier bands (Loc%); match clboss-xrebalance-view defaults.  */
 auto constexpr default_fill_band = double(10.0);
 auto constexpr default_drain_band = double(90.0);
-/* MCF split cap passed to clboss-xmovefunds (askrene getroutes maxparts).  */
+/* MCF split cap passed to the executor (askrene getroutes maxparts).  */
 auto constexpr default_maxparts = double(10.0);
 
 /* Fill/drain Loc% targets the deficits aim toward (25% / 75%).  */
@@ -80,6 +80,11 @@ private:
 	std::uint32_t maxparts;   /* MCF split cap (integer count) */
 	bool floor_auto;   /* floor option set to "auto" (sweep) */
 	bool size_factor_range;   /* size_factor set as lo:hi (per-cycle random) */
+	/* Mode xrebalance2: execute through the external xrebalance
+	 * plugin instead of clboss-xmovefunds.  Captured at cycle start;
+	 * cycles are serialized by the awaited loop, so one flag
+	 * suffices.  */
+	bool use_plugin;
 	bool started;
 
 	/* One row per CHANNELD_NORMAL channel, built live from
@@ -116,6 +121,7 @@ private:
 		maxparts = std::uint32_t(default_maxparts);
 		floor_auto = false;
 		size_factor_range = false;
+		use_plugin = false;
 		started = false;
 
 		bus.subscribe<Msg::DbResource
@@ -130,7 +136,7 @@ private:
 				"Average number of flow-rebalance (xrebalance) "
 				"cycles per hour (0 = paused).  Poisson-paced; "
 				"only active when the rebalancer mode is "
-				"\"flow\".")
+				"\"xrebalance\" or \"xrebalance2\".")
 			     + manifest_option(opt_floor, default_floor,
 				"Route-cost floor (ppm): stop growing the "
 				"matched-pool cycle once the marginal joint "
@@ -404,12 +410,15 @@ private:
 
 	Ev::Io<void> tick() {
 		return mode_proxy.get_mode().then([this](RebalanceMode m) {
-			if (m != RebalanceMode::xrebalance)
+			if ( m != RebalanceMode::xrebalance
+			  && m != RebalanceMode::xrebalance2 )
 				return Boss::log( bus, Debug
 						, "XRebalancer: idle (mode is "
-						  "\"%s\", not \"xrebalance\")."
+						  "\"%s\", not \"xrebalance\" "
+						  "or \"xrebalance2\")."
 						, rebalance_mode_to_string(m)
 						);
+			use_plugin = (m == RebalanceMode::xrebalance2);
 			return run_cycle();
 		});
 	}
@@ -746,10 +755,12 @@ private:
 		});
 	}
 
-	/* Drive the chosen cycle through the existing clboss-xmovefunds
-	 * command (reusing its sendpay/waitsendpay/harvest/attribution).
-	 * The loop awaits this, so no new cycle starts while one is in
-	 * flight (the natural in-flight guard until the abandon/timeout
+	/* Drive the chosen cycle through the executor the mode selects:
+	 * the in-clboss clboss-xmovefunds command (mode xrebalance,
+	 * reusing its sendpay/waitsendpay/harvest/attribution), or the
+	 * external xrebalance plugin (mode xrebalance2).  The loop
+	 * awaits this, so no new cycle starts while one is in flight
+	 * (the natural in-flight guard until the abandon/timeout
 	 * increment lands).  */
 	Ev::Io<void>
 	execute_cycle( std::vector<std::string> source_scids
@@ -757,6 +768,12 @@ private:
 		     , std::int64_t requested_sat
 		     , std::uint32_t maxfee_ppm
 		     ) {
+		if (use_plugin)
+			return execute_cycle_plugin( std::move(source_scids)
+						   , std::move(dest_scids)
+						   , requested_sat
+						   , maxfee_ppm
+						   );
 		auto parms = Json::Out();
 		auto obj = parms.start_object();
 		auto sa = obj.start_array("source_scid");
@@ -786,6 +803,51 @@ private:
 		}).catching<std::exception>([this](std::exception const& e) {
 			return Boss::log( bus, Warn
 				, "XRebalancer: xmovefunds error: %s"
+				, e.what() );
+		});
+	}
+
+	/* xrebalance2: the same cycle, executed by the external
+	 * xrebalance plugin (layer-splitting on stock askrene).  The
+	 * plugin owns constraint knowledge and failure feedback;
+	 * earnings attribution arrives separately via its
+	 * xrebalance_part notifications (XRebalancePartMonitor), never
+	 * from this response.  */
+	Ev::Io<void>
+	execute_cycle_plugin( std::vector<std::string> source_scids
+			    , std::vector<std::string> dest_scids
+			    , std::int64_t requested_sat
+			    , std::uint32_t maxfee_ppm
+			    ) {
+		auto parms = Json::Out();
+		auto obj = parms.start_object();
+		auto sa = obj.start_array("sources");
+		for (auto const& s : source_scids)
+			sa.entry(s);
+		sa.end_array();
+		auto da = obj.start_array("destinations");
+		for (auto const& s : dest_scids)
+			da.entry(s);
+		da.end_array();
+		obj.field("amount_msat",
+			  std::uint64_t(requested_sat) * 1000);
+		obj.field("maxfee_ppm", std::uint64_t(maxfee_ppm));
+		obj.field("maxparts", maxparts);
+		obj.end_object();
+		return rpc.command("xrebalance", std::move(parms))
+		.then([this](Jsmn::Object res) {
+			return log_plugin_result(std::move(res));
+		}).catching<RpcError>([this](RpcError const& e) {
+			/* Also the plugin-not-loaded case ("Unknown
+			 * command"): one clean line per cycle, retried
+			 * next cycle.  */
+			return Boss::log( bus, Info
+				, "XRebalancer: xrebalance plugin did not "
+				  "execute: %s"
+				, rpc_error_summary(e).c_str() );
+		}).catching<std::exception>([this](std::exception const& e) {
+			return Boss::log( bus, Warn
+				, "XRebalancer: xrebalance plugin error: %s"
 				, e.what() );
 		});
 	}
@@ -898,6 +960,128 @@ private:
 		return Boss::log( bus, Info
 			, "XRebalancer: transfer failed: %.0f part(s)%s."
 			, num("parts"), reason.c_str() );
+	}
+
+	/* Plugin-response counterpart of log_result.  The xrebalance
+	 * reply is flat (no "execution" wrapper); parts[] carry status
+	 * strings plus failure geometry (hops_short / erring_scidd /
+	 * failcode), and stragglers show as "pending" (their results
+	 * stream via xrebalance_part notifications).  The label is the
+	 * plugin's request id; logging it links this line to the
+	 * plugin's own "req <id>" lines.  */
+	Ev::Io<void> log_plugin_result(Jsmn::Object res) {
+		auto num = [&res](char const* k) -> double {
+			if (res.is_object() && res.has(k)) {
+				auto v = res[k];
+				if (v.is_number())
+					return double(v);
+			}
+			return -1.0;
+		};
+		auto str = [&res](char const* k) -> std::string {
+			if (res.is_object() && res.has(k)) {
+				auto v = res[k];
+				if (v.is_string())
+					return std::string(v);
+			}
+			return "";
+		};
+		auto delivered = num("delivered_msat");
+		auto fee = num("fee_msat");
+		auto label = str("label");
+		auto req = label.empty() ? std::string()
+			 : " [req " + label + "]";
+		auto ppm = std::string();
+		if (delivered > 0.0) {
+			auto os = std::ostringstream();
+			os << " (" << std::llround(fee * 1e6 / delivered)
+			   << " ppm)";
+			ppm = os.str();
+		}
+		/* Part census, plus the chokepoint: among failed parts,
+		 * the one that got closest to delivery (smallest
+		 * hops_short) is the informative frontier.  */
+		auto parts_total = std::size_t(0);
+		auto parts_complete = std::size_t(0);
+		auto parts_pending = std::size_t(0);
+		auto parts_failed = std::size_t(0);
+		auto reason = std::string();
+		auto best_short = std::numeric_limits<double>::max();
+		if (res.is_object() && res.has("parts")
+		 && res["parts"].is_array()) {
+			auto parts = res["parts"];
+			parts_total = parts.size();
+			for (auto i = std::size_t(0); i < parts.size(); ++i) {
+				auto p = parts[i];
+				if (!p.is_object() || !p.has("status")
+				 || !p["status"].is_string())
+					continue;
+				auto st = std::string(p["status"]);
+				if (st == "complete") {
+					++parts_complete;
+					continue;
+				}
+				if (st == "pending") {
+					++parts_pending;
+					continue;
+				}
+				++parts_failed;
+				auto has_short = p.has("hops_short")
+					      && p["hops_short"].is_number();
+				auto hs = has_short
+					? double(p["hops_short"])
+					: std::numeric_limits<double>::max();
+				if (!reason.empty() && hs >= best_short)
+					continue;
+				best_short = hs;
+				auto os = std::ostringstream();
+				os << "; closest failure:";
+				if (has_short)
+					os << " " << std::llround(hs)
+					   << " hops short";
+				if (p.has("erring_scidd")
+				 && p["erring_scidd"].is_string())
+					os << " at "
+					   << std::string(p["erring_scidd"]);
+				if (p.has("failcode")
+				 && p["failcode"].is_number())
+					os << " (failcode 0x" << std::hex
+					   << std::llround(
+						double(p["failcode"]))
+					   << std::dec << ")";
+				reason = os.str();
+			}
+		}
+		if (parts_failed > 1)
+			reason += " [closest of "
+				+ std::to_string(parts_failed) + "]";
+		auto pending_note = std::string();
+		if (parts_pending > 0) {
+			auto os = std::ostringstream();
+			os << " (" << parts_pending
+			   << " pending, settling in background)";
+			pending_note = os.str();
+		}
+		auto detail = str("detail");
+		auto detail_note = detail.empty() ? std::string()
+				 : "; detail: " + detail;
+		if (delivered > 0.0)
+			return Boss::log( bus, Info
+				, "XRebalancer: transfer done%s: %zu/%zu "
+				  "parts, delivered %s msat, fee %s "
+				  "msat%s%s%s."
+				, req.c_str()
+				, parts_complete, parts_total
+				, Util::Str::group_digits(std::int64_t(
+					std::llround(delivered))).c_str()
+				, Util::Str::group_digits(std::int64_t(
+					std::llround(fee))).c_str()
+				, ppm.c_str(), reason.c_str()
+				, pending_note.c_str() );
+		return Boss::log( bus, Info
+			, "XRebalancer: transfer failed%s: %zu part(s)%s%s%s."
+			, req.c_str(), parts_total, reason.c_str()
+			, detail_note.c_str(), pending_note.c_str() );
 	}
 
 	static std::string join_scids(std::vector<std::string> const& v) {
