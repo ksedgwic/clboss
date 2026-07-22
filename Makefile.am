@@ -280,6 +280,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/UnmanagedManager.hpp \
 	Boss/Mod/Waiter.cpp \
 	Boss/Mod/Waiter.hpp \
+	Boss/Mod/XRebalancePartMonitor.cpp \
+	Boss/Mod/XRebalancePartMonitor.hpp \
 	Boss/Mod/XRebalancer.cpp \
 	Boss/Mod/XRebalancer.hpp \
 	Boss/Mod/all.cpp \
@@ -406,6 +408,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/TimerRandomHourly.hpp \
 	Boss/Msg/TimerTwiceDaily.hpp \
 	Boss/Msg/TrackRecord.hpp \
+	Boss/Msg/XRebalanceAttribution.hpp \
 	Boss/RebalanceMode.hpp \
 	Boss/Shutdown.hpp \
 	Boss/Signer.cpp \
@@ -644,6 +647,7 @@ TESTS = \
 	tests/boss/test_peerjudge_agetracker \
 	tests/boss/test_recentearnings \
 	tests/boss/test_earningshistory \
+	tests/boss/test_xrebalancepartmonitor \
 	tests/boss/test_peerjudge_algo \
 	tests/boss/test_peerjudge_datagatherer \
 	tests/boss/test_peerstatistician \
