@@ -37,7 +37,12 @@ void XRebalancePartMonitor::start() {
 		auto amount = Ln::Amount();
 		auto fee = Ln::Amount();
 		try {
-			auto payload = n.params["xrebalance_part"];
+			/* Custom notifications arrive with the sender's
+			 * payload AS params (lightningd relays it verbatim,
+			 * origin as a sibling field) -- unlike built-in
+			 * topics, which nest the payload under a key named
+			 * after the topic.  */
+			auto payload = n.params;
 			if ( !payload.has("status")
 			  || !payload.has("first_hop")
 			  || !payload.has("return_hop")

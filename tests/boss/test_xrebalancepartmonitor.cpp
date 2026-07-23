@@ -40,46 +40,45 @@ auto const listpeers_result = R"JSON(
 )JSON";
 
 /* The plugin's Part::json shape: plain-number msat fields, real scids
- * on first_hop / return_hop, label appended by the notifier.  */
+ * on first_hop / return_hop, label appended by the notifier.  Custom
+ * notifications deliver this AS params (lightningd relays the sender's
+ * payload verbatim; no topic-key nesting, that is a built-in-topic
+ * convention).  */
 auto const complete_part = R"JSON(
 {
-  "xrebalance_part": {
-    "part_index": 2,
-    "payment_hash": "f5a6a059a25d1e329d9b094aeeec8c2191ca037d3f5b0662e21ae850debe8ea2",
-    "status": "complete",
-    "first_hop": "1000x1x1",
-    "return_hop": "1000x1x0",
-    "planned_msat": 10000000,
-    "delivered_msat": 10000000,
-    "sent_msat": 10005958,
-    "fee_msat": 5958,
-    "hops_short": null,
-    "failcode": null,
-    "erring_scidd": null,
-    "detail": null,
-    "label": "ab12cd34"
-  }
+  "part_index": 2,
+  "payment_hash": "f5a6a059a25d1e329d9b094aeeec8c2191ca037d3f5b0662e21ae850debe8ea2",
+  "status": "complete",
+  "first_hop": "1000x1x1",
+  "return_hop": "1000x1x0",
+  "planned_msat": 10000000,
+  "delivered_msat": 10000000,
+  "sent_msat": 10005958,
+  "fee_msat": 5958,
+  "hops_short": null,
+  "failcode": null,
+  "erring_scidd": null,
+  "detail": null,
+  "label": "ab12cd34"
 }
 )JSON";
 
 auto const failed_part = R"JSON(
 {
-  "xrebalance_part": {
-    "part_index": 1,
-    "payment_hash": "9d9b094aeeec8c2191ca037d3f5b0662e21ae850debe8ea2f5a6a059a25d1e32",
-    "status": "failed",
-    "first_hop": "1000x1x1",
-    "return_hop": "1000x1x0",
-    "planned_msat": 10000000,
-    "delivered_msat": 0,
-    "sent_msat": 10005958,
-    "fee_msat": 0,
-    "hops_short": 4,
-    "failcode": 4103,
-    "erring_scidd": "2000x1x0/1",
-    "detail": null,
-    "label": "ab12cd34"
-  }
+  "part_index": 1,
+  "payment_hash": "9d9b094aeeec8c2191ca037d3f5b0662e21ae850debe8ea2f5a6a059a25d1e32",
+  "status": "failed",
+  "first_hop": "1000x1x1",
+  "return_hop": "1000x1x0",
+  "planned_msat": 10000000,
+  "delivered_msat": 0,
+  "sent_msat": 10005958,
+  "fee_msat": 0,
+  "hops_short": 4,
+  "failcode": 4103,
+  "erring_scidd": "2000x1x0/1",
+  "detail": null,
+  "label": "ab12cd34"
 }
 )JSON";
 
