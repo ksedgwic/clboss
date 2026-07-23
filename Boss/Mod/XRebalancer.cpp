@@ -54,9 +54,9 @@ auto constexpr default_drain_band = double(90.0);
 /* MCF split cap passed to the executor (askrene getroutes maxparts).  */
 auto constexpr default_maxparts = double(10.0);
 
-/* Fill/drain Loc% targets the deficits aim toward (25% / 75%).  */
-auto constexpr fill_target_pct = double(25.0);
-auto constexpr drain_target_pct = double(75.0);
+/* The fill/drain deficits aim toward the band edges themselves
+ * (fill_band / drain_band): the band both admits a channel and
+ * defines where its rebalancing stops.  */
 
 /* Strictness benders, both neutral by default.  grant credits every
  * channeled peer an assumed prior of grant ppm on one capacity-turn
@@ -174,10 +174,12 @@ private:
 				"NetPpm is measured for cycle selection.")
 			     + manifest_option(opt_fill_loc, default_fill_band,
 				"Fill-tier band: channels with Loc% <= this are "
-				"fill candidates (funds pushed toward them).")
+				"fill candidates (funds pushed toward them), and "
+				"this is also the Loc% their fills aim for.")
 			     + manifest_option(opt_drain_loc, default_drain_band,
 				"Drain-tier band: channels with Loc% >= this are "
-				"drain candidates (funds pulled from them).")
+				"drain candidates (funds pulled from them), and "
+				"this is also the Loc% their drains aim for.")
 			     + manifest_option(opt_maxparts, default_maxparts,
 				"Max parts (paths) MCF may split a cycle into "
 				"(askrene getroutes maxparts).  Lower = fewer, "
@@ -398,10 +400,10 @@ private:
 					   && c["peer_connected"].is_boolean()
 					   && bool(c["peer_connected"]);
 				auto pct = double(loc) / double(cap) * 100.0;
-				auto tf = cap * std::int64_t(fill_target_pct)
-					/ 100 - loc;
-				auto td = loc - cap
-					* std::int64_t(drain_target_pct) / 100;
+				auto tf = std::int64_t(
+					double(cap) * fill_band / 100.0) - loc;
+				auto td = loc - std::int64_t(
+					double(cap) * drain_band / 100.0);
 				out.push_back(Chan{
 					std::string(c["short_channel_id"]),
 					Ln::NodeId(std::string(c["peer_id"])),
@@ -642,7 +644,10 @@ private:
 			 && c.tgt_fill_sat > 0)
 				fill.push_back(PoolItem{
 					&c, np.out_net, c.tgt_fill_sat });
-			if (c.pct_local >= drain_band
+			/* else: with overlapping bands (fill-loc set above
+			 * drain-loc) a channel could qualify for both pools;
+			 * fill wins so it cannot be picked against itself.  */
+			else if (c.pct_local >= drain_band
 			 && np.has_in && np.in_net > 0.0
 			 && c.tgt_drain_sat > 0)
 				drain.push_back(PoolItem{
