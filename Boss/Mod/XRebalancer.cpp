@@ -117,9 +117,6 @@ private:
 		bool online;
 		std::int64_t cap_sat;
 		std::int64_t local_sat;
-		double pct_local;
-		std::int64_t tgt_fill_sat;
-		std::int64_t tgt_drain_sat;
 	};
 
 	/* Per-node windowed NetPpm; absent (has_* false) when no forwards in
@@ -423,17 +420,10 @@ private:
 				auto online = c.has("peer_connected")
 					   && c["peer_connected"].is_boolean()
 					   && bool(c["peer_connected"]);
-				auto pct = double(loc) / double(cap) * 100.0;
-				auto tf = std::int64_t(
-					double(cap) * fill_band / 100.0) - loc;
-				auto td = loc - std::int64_t(
-					double(cap) * drain_band / 100.0);
 				out.push_back(Chan{
 					std::string(c["short_channel_id"]),
 					Ln::NodeId(std::string(c["peer_id"])),
-					online, cap, loc, pct,
-					tf > 0 ? tf : 0,
-					td > 0 ? td : 0
+					online, cap, loc
 				});
 			}
 		} catch (std::exception const& e) {
@@ -572,10 +562,32 @@ private:
 		});
 	}
 
-	/* A pool member: cached channel plus its joined NetPpm on the
+	/* Per-peer aggregate over the peer's channels.  The network only
+	 * guarantees delivery to the PEER: non-strict forwarding (BOLT 4)
+	 * lets it land an incoming HTLC on any parallel channel, so a
+	 * per-channel fill deficit against a multi-channel peer can never
+	 * be settled and the planner livelocks re-requesting it (observed
+	 * live: two-channel peer, three completed fills, zero deficit
+	 * movement).  Candidacy, deficits, and progress therefore live at
+	 * peer granularity -- the same granularity as NetPpm and the
+	 * EarningsTracker -- while scids carries all the peer's channels
+	 * for the request lists (sources we control exactly; destinations
+	 * the peer resolves anyway).  */
+	struct Peer {
+		Ln::NodeId node;
+		std::vector<std::string> scids;
+		std::int64_t cap_sat = 0;
+		std::int64_t local_sat = 0;
+		bool online = false;
+		double pct_local = 0.0;
+		std::int64_t tgt_fill_sat = 0;
+		std::int64_t tgt_drain_sat = 0;
+	};
+
+	/* A pool member: aggregated peer plus its joined NetPpm on the
 	 * relevant side.  */
 	struct PoolItem {
-		Chan const* ch;
+		Peer const* pr;
 		double ppm;       /* out_net for fill, in_net for drain */
 		std::int64_t deficit; /* tgt_fill for fill, tgt_drain for drain */
 	};
@@ -654,28 +666,60 @@ private:
 	plan_and_log( std::shared_ptr<std::vector<Chan>> chans
 		    , std::shared_ptr<std::map<Ln::NodeId, NetPpm>> net
 		    ) {
+		/* Aggregate channels into peers; deficits aim at the band
+		 * edges on the aggregate Loc%.  A peer with one full and
+		 * one empty channel nets out balanced and is left alone --
+		 * correct, since intra-peer skew is exactly what non-strict
+		 * forwarding puts beyond our control.  */
+		auto peers = std::vector<Peer>();
+		{
+			auto by_node = std::map<Ln::NodeId, Peer>();
+			for (auto const& c : *chans) {
+				auto& p = by_node[c.node];
+				p.node = c.node;
+				p.scids.push_back(c.scid);
+				p.cap_sat += c.cap_sat;
+				p.local_sat += c.local_sat;
+				p.online = p.online || c.online;
+			}
+			for (auto& e : by_node) {
+				auto& p = e.second;
+				if (p.cap_sat <= 0)
+					continue;
+				p.pct_local = 100.0 * double(p.local_sat)
+					    / double(p.cap_sat);
+				auto tf = std::int64_t(double(p.cap_sat)
+					* fill_band / 100.0) - p.local_sat;
+				auto td = p.local_sat - std::int64_t(
+					double(p.cap_sat) * drain_band / 100.0);
+				p.tgt_fill_sat = tf > 0 ? tf : 0;
+				p.tgt_drain_sat = td > 0 ? td : 0;
+				peers.push_back(std::move(p));
+			}
+		}
+
 		auto fill = std::vector<PoolItem>();
 		auto drain = std::vector<PoolItem>();
-		for (auto const& c : *chans) {
-			if (!c.online)
+		for (auto const& p : peers) {
+			if (!p.online)
 				continue;
-			auto it = net->find(c.node);
+			auto it = net->find(p.node);
 			if (it == net->end())
 				continue;
 			auto const& np = it->second;
-			if (c.pct_local <= fill_band
+			if (p.pct_local <= fill_band
 			 && np.has_out && np.out_net > 0.0
-			 && c.tgt_fill_sat > 0)
+			 && p.tgt_fill_sat > 0)
 				fill.push_back(PoolItem{
-					&c, np.out_net, c.tgt_fill_sat });
+					&p, np.out_net, p.tgt_fill_sat });
 			/* else: with overlapping bands (fill-loc set above
-			 * drain-loc) a channel could qualify for both pools;
+			 * drain-loc) a peer could qualify for both pools;
 			 * fill wins so it cannot be picked against itself.  */
-			else if (c.pct_local >= drain_band
+			else if (p.pct_local >= drain_band
 			 && np.has_in && np.in_net > 0.0
-			 && c.tgt_drain_sat > 0)
+			 && p.tgt_drain_sat > 0)
 				drain.push_back(PoolItem{
-					&c, np.in_net, c.tgt_drain_sat });
+					&p, np.in_net, p.tgt_drain_sat });
 		}
 		std::sort(fill.begin(), fill.end(),
 			[](PoolItem const& a, PoolItem const& b){
@@ -799,14 +843,16 @@ private:
 				, effective_floor, fill.size(), drain.size()
 				, window_days );
 
-		/* Bold set: channels accumulated to reach best_n on each side.  */
+		/* Bold set: peers accumulated to reach best_n on each side;
+		 * every channel of a picked peer joins the request list.  */
 		auto pick = [best_n](std::vector<PoolItem> const& pool){
 			auto picks = std::vector<std::string>();
 			std::int64_t acc = 0;
 			for (auto const& it : pool) {
 				if (acc >= best_n)
 					break;
-				picks.push_back(it.ch->scid);
+				for (auto const& s : it.pr->scids)
+					picks.push_back(s);
 				acc += it.deficit;
 			}
 			return picks;
@@ -889,11 +935,11 @@ private:
 		auto maxfee = std::uint32_t(std::llround(
 			target.ppm + min_offered));
 		auto requested = target.deficit;
-		auto target_scids = std::vector<std::string>{
-			target.ch->scid };
+		auto target_scids = target.pr->scids;
 		auto other_scids = std::vector<std::string>();
 		for (auto const& it : opool)
-			other_scids.push_back(it.ch->scid);
+			for (auto const& s : it.pr->scids)
+				other_scids.push_back(s);
 		auto source_scids = fill_target ? other_scids : target_scids;
 		auto dest_scids = fill_target ? target_scids : other_scids;
 		return Boss::log( bus, Info
@@ -902,7 +948,7 @@ private:
 			  "maxfee=%u ppm (target %.1f + min offered %.1f); "
 			  "sources=%zu dests=%zu; executing."
 			, fill_target ? "fill" : "drain"
-			, target.ch->scid.c_str()
+			, join_scids(target.pr->scids).c_str()
 			, window_days
 			, Util::Str::group_digits(requested).c_str()
 			, (unsigned)maxfee

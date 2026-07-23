@@ -77,11 +77,12 @@ def row_color(r, args):
 
     Fill wins ties (shouldn't happen with sane thresholds).
     """
-    if args.fill_loc is not None and r["pct_local"] <= args.fill_loc:
+    pct = r.get("peer_pct_local", r["pct_local"])
+    if args.fill_loc is not None and pct <= args.fill_loc:
         ppm = r["out_net_ppm"]
         if args.fill_ppm is None or (ppm is not None and ppm >= args.fill_ppm):
             return ANSI_FILL
-    if args.drain_loc is not None and r["pct_local"] >= args.drain_loc:
+    if args.drain_loc is not None and pct >= args.drain_loc:
         ppm = r["in_net_ppm"]
         if args.drain_ppm is None or (ppm is not None and ppm >= args.drain_ppm):
             return ANSI_DRAIN
@@ -243,8 +244,7 @@ def pad_string(s, width):
     return s + " " * (width - wcswidth(s))
 
 
-def compute_row(channel, peer, window_days, peer_cap_msat, grant, gain,
-                fill_loc, drain_loc):
+def compute_row(channel, peer, window_days, peer_cap_msat, grant, gain):
     cap_msat = channel.get("total_msat", 0) or 0
     to_us_msat = channel.get("to_us_msat", 0) or 0
     pct_local = (100.0 * to_us_msat / cap_msat) if cap_msat > 0 else 0.0
@@ -276,12 +276,11 @@ def compute_row(channel, peer, window_days, peer_cap_msat, grant, gain,
     cap_sat = cap_msat // 1000
     local_sat = to_us_msat // 1000
     remote_sat = cap_sat - local_sat
-    # Per-side rebalance deficit toward the band edges: the band both
-    # admits a channel and defines where its rebalancing stops (mirrors
-    # the driver).  Each is clamped at 0 so a channel only shows the
-    # column relevant to its band; channels in the middle show 0 for both.
-    tgt_fill_sat = max(0, int(cap_sat * fill_loc / 100.0) - local_sat)
-    tgt_drain_sat = max(0, local_sat - int(cap_sat * drain_loc / 100.0))
+    # Deficits and band membership live at PEER granularity (the network
+    # only guarantees delivery to the peer -- non-strict forwarding);
+    # they are filled in by the aggregation pass after all rows exist.
+    tgt_fill_sat = 0
+    tgt_drain_sat = 0
     return {
         "alias": peer.get("alias") or "",
         "scid": channel.get("scid"),
@@ -663,8 +662,33 @@ def main():
         peer = peers[ch["peer_id"]]
         rows.append(compute_row(ch, peer, args.days,
                                 peer_cap_msat[ch["peer_id"]],
-                                args.grant, args.gain,
-                                args.fill_loc, args.drain_loc))
+                                args.grant, args.gain))
+
+    # Peer-aggregation pass (mirrors the driver): candidacy, deficits,
+    # and progress live at peer granularity, because non-strict
+    # forwarding lets a multi-channel peer land any incoming HTLC on
+    # whichever parallel channel it prefers -- a per-channel deficit
+    # against such a peer can never be settled.  Every row of a peer
+    # carries the peer's aggregate Loc% (peer_pct_local, used for tier
+    # membership) and aggregate deficits (TgtFill/TgtDrain columns).
+    peer_scids = {}
+    peer_agg = {}
+    for r in rows:
+        pid = r["peer_id"]
+        peer_scids.setdefault(pid, []).append(r["scid"])
+        agg = peer_agg.setdefault(pid, {"cap": 0, "local": 0})
+        agg["cap"] += r["cap_sat"]
+        agg["local"] += r["local_sat"]
+    for pid, agg in peer_agg.items():
+        cap, local = agg["cap"], agg["local"]
+        agg["pct"] = (100.0 * local / cap) if cap > 0 else 0.0
+        agg["tgt_fill"] = max(0, int(cap * args.fill_loc / 100.0) - local)
+        agg["tgt_drain"] = max(0, local - int(cap * args.drain_loc / 100.0))
+    for r in rows:
+        agg = peer_agg[r["peer_id"]]
+        r["peer_pct_local"] = agg["pct"]
+        r["tgt_fill_sat"] = agg["tgt_fill"]
+        r["tgt_drain_sat"] = agg["tgt_drain"]
 
     # Band thresholds for "tier" sort: follow --fill-loc/--drain-loc when set,
     # else default to 10/90 so the tier sort always works.
@@ -678,7 +702,7 @@ def main():
         attractive candidates float to the table edges; middle band sorted
         by Loc%.  Channels with missing NetPpm sort closer to the middle
         band (least attractive position within their own band)."""
-        pct = r["pct_local"]
+        pct = r.get("peer_pct_local", r["pct_local"])
         if pct <= fill_band:
             # Low band at top of table.  Sort by OutNetPpm descending so
             # highest float to the very top.  Missing OutNetPpm sorts to
@@ -765,8 +789,17 @@ def main():
         total_cap = sum(r["cap_sat"] for r in subset)
         total_local = sum(r["local_sat"] for r in subset)
         total_remote = sum(r["remote_sat"] for r in subset)
-        total_tgt_fill = sum(r["tgt_fill_sat"] for r in subset)
-        total_tgt_drain = sum(r["tgt_drain_sat"] for r in subset)
+        # TgtFill/TgtDrain are peer aggregates repeated on every row of
+        # a multi-channel peer; count each peer once.
+        seen = set()
+        total_tgt_fill = 0
+        total_tgt_drain = 0
+        for r in subset:
+            if r["peer_id"] in seen:
+                continue
+            seen.add(r["peer_id"])
+            total_tgt_fill += r["tgt_fill_sat"]
+            total_tgt_drain += r["tgt_drain_sat"]
         total_in_earn = sum(r["in_earn_msat"] for r in subset)
         total_out_earn = sum(r["out_earn_msat"] for r in subset)
         return [
@@ -827,28 +860,36 @@ def main():
     # participate.  It still qualifies (colors / band totals) -- color is
     # band membership, the pool is participation -- it just never bolds or
     # appears in the emitted command.
-    fill_pool = [
-        r for r in rows
-        if r["online"] == "."
-        and r["pct_local"] <= fill_band
-        and r["out_net_ppm"] is not None
-        and r["out_net_ppm"] > 0
-        and r["tgt_fill_sat"] > 0
-    ]
+    # Pools hold ONE representative row per peer (mirrors the driver's
+    # per-peer aggregation); the deficit fields already carry the peer
+    # aggregates, and peer_scids expands a pick to all the peer's
+    # channels for bolding and the emitted command.
+    seen_fill_peers = set()
+    fill_pool = []
+    for r in rows:
+        if (r["online"] == "."
+                and r["peer_id"] not in seen_fill_peers
+                and r["peer_pct_local"] <= fill_band
+                and r["out_net_ppm"] is not None
+                and r["out_net_ppm"] > 0
+                and r["tgt_fill_sat"] > 0):
+            seen_fill_peers.add(r["peer_id"])
+            fill_pool.append(r)
     fill_pool.sort(key=lambda r: -r["out_net_ppm"])
-    # With overlapping bands a channel could qualify for both pools;
-    # fill wins so it cannot be picked against itself (mirrors the
-    # driver).
-    fill_scids = {r["scid"] for r in fill_pool}
-    drain_pool = [
-        r for r in rows
-        if r["online"] == "."
-        and r["scid"] not in fill_scids
-        and r["pct_local"] >= drain_band
-        and r["in_net_ppm"] is not None
-        and r["in_net_ppm"] > 0
-        and r["tgt_drain_sat"] > 0
-    ]
+    # With overlapping bands a peer could qualify for both pools; fill
+    # wins so it cannot be picked against itself (mirrors the driver).
+    seen_drain_peers = set()
+    drain_pool = []
+    for r in rows:
+        if (r["online"] == "."
+                and r["peer_id"] not in seen_fill_peers
+                and r["peer_id"] not in seen_drain_peers
+                and r["peer_pct_local"] >= drain_band
+                and r["in_net_ppm"] is not None
+                and r["in_net_ppm"] > 0
+                and r["tgt_drain_sat"] > 0):
+            seen_drain_peers.add(r["peer_id"])
+            drain_pool.append(r)
     drain_pool.sort(key=lambda r: -r["in_net_ppm"])
 
     # ---- JIT simulation --------------------------------------------------
@@ -1071,7 +1112,7 @@ def main():
         for r in fill_pool:
             if acc >= args.transfer_size:
                 break
-            bold_scids.add(r["scid"])
+            bold_scids.update(peer_scids[r["peer_id"]])
             acc += r["tgt_fill_sat"]
             fill_threshold_ppm = r["out_net_ppm"]
         fill_accumulated = acc
@@ -1080,7 +1121,7 @@ def main():
         for r in drain_pool:
             if acc >= args.transfer_size:
                 break
-            bold_scids.add(r["scid"])
+            bold_scids.update(peer_scids[r["peer_id"]])
             acc += r["tgt_drain_sat"]
             drain_threshold_ppm = r["in_net_ppm"]
         drain_accumulated = acc
@@ -1200,7 +1241,7 @@ def main():
                 if args.fill_ppm is not None else ""
             )
             parts.append(
-                f"green = fill candidate (Loc% <= {args.fill_loc}{ppm_str})"
+                f"green = fill candidate (peer Loc% <= {args.fill_loc}{ppm_str})"
             )
         if has_drain:
             ppm_str = (
@@ -1208,7 +1249,7 @@ def main():
                 if args.drain_ppm is not None else ""
             )
             parts.append(
-                f"yellow = drain candidate (Loc% >= {args.drain_loc}{ppm_str})"
+                f"yellow = drain candidate (peer Loc% >= {args.drain_loc}{ppm_str})"
             )
         print(f"# tier highlight: {'; '.join(parts)}")
 
@@ -1220,8 +1261,10 @@ def main():
         # middle band and can never enter any tier (e.g. a perfectly
         # balanced channel like haggis on lab0-a).
         for spec, label, predicate in [
-            (has_fill, "fill", lambda r: r["pct_local"] <= args.fill_loc),
-            (has_drain, "drain", lambda r: r["pct_local"] >= args.drain_loc),
+            (has_fill, "fill",
+             lambda r: r["peer_pct_local"] <= args.fill_loc),
+            (has_drain, "drain",
+             lambda r: r["peer_pct_local"] >= args.drain_loc),
         ]:
             if not spec:
                 continue
@@ -1249,6 +1292,9 @@ def main():
           f"fill deficit toward the fill-loc band edge")
     print(f"# TgtDrain = max(0, LocalBal - {args.drain_loc:g}%*cap) -- "
           f"drain deficit toward the drain-loc band edge")
+    print("# tiers, deficits, and pools are PEER aggregates (summed "
+          "across a peer's channels); multi-channel peers repeat the "
+          "aggregate on each row")
     # Always surface the full joint(N) staircase when a matched-pool walk
     # ran.  The floor just selects the largest N whose joint >= floor, so the
     # curve gives the usable floor range directly: the top row's joint is the
@@ -1388,10 +1434,12 @@ def main():
             # dest = filled channels (low Loc%, peer->us leg).  Preserve the
             # pools' NetPpm-descending order so the most attractive endpoints
             # lead.  Only the bold (= would-participate) channels are listed.
-            source_picks = [r["scid"] for r in drain_pool
-                            if r["scid"] in bold_scids]
-            dest_picks = [r["scid"] for r in fill_pool
-                          if r["scid"] in bold_scids]
+            source_picks = [s for r in drain_pool
+                            if r["scid"] in bold_scids
+                            for s in peer_scids[r["peer_id"]]]
+            dest_picks = [s for r in fill_pool
+                          if r["scid"] in bold_scids
+                          for s in peer_scids[r["peer_id"]]]
             if source_picks and dest_picks:
                 # Scale the requested amount: the bold set / budget above
                 # reflect the full matched-pool economics; the emitted amount
