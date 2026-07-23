@@ -39,18 +39,20 @@ auto const listpeers_result = R"JSON(
 }
 )JSON";
 
-/* The plugin's Part::json shape: plain-number msat fields, real scids
- * on first_hop / return_hop, label appended by the notifier.  Custom
- * notifications deliver this AS params (lightningd relays the sender's
- * payload verbatim; no topic-key nesting, that is a built-in-topic
- * convention).  */
+/* The plugin's Part::json shape, as captured live off a probe
+ * subscriber (2026-07-23, lab0-a): plain-number msat fields, real
+ * SCIDDs (direction-suffixed) on first_hop / return_hop, label
+ * appended by the notifier.  Custom notifications deliver this AS
+ * params (lightningd relays the sender's payload verbatim; cln-plugin
+ * 0.7.0 also nests a copy under the topic key, which consumers should
+ * ignore).  */
 auto const complete_part = R"JSON(
 {
   "part_index": 2,
   "payment_hash": "f5a6a059a25d1e329d9b094aeeec8c2191ca037d3f5b0662e21ae850debe8ea2",
   "status": "complete",
-  "first_hop": "1000x1x1",
-  "return_hop": "1000x1x0",
+  "first_hop": "1000x1x1/1",
+  "return_hop": "1000x1x0/0",
   "planned_msat": 10000000,
   "delivered_msat": 10000000,
   "sent_msat": 10005958,
@@ -68,8 +70,8 @@ auto const failed_part = R"JSON(
   "part_index": 1,
   "payment_hash": "9d9b094aeeec8c2191ca037d3f5b0662e21ae850debe8ea2f5a6a059a25d1e32",
   "status": "failed",
-  "first_hop": "1000x1x1",
-  "return_hop": "1000x1x0",
+  "first_hop": "1000x1x1/1",
+  "return_hop": "1000x1x0/0",
   "planned_msat": 10000000,
   "delivered_msat": 0,
   "sent_msat": 10005958,

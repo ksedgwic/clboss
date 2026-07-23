@@ -36,6 +36,14 @@ void XRebalancePartMonitor::start() {
 		auto return_scid = Ln::Scid();
 		auto amount = Ln::Amount();
 		auto fee = Ln::Amount();
+		/* first_hop / return_hop are scidds ("845x1x0/1"); the
+		 * mapper keys on the channel alone, so drop the
+		 * direction suffix.  */
+		auto scid_of_scidd = [](std::string const& s) {
+			auto slash = s.find('/');
+			return Ln::Scid( slash == std::string::npos
+				       ? s : s.substr(0, slash));
+		};
 		try {
 			/* Custom notifications arrive with the sender's
 			 * payload AS params (lightningd relays it verbatim,
@@ -55,10 +63,10 @@ void XRebalancePartMonitor::start() {
 			if (std::string(payload["status"]) != "complete")
 				return Ev::lift();
 
-			first_scid = Ln::Scid(std::string(
+			first_scid = scid_of_scidd(std::string(
 				payload["first_hop"]
 			));
-			return_scid = Ln::Scid(std::string(
+			return_scid = scid_of_scidd(std::string(
 				payload["return_hop"]
 			));
 			amount = Ln::Amount::object(
@@ -67,7 +75,11 @@ void XRebalancePartMonitor::start() {
 			fee = Ln::Amount::object(
 				payload["fee_msat"]
 			);
-		} catch (std::runtime_error const& err) {
+		/* std::exception, not std::runtime_error: Ln::Scid
+		 * throws invalid_argument (a logic_error), and a
+		 * narrower catch let exactly that escape unlogged --
+		 * the silent-attribution-loss bug.  */
+		} catch (std::exception const& err) {
 			return Boss::log( bus, Error
 					, "XRebalancePartMonitor: unexpected "
 					  "xrebalance_part payload: %s: %s"
