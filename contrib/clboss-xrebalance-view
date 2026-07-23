@@ -243,7 +243,8 @@ def pad_string(s, width):
     return s + " " * (width - wcswidth(s))
 
 
-def compute_row(channel, peer, window_days, peer_cap_msat, grant, gain):
+def compute_row(channel, peer, window_days, peer_cap_msat, grant, gain,
+                fill_loc, drain_loc):
     cap_msat = channel.get("total_msat", 0) or 0
     to_us_msat = channel.get("to_us_msat", 0) or 0
     pct_local = (100.0 * to_us_msat / cap_msat) if cap_msat > 0 else 0.0
@@ -275,12 +276,12 @@ def compute_row(channel, peer, window_days, peer_cap_msat, grant, gain):
     cap_sat = cap_msat // 1000
     local_sat = to_us_msat // 1000
     remote_sat = cap_sat - local_sat
-    # Per-side rebalance deficit toward fixed Loc% targets.  Fill target
-    # = 25% (raise drained channels up); drain target = 75% (bring full
-    # channels down).  Each is clamped at 0 so a channel only shows the
+    # Per-side rebalance deficit toward the band edges: the band both
+    # admits a channel and defines where its rebalancing stops (mirrors
+    # the driver).  Each is clamped at 0 so a channel only shows the
     # column relevant to its band; channels in the middle show 0 for both.
-    tgt_fill_sat = max(0, cap_sat // 4 - local_sat)
-    tgt_drain_sat = max(0, local_sat - 3 * cap_sat // 4)
+    tgt_fill_sat = max(0, int(cap_sat * fill_loc / 100.0) - local_sat)
+    tgt_drain_sat = max(0, local_sat - int(cap_sat * drain_loc / 100.0))
     return {
         "alias": peer.get("alias") or "",
         "scid": channel.get("scid"),
@@ -377,8 +378,8 @@ def main():
              "through channel SCID and is stuck on outbound capacity.  Shows "
              "what xrebalance would decide (PROCEED/PARTIAL/REFUSE), which "
              "drain candidates would be picked, and the joint budget for "
-             "this specific scenario.  Fill target = max(SIZE, 25%%*cap) to "
-             "satisfy the HTLC AND land at a comfortable Loc 25%%.  "
+             "this specific scenario.  Fill target = max(SIZE, fill-loc%%*cap) "
+             "to satisfy the HTLC AND land at the fill band edge.  "
              "Mutually exclusive with --transfer-size."
     )
     parser.add_argument(
@@ -662,7 +663,8 @@ def main():
         peer = peers[ch["peer_id"]]
         rows.append(compute_row(ch, peer, args.days,
                                 peer_cap_msat[ch["peer_id"]],
-                                args.grant, args.gain))
+                                args.grant, args.gain,
+                                args.fill_loc, args.drain_loc))
 
     # Band thresholds for "tier" sort: follow --fill-loc/--drain-loc when set,
     # else default to 10/90 so the tier sort always works.
@@ -834,9 +836,14 @@ def main():
         and r["tgt_fill_sat"] > 0
     ]
     fill_pool.sort(key=lambda r: -r["out_net_ppm"])
+    # With overlapping bands a channel could qualify for both pools;
+    # fill wins so it cannot be picked against itself (mirrors the
+    # driver).
+    fill_scids = {r["scid"] for r in fill_pool}
     drain_pool = [
         r for r in rows
         if r["online"] == "."
+        and r["scid"] not in fill_scids
         and r["pct_local"] >= drain_band
         and r["in_net_ppm"] is not None
         and r["in_net_ppm"] > 0
@@ -887,7 +894,8 @@ def main():
         cur_local = jit_trigger_row["local_sat"]
         # Fill target: bring local up to max(HTLC, 25%*cap).  If channel
         # already has enough, fill_target is 0 (no rebalance needed).
-        desired_local = max(jit_size_requested, cap // 4)
+        desired_local = max(jit_size_requested,
+                            int(cap * args.fill_loc / 100.0))
         jit_fill_target = max(0, desired_local - cur_local)
 
         out_ppm = jit_trigger_row["out_net_ppm"]
@@ -986,19 +994,23 @@ def main():
         if not fill_cum and not drain_cum:
             auto_derive_decision = "NO_CANDIDATES"
             auto_derive_reason = (
-                "no fill or drain candidates with positive NetPpm"
+                "no fill or drain candidates (each pool needs an online "
+                "band channel with positive NetPpm and a positive "
+                "deficit toward the band edge)"
             )
         elif not fill_cum:
             auto_derive_decision = "NO_FILL_CANDIDATES"
             auto_derive_reason = (
-                "no fill candidates with positive OutNetPpm "
-                "(no channel in fill band has earned outbound forwards)"
+                "no fill candidates: no online channel at or below "
+                f"fill-loc {fill_band:g}% with positive OutNetPpm and a "
+                "positive TgtFill (already-at-target channels have none)"
             )
         elif not drain_cum:
             auto_derive_decision = "NO_DRAIN_CANDIDATES"
             auto_derive_reason = (
-                "no drain candidates with positive InNetPpm "
-                "(no channel in drain band has earned inbound forwards)"
+                "no drain candidates: no online channel at or above "
+                f"drain-loc {drain_band:g}% with positive InNetPpm and a "
+                "positive TgtDrain (already-at-target channels have none)"
             )
         else:
             # Breakpoints: each cumulative volume on either side.
@@ -1233,8 +1245,10 @@ def main():
                     f"0 sat (no channels match the Loc% gate)"
                 )
 
-    print(f"# TgtFill  = max(0, 25%%*cap - LocalBal) -- fill deficit toward Loc 25%%")
-    print(f"# TgtDrain = max(0, LocalBal - 75%%*cap) -- drain deficit toward Loc 75%%")
+    print(f"# TgtFill  = max(0, {args.fill_loc:g}%*cap - LocalBal) -- "
+          f"fill deficit toward the fill-loc band edge")
+    print(f"# TgtDrain = max(0, LocalBal - {args.drain_loc:g}%*cap) -- "
+          f"drain deficit toward the drain-loc band edge")
     # Always surface the full joint(N) staircase when a matched-pool walk
     # ran.  The floor just selects the largest N whose joint >= floor, so the
     # curve gives the usable floor range directly: the top row's joint is the
@@ -1426,7 +1440,7 @@ def main():
         )
         print(
             f"# HTLC size requested: {jit_size_requested:_} sat; "
-            f"fill target (= max(HTLC, 25%%*cap) - local): "
+            f"fill target (= max(HTLC, {args.fill_loc:g}%*cap) - local): "
             f"{jit_fill_target:_} sat"
         )
         if jit_drain_threshold_ppm is not None:
