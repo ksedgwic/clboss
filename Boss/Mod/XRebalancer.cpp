@@ -36,7 +36,6 @@ namespace {
 
 auto const opt_per_hour = std::string("clboss-xrebalance-per-hour");
 auto const opt_floor = std::string("clboss-xrebalance-route-cost-floor");
-auto const opt_size_factor = std::string("clboss-xrebalance-size-factor");
 auto const opt_window_days = std::string("clboss-xrebalance-earnings-window-days");
 auto const opt_fill_loc = std::string("clboss-xrebalance-fill-loc");
 auto const opt_drain_loc = std::string("clboss-xrebalance-drain-loc");
@@ -46,14 +45,12 @@ auto const opt_gain = std::string("clboss-xrebalance-gain");
 
 auto constexpr default_per_hour = double(12.0);
 auto constexpr default_floor = double(50.0);
-auto constexpr default_size_factor = double(0.1);
 auto constexpr default_window_days = double(90.0);
 /* Tier bands (Loc%); match clboss-xrebalance-view defaults.  */
 auto constexpr default_fill_band = double(10.0);
 auto constexpr default_drain_band = double(90.0);
 /* MCF split cap passed to the executor (askrene getroutes maxparts).  */
 auto constexpr default_maxparts = double(10.0);
-
 /* The fill/drain deficits aim toward the band edges themselves
  * (fill_band / drain_band): the band both admits a channel and
  * defines where its rebalancing stops.  */
@@ -80,8 +77,6 @@ private:
 
 	double per_hour;
 	double floor_ppm;
-	double size_factor;       /* lo bound, or the fixed value */
-	double size_factor_hi;    /* hi bound when size_factor is a lo:hi range */
 	double window_days;
 	double fill_band;
 	double drain_band;
@@ -89,7 +84,6 @@ private:
 	double grant_ppm;         /* assumed prior rate (ppm of a capacity-turn) */
 	double gain;              /* NetPpm multiplier */
 	bool floor_auto;   /* floor option set to "auto" (sweep) */
-	bool size_factor_range;   /* size_factor set as lo:hi (per-cycle random) */
 	/* Mode xrebalance2: execute through the external xrebalance
 	 * plugin instead of clboss-xmovefunds.  Captured at cycle start;
 	 * cycles are serialized by the awaited loop, so one flag
@@ -108,9 +102,6 @@ private:
 		bool online;
 		std::int64_t cap_sat;
 		std::int64_t local_sat;
-		double pct_local;
-		std::int64_t tgt_fill_sat;
-		std::int64_t tgt_drain_sat;
 	};
 
 	/* Per-node windowed NetPpm; absent (has_* false) when no forwards in
@@ -123,8 +114,6 @@ private:
 	void start() {
 		per_hour = default_per_hour;
 		floor_ppm = default_floor;
-		size_factor = default_size_factor;
-		size_factor_hi = default_size_factor;
 		window_days = default_window_days;
 		fill_band = default_fill_band;
 		drain_band = default_drain_band;
@@ -132,7 +121,6 @@ private:
 		grant_ppm = default_grant;
 		gain = default_gain;
 		floor_auto = false;
-		size_factor_range = false;
 		use_plugin = false;
 		started = false;
 
@@ -156,19 +144,6 @@ private:
 				"amount and the maxfee budget.  Or \"auto\": "
 				"each cycle picks a random rung of the derived "
 				"floor ladder (sweep).")
-			     + manifest_option(opt_size_factor, default_size_factor,
-				"Multiplier (> 0) on the derived matched-pool "
-				"amount requested per cycle.  <1 requests a "
-				"fraction (incremental fills); >1 over-fills "
-				"past the band targets -- recoverable, the "
-				"channel drifts back -- to make each of the "
-				"maxparts parts larger so it amortizes the base "
-				"fee and clears the per-part budget.  Or a range "
-				"\"lo:hi\" (e.g. 0.5:3.0): each cycle draws a fresh "
-				"uniform-random multiplier in [lo,hi], sweeping the "
-				"request size so askrene's accumulated route state "
-				"does not stale into repeated 205/206 refusals the "
-				"way a single fixed value eventually does.")
 			     + manifest_option(opt_window_days, default_window_days,
 				"Trailing window (days) over which per-channel "
 				"NetPpm is measured for cycle selection.")
@@ -249,48 +224,6 @@ private:
 		}
 		if (o.name == opt_floor)
 			floor_auto = false;
-		/* size-factor also accepts a "lo:hi" range (e.g. 0.5:3.0):
-		 * instead of one fixed multiplier, each cycle draws a fresh
-		 * uniform-random value in [lo,hi] (see plan_and_log).  Sweeping
-		 * the size keeps the request varying so askrene's accumulated
-		 * route state does not stale into repeated 205/206 refusals the
-		 * way a fixed value eventually does.  A plain number clears
-		 * range mode and falls through to the numeric path below. */
-		if (o.name == opt_size_factor) {
-			auto s = std::string(o.value);
-			auto colon = s.find(':');
-			if (colon != std::string::npos) {
-				auto lo = double(0.0);
-				auto hi = double(0.0);
-				try {
-					lo = std::stod(s.substr(0, colon));
-					hi = std::stod(s.substr(colon + 1));
-				} catch (std::exception const&) {
-					o.reject(o.name + ": invalid range");
-					return Boss::log( bus, Error
-							, "XRebalancer: ignoring invalid "
-							  "%s range \"%s\"."
-							, o.name.c_str(), s.c_str() );
-				}
-				if (!(lo > 0.0) || !(hi > 0.0)) {
-					o.reject( o.name + ": range bounds "
-						  "must be > 0");
-					return Boss::log( bus, Error
-							, "XRebalancer: %s range bounds "
-							  "must be > 0; ignoring \"%s\"."
-							, o.name.c_str(), s.c_str() );
-				}
-				if (hi < lo) { auto t = lo; lo = hi; hi = t; }
-				size_factor = lo;
-				size_factor_hi = hi;
-				size_factor_range = true;
-				return Boss::log( bus, Info
-						, "XRebalancer: %s set to range "
-						  "%.3g:%.3g (per-cycle random)."
-						, o.name.c_str(), lo, hi );
-			}
-			size_factor_range = false;
-		}
 		/* maxparts is an integer count, not a continuous knob, so it
 		 * gets dedicated handling: parse, round, floor at 1 (askrene
 		 * requires >= 1), and store as an integer.  */
@@ -322,7 +255,6 @@ private:
 		double* target = nullptr;
 		if (o.name == opt_per_hour)        target = &per_hour;
 		else if (o.name == opt_floor)      target = &floor_ppm;
-		else if (o.name == opt_size_factor) target = &size_factor;
 		else if (o.name == opt_window_days)target = &window_days;
 		else if (o.name == opt_fill_loc)   target = &fill_band;
 		else if (o.name == opt_drain_loc)  target = &drain_band;
@@ -347,7 +279,7 @@ private:
 					, o.name.c_str(), s.c_str()
 					);
 		}
-		if (o.name == opt_size_factor || o.name == opt_gain) {
+		if (o.name == opt_gain) {
 			if (!(v > 0.0)) {
 				o.reject(o.name + ": must be > 0");
 				return Boss::log( bus, Error
@@ -399,17 +331,10 @@ private:
 				auto online = c.has("peer_connected")
 					   && c["peer_connected"].is_boolean()
 					   && bool(c["peer_connected"]);
-				auto pct = double(loc) / double(cap) * 100.0;
-				auto tf = std::int64_t(
-					double(cap) * fill_band / 100.0) - loc;
-				auto td = loc - std::int64_t(
-					double(cap) * drain_band / 100.0);
 				out.push_back(Chan{
 					std::string(c["short_channel_id"]),
 					Ln::NodeId(std::string(c["peer_id"])),
-					online, cap, loc, pct,
-					tf > 0 ? tf : 0,
-					td > 0 ? td : 0
+					online, cap, loc
 				});
 			}
 		} catch (std::exception const& e) {
@@ -548,13 +473,91 @@ private:
 		});
 	}
 
-	/* A pool member: cached channel plus its joined NetPpm on the
-	 * relevant side.  */
+	/* Per-peer aggregate over the peer's channels.  The network only
+	 * guarantees delivery to the PEER: non-strict forwarding (BOLT 4)
+	 * lets it land an incoming HTLC on any parallel channel, so a
+	 * per-channel fill deficit against a multi-channel peer can never
+	 * be settled and the planner livelocks re-requesting it (observed
+	 * live: two-channel peer, three completed fills, zero deficit
+	 * movement).  Candidacy, deficits, and progress therefore live at
+	 * peer granularity -- the same granularity as NetPpm and the
+	 * EarningsTracker -- while chans carries all the peer's channels
+	 * for the request lists (sources we control exactly; destinations
+	 * the peer resolves anyway).  */
+	struct Peer {
+		Ln::NodeId node;
+		std::vector<Chan> chans;
+		std::int64_t cap_sat = 0;
+		std::int64_t local_sat = 0;
+		bool online = false;
+		double pct_local = 0.0;
+		std::int64_t tgt_fill_sat = 0;
+		std::int64_t tgt_drain_sat = 0;
+	};
+
+	/* One request-list entry: a channel plus the most this cycle may
+	 * move through it, passed to the xrebalance plugin as its
+	 * per-scid max_msat cap.  */
+	struct ScidCap {
+		std::string scid;
+		std::int64_t max_sat;
+	};
+
+	/* A pool member: aggregated peer plus its joined NetPpm on the
+	 * relevant side, and the peer's deficit distributed over its
+	 * channels as per-scid caps.  */
 	struct PoolItem {
-		Chan const* ch;
+		Peer const* pr;
 		double ppm;       /* out_net for fill, in_net for drain */
 		std::int64_t deficit; /* tgt_fill for fill, tgt_drain for drain */
+		std::vector<ScidCap> caps;
 	};
+
+	/* Caps below this are dropped (and their channel with them):
+	 * below askrene's ~1000-sat single-path threshold a cap smaller
+	 * than the amount excludes the channel from the solve anyway, so
+	 * tiny caps are pure noise in the request.  */
+	static constexpr std::int64_t min_cap_sat = 1000;
+
+	/* Distribute a peer-level band deficit over the peer's channels
+	 * as per-scid caps: cap_i = deficit * h_i / sum(h), where h_i is
+	 * the channel's own headroom past the band edge.  The SUM of the
+	 * caps never exceeds the peer's deficit -- per-peer granularity
+	 * is the doctrine above, and with xrebalance enforcing the caps
+	 * the peer cannot be pushed past its band edge in one cycle no
+	 * matter how the MCF concentrates the flow -- while the
+	 * weighting points the flow at the peer's skewed channels.  */
+	static std::vector<ScidCap>
+	distribute_caps( Peer const& p
+		       , double band_pct
+		       , bool fill_side
+		       , std::int64_t deficit_sat
+		       ) {
+		auto h = std::vector<std::int64_t>(p.chans.size());
+		auto total = double(0.0);
+		for (auto i = std::size_t(0); i < p.chans.size(); ++i) {
+			auto const& c = p.chans[i];
+			auto edge = std::int64_t(
+				double(c.cap_sat) * band_pct / 100.0);
+			auto v = fill_side ? edge - c.local_sat
+					   : c.local_sat - edge;
+			h[i] = v > 0 ? v : 0;
+			total += double(h[i]);
+		}
+		auto out = std::vector<ScidCap>();
+		if (total <= 0.0 || deficit_sat <= 0)
+			return out;
+		for (auto i = std::size_t(0); i < p.chans.size(); ++i) {
+			if (h[i] <= 0)
+				continue;
+			auto cap = std::int64_t(
+				double(deficit_sat) * double(h[i]) / total);
+			if (cap < min_cap_sat)
+				continue;
+			out.push_back(ScidCap{p.chans[i].scid, cap});
+		}
+		return out;
+	}
 
 	/* One point on the joint(N) curve: cumulative matched volume N and
 	 * the marginal fill/drain NetPpm (and their sum) admitted at that
@@ -630,28 +633,72 @@ private:
 	plan_and_log( std::shared_ptr<std::vector<Chan>> chans
 		    , std::shared_ptr<std::map<Ln::NodeId, NetPpm>> net
 		    ) {
+		/* Aggregate channels into peers; deficits aim at the band
+		 * edges on the aggregate Loc%.  A peer with one full and
+		 * one empty channel nets out balanced and is left alone --
+		 * correct, since intra-peer skew is exactly what non-strict
+		 * forwarding puts beyond our control.  */
+		auto peers = std::vector<Peer>();
+		{
+			auto by_node = std::map<Ln::NodeId, Peer>();
+			for (auto const& c : *chans) {
+				auto& p = by_node[c.node];
+				p.node = c.node;
+				p.chans.push_back(c);
+				p.cap_sat += c.cap_sat;
+				p.local_sat += c.local_sat;
+				p.online = p.online || c.online;
+			}
+			for (auto& e : by_node) {
+				auto& p = e.second;
+				if (p.cap_sat <= 0)
+					continue;
+				p.pct_local = 100.0 * double(p.local_sat)
+					    / double(p.cap_sat);
+				auto tf = std::int64_t(double(p.cap_sat)
+					* fill_band / 100.0) - p.local_sat;
+				auto td = p.local_sat - std::int64_t(
+					double(p.cap_sat) * drain_band / 100.0);
+				p.tgt_fill_sat = tf > 0 ? tf : 0;
+				p.tgt_drain_sat = td > 0 ? td : 0;
+				peers.push_back(std::move(p));
+			}
+		}
+
 		auto fill = std::vector<PoolItem>();
 		auto drain = std::vector<PoolItem>();
-		for (auto const& c : *chans) {
-			if (!c.online)
+		for (auto const& p : peers) {
+			if (!p.online)
 				continue;
-			auto it = net->find(c.node);
+			auto it = net->find(p.node);
 			if (it == net->end())
 				continue;
 			auto const& np = it->second;
-			if (c.pct_local <= fill_band
+			if (p.pct_local <= fill_band
 			 && np.has_out && np.out_net > 0.0
-			 && c.tgt_fill_sat > 0)
-				fill.push_back(PoolItem{
-					&c, np.out_net, c.tgt_fill_sat });
+			 && p.tgt_fill_sat > 0) {
+				auto caps = distribute_caps(
+					p, fill_band, true, p.tgt_fill_sat);
+				if (!caps.empty())
+					fill.push_back(PoolItem{
+						&p, np.out_net,
+						p.tgt_fill_sat,
+						std::move(caps) });
+			}
 			/* else: with overlapping bands (fill-loc set above
-			 * drain-loc) a channel could qualify for both pools;
+			 * drain-loc) a peer could qualify for both pools;
 			 * fill wins so it cannot be picked against itself.  */
-			else if (c.pct_local >= drain_band
+			else if (p.pct_local >= drain_band
 			 && np.has_in && np.in_net > 0.0
-			 && c.tgt_drain_sat > 0)
-				drain.push_back(PoolItem{
-					&c, np.in_net, c.tgt_drain_sat });
+			 && p.tgt_drain_sat > 0) {
+				auto caps = distribute_caps(
+					p, drain_band, false, p.tgt_drain_sat);
+				if (!caps.empty())
+					drain.push_back(PoolItem{
+						&p, np.in_net,
+						p.tgt_drain_sat,
+						std::move(caps) });
+			}
 		}
 		std::sort(fill.begin(), fill.end(),
 			[](PoolItem const& a, PoolItem const& b){
@@ -765,63 +812,49 @@ private:
 				, effective_floor, fill.size(), drain.size()
 				, window_days );
 
-		/* Bold set: channels accumulated to reach best_n on each side.  */
+		/* Bold set: peers accumulated to reach best_n on each side;
+		 * every capped channel of a picked peer joins the request
+		 * list.  */
 		auto pick = [best_n](std::vector<PoolItem> const& pool){
-			auto picks = std::vector<std::string>();
+			auto picks = std::vector<ScidCap>();
 			std::int64_t acc = 0;
 			for (auto const& it : pool) {
 				if (acc >= best_n)
 					break;
-				picks.push_back(it.ch->scid);
+				picks.insert( picks.end()
+					    , it.caps.begin(), it.caps.end());
 				acc += it.deficit;
 			}
 			return picks;
 		};
-		auto dest_scids = pick(fill);    /* fill = where funds land */
-		auto source_scids = pick(drain); /* drain = where funds leave */
+		auto dest_caps = pick(fill);    /* fill = where funds land */
+		auto source_caps = pick(drain); /* drain = where funds leave */
 
-		/* size_factor may be a "lo:hi" range; draw a fresh multiplier
-		 * each cycle so the requested size sweeps (see handle_option).  */
-		auto effective_size_factor = size_factor;
-		auto sf_note = std::string();
-		if (size_factor_range) {
-			auto dist = std::uniform_real_distribution<double>(
-				size_factor, size_factor_hi);
-			effective_size_factor = dist(Boss::random_engine);
-			auto os = std::ostringstream();
-			os << " (rand " << size_factor << ":" << size_factor_hi << ")";
-			sf_note = os.str();
-		}
-
-		auto requested = std::int64_t(
-			std::max<double>(1.0, std::llround(double(best_n)
-							   * effective_size_factor)));
+		/* Request the full matched volume; the per-channel caps in
+		 * the request lists bound what each channel absorbs.  */
+		auto requested = best_n;
 		auto maxfee = std::uint32_t(std::llround(best_joint));
 
 		return Boss::log( bus, Info, "%s", levels_str.c_str() )
 		     + Boss::log( bus, Info
-			, "XRebalancer: cycle [xrebalance] floor=%.1f%s window=%.0fd "
-			  "-> derived N=%s sat, joint=%.1f ppm "
-			  "(fill>=%.1f + drain>=%.1f); size_factor=%.3g%s "
-			  "-> request=%s sat (maxfee %u ppm); "
+			, "XRebalancer: cycle [matched] floor=%.1f%s window=%.0fd "
+			  "-> request=%s sat (matched volume), joint=%.1f ppm "
+			  "(fill>=%.1f + drain>=%.1f), maxfee %u ppm; "
 			  "sources=%zu dests=%zu; executing."
 			, effective_floor, picked_note.c_str(), window_days
 			, Util::Str::group_digits(
-				std::int64_t(best_n)).c_str(), best_joint
+				std::int64_t(requested)).c_str(), best_joint
 			, best_fill_ppm, best_drain_ppm
-			, effective_size_factor, sf_note.c_str()
-			, Util::Str::group_digits(
-				std::int64_t(requested)).c_str()
 			, (unsigned)maxfee
-			, source_scids.size(), dest_scids.size()
-			).then([this, source_scids, dest_scids]() {
+			, source_caps.size(), dest_caps.size()
+			).then([this, source_caps, dest_caps]() {
 			return Boss::log( bus, Debug
 				, "XRebalancer:   sources=[%s] dests=[%s]"
-				, join_scids(source_scids).c_str()
-				, join_scids(dest_scids).c_str()
+				, join_caps(source_caps).c_str()
+				, join_caps(dest_caps).c_str()
 				);
-		}).then([this, source_scids, dest_scids, requested, maxfee]() {
-			return execute_cycle(source_scids, dest_scids,
+		}).then([this, source_caps, dest_caps, requested, maxfee]() {
+			return execute_cycle(source_caps, dest_caps,
 					     requested, maxfee);
 		});
 	}
@@ -834,26 +867,28 @@ private:
 	 * (the natural in-flight guard until the abandon/timeout
 	 * increment lands).  */
 	Ev::Io<void>
-	execute_cycle( std::vector<std::string> source_scids
-		     , std::vector<std::string> dest_scids
+	execute_cycle( std::vector<ScidCap> source_caps
+		     , std::vector<ScidCap> dest_caps
 		     , std::int64_t requested_sat
 		     , std::uint32_t maxfee_ppm
 		     ) {
 		if (use_plugin)
-			return execute_cycle_plugin( std::move(source_scids)
-						   , std::move(dest_scids)
+			return execute_cycle_plugin( std::move(source_caps)
+						   , std::move(dest_caps)
 						   , requested_sat
 						   , maxfee_ppm
 						   );
+		/* clboss-xmovefunds has no per-scid cap concept; it gets
+		 * the bare scids as before.  */
 		auto parms = Json::Out();
 		auto obj = parms.start_object();
 		auto sa = obj.start_array("source_scid");
-		for (auto const& s : source_scids)
-			sa.entry(s);
+		for (auto const& s : source_caps)
+			sa.entry(s.scid);
 		sa.end_array();
 		auto da = obj.start_array("dest_scid");
-		for (auto const& s : dest_scids)
-			da.entry(s);
+		for (auto const& s : dest_caps)
+			da.entry(s.scid);
 		da.end_array();
 		obj.field("amount_msat",
 			  std::uint64_t(requested_sat) * 1000);
@@ -885,20 +920,34 @@ private:
 	 * xrebalance_part notifications (XRebalancePartMonitor), never
 	 * from this response.  */
 	Ev::Io<void>
-	execute_cycle_plugin( std::vector<std::string> source_scids
-			    , std::vector<std::string> dest_scids
+	execute_cycle_plugin( std::vector<ScidCap> source_caps
+			    , std::vector<ScidCap> dest_caps
 			    , std::int64_t requested_sat
 			    , std::uint32_t maxfee_ppm
 			    ) {
+		/* Object-form entries carry the per-scid caps; the plugin
+		 * bounds each channel at min(cap, live liquidity) inside
+		 * one solve, so no peer overshoots its band edge however
+		 * the MCF concentrates the flow.  */
 		auto parms = Json::Out();
 		auto obj = parms.start_object();
 		auto sa = obj.start_array("sources");
-		for (auto const& s : source_scids)
-			sa.entry(s);
+		for (auto const& s : source_caps) {
+			auto so = sa.start_object();
+			so.field("scid", s.scid);
+			so.field("max_msat",
+				 std::uint64_t(s.max_sat) * 1000);
+			so.end_object();
+		}
 		sa.end_array();
 		auto da = obj.start_array("destinations");
-		for (auto const& s : dest_scids)
-			da.entry(s);
+		for (auto const& s : dest_caps) {
+			auto d = da.start_object();
+			d.field("scid", s.scid);
+			d.field("max_msat",
+				std::uint64_t(s.max_sat) * 1000);
+			d.end_object();
+		}
 		da.end_array();
 		obj.field("amount_msat",
 			  std::uint64_t(requested_sat) * 1000);
@@ -1062,6 +1111,23 @@ private:
 		auto label = str("label");
 		auto req = label.empty() ? std::string()
 			 : " [req " + label + "]";
+		/* The plugin clamps the ask to what the channels can
+		 * carry under their caps (less fee headroom) and reports
+		 * the clamp; surface it so a capped cycle is legible.  */
+		auto amount = num("amount_msat");
+		auto effective = num("effective_amount_msat");
+		auto capped = std::string();
+		if (effective >= 0.0 && amount > 0.0 && effective < amount) {
+			auto os = std::ostringstream();
+			os << " (ask "
+			   << Util::Str::group_digits(std::int64_t(
+				std::llround(amount)))
+			   << " capped to "
+			   << Util::Str::group_digits(std::int64_t(
+				std::llround(effective)))
+			   << " msat)";
+			capped = os.str();
+		}
 		auto ppm = std::string();
 		if (delivered > 0.0) {
 			auto os = std::ostringstream();
@@ -1140,28 +1206,32 @@ private:
 			return Boss::log( bus, Info
 				, "XRebalancer: transfer done%s: %zu/%zu "
 				  "parts, delivered %s msat, fee %s "
-				  "msat%s%s%s."
+				  "msat%s%s%s%s."
 				, req.c_str()
 				, parts_complete, parts_total
 				, Util::Str::group_digits(std::int64_t(
 					std::llround(delivered))).c_str()
 				, Util::Str::group_digits(std::int64_t(
 					std::llround(fee))).c_str()
-				, ppm.c_str(), reason.c_str()
+				, ppm.c_str(), capped.c_str()
+				, reason.c_str()
 				, pending_note.c_str() );
 		return Boss::log( bus, Info
-			, "XRebalancer: transfer failed%s: %zu part(s)%s%s%s."
-			, req.c_str(), parts_total, reason.c_str()
+			, "XRebalancer: transfer failed%s: %zu part(s)%s%s%s%s."
+			, req.c_str(), parts_total, capped.c_str()
+			, reason.c_str()
 			, detail_note.c_str(), pending_note.c_str() );
 	}
 
-	static std::string join_scids(std::vector<std::string> const& v) {
+	/* "scid:cap_sat" per entry, so the debug line shows where this
+	 * cycle is allowed to move how much.  */
+	static std::string join_caps(std::vector<ScidCap> const& v) {
 		auto os = std::ostringstream();
 		auto first = true;
 		for (auto const& s : v) {
 			if (!first) os << ",";
 			first = false;
-			os << s;
+			os << s.scid << ":" << s.max_sat;
 		}
 		return os.str();
 	}
