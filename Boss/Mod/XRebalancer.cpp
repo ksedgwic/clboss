@@ -41,6 +41,8 @@ auto const opt_window_days = std::string("clboss-xrebalance-earnings-window-days
 auto const opt_fill_loc = std::string("clboss-xrebalance-fill-loc");
 auto const opt_drain_loc = std::string("clboss-xrebalance-drain-loc");
 auto const opt_maxparts = std::string("clboss-xrebalance-maxparts");
+auto const opt_grant = std::string("clboss-xrebalance-grant");
+auto const opt_gain = std::string("clboss-xrebalance-gain");
 
 auto constexpr default_per_hour = double(12.0);
 auto constexpr default_floor = double(50.0);
@@ -55,6 +57,12 @@ auto constexpr default_maxparts = double(10.0);
 /* Fill/drain Loc% targets the deficits aim toward (25% / 75%).  */
 auto constexpr fill_target_pct = double(25.0);
 auto constexpr drain_target_pct = double(75.0);
+
+/* Strictness benders, both neutral by default.  grant credits every
+ * channeled peer an assumed prior of grant ppm on one capacity-turn
+ * of volume; gain multiplies the joined NetPpm.  */
+auto constexpr default_grant = double(0.0);
+auto constexpr default_gain = double(1.0);
 
 auto constexpr paused_poll_secs = double(60.0);
 
@@ -78,6 +86,8 @@ private:
 	double fill_band;
 	double drain_band;
 	std::uint32_t maxparts;   /* MCF split cap (integer count) */
+	double grant_ppm;         /* assumed prior rate (ppm of a capacity-turn) */
+	double gain;              /* NetPpm multiplier */
 	bool floor_auto;   /* floor option set to "auto" (sweep) */
 	bool size_factor_range;   /* size_factor set as lo:hi (per-cycle random) */
 	/* Mode xrebalance2: execute through the external xrebalance
@@ -119,6 +129,8 @@ private:
 		fill_band = default_fill_band;
 		drain_band = default_drain_band;
 		maxparts = std::uint32_t(default_maxparts);
+		grant_ppm = default_grant;
+		gain = default_gain;
 		floor_auto = false;
 		size_factor_range = false;
 		use_plugin = false;
@@ -172,7 +184,23 @@ private:
 				"fatter parts that amortize the base fee and pass "
 				"the per-part gate but need more liquidity; "
 				"higher = finer splitting, more learning, more "
-				"refusals.");
+				"refusals.")
+			     + manifest_option(opt_grant, default_grant,
+				"Assumed prior earnings rate (ppm), credited "
+				"to every channeled peer on both sides as if "
+				"it had already earned that rate on one "
+				"capacity-turn of volume.  Admits peers with "
+				"no track record at exactly this rate; "
+				"expenditures spend the credit down (subsidy "
+				"per peer bounded by grant x capacity) and "
+				"real volume dilutes it toward the measured "
+				"rate.  0 = record-only (default).")
+			     + manifest_option(opt_gain, default_gain,
+				"Multiplier (> 0) on the joined NetPpm, both "
+				"sides, before candidacy, floor, and maxfee "
+				"pricing.  >1 accepts routes costing up to "
+				"gain x the measured earnings rate; 1 = "
+				"strict (default).");
 		});
 		bus.subscribe<Msg::Option
 			     >([this](Msg::Option const& o) {
@@ -296,6 +324,8 @@ private:
 		else if (o.name == opt_window_days)target = &window_days;
 		else if (o.name == opt_fill_loc)   target = &fill_band;
 		else if (o.name == opt_drain_loc)  target = &drain_band;
+		else if (o.name == opt_grant)      target = &grant_ppm;
+		else if (o.name == opt_gain)       target = &gain;
 		else return Ev::lift();
 
 		auto s = std::string(o.value);
@@ -315,7 +345,7 @@ private:
 					, o.name.c_str(), s.c_str()
 					);
 		}
-		if (o.name == opt_size_factor) {
+		if (o.name == opt_size_factor || o.name == opt_gain) {
 			if (!(v > 0.0)) {
 				o.reject(o.name + ": must be > 0");
 				return Boss::log( bus, Error
@@ -444,6 +474,30 @@ private:
 			    - window_days * 24.0 * 60.0 * 60.0;
 		return db.transact().then([this, cutoff, chans](Sqlite3::Tx tx) {
 			auto net = std::make_shared<std::map<Ln::NodeId, NetPpm>>();
+			/* Per-peer capacity (msat): grant's credit base and
+			 * notional volume.  */
+			auto cap_msat = std::map<Ln::NodeId, double>();
+			for (auto const& c : *chans)
+				cap_msat[c.node] += double(c.cap_sat) * 1000.0;
+			/* Join one side.  Strict form is (e - x) / f over
+			 * f > 0.  With grant, credit the peer as if it had
+			 * already earned grant ppm on one capacity-turn:
+			 * (e - x + cap*grant/1e6) / (f + cap) -- a fresh
+			 * peer reads exactly grant, expenditures spend the
+			 * credit down, real volume dilutes it toward the
+			 * measured rate.  gain scales the result either
+			 * way.  */
+			auto joined = [this]( double e, double x, double f
+					    , double cm
+					    , bool& has, double& ppm
+					    ) {
+				auto g = grant_ppm > 0.0 ? cm : 0.0;
+				if (!(f + g > 0.0))
+					return;
+				has = true;
+				ppm = (e - x + g * grant_ppm / 1e6)
+				    * 1e6 / (f + g) * gain;
+			};
 			auto fetch = tx.query(R"QRY(
 			SELECT node,
 			       SUM(in_earnings), SUM(in_forwarded),
@@ -464,17 +518,29 @@ private:
 				auto out_e = double(r.get<std::int64_t>(4));
 				auto out_f = double(r.get<std::int64_t>(5));
 				auto out_x = double(r.get<std::int64_t>(6));
+				auto cm = 0.0;
+				auto ci = cap_msat.find(node);
+				if (ci != cap_msat.end())
+					cm = ci->second;
 				auto p = NetPpm();
-				if (in_f > 0.0) {
-					p.has_in = true;
-					p.in_net = (in_e - in_x) * 1e6 / in_f;
-				}
-				if (out_f > 0.0) {
-					p.has_out = true;
-					p.out_net = (out_e - out_x) * 1e6 / out_f;
-				}
+				joined(in_e, in_x, in_f, cm, p.has_in, p.in_net);
+				joined(out_e, out_x, out_f, cm,
+				       p.has_out, p.out_net);
 				(*net)[node] = p;
 			}
+			/* Channeled peers with no earnings rows at all read
+			 * the pure grant rate.  */
+			if (grant_ppm > 0.0)
+				for (auto const& ce : cap_msat) {
+					if (net->count(ce.first))
+						continue;
+					auto p = NetPpm();
+					joined(0.0, 0.0, 0.0, ce.second,
+					       p.has_in, p.in_net);
+					joined(0.0, 0.0, 0.0, ce.second,
+					       p.has_out, p.out_net);
+					(*net)[ce.first] = p;
+				}
 			tx.commit();
 			return plan_and_log(chans, net);
 		});
