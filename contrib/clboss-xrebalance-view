@@ -133,6 +133,8 @@ def read_live_config(lightning_dir, network_option):
         ("route_cost_floor", "clboss-xrebalance-route-cost-floor"),
         ("size_factor", "clboss-xrebalance-size-factor"),
         ("maxparts", "clboss-xrebalance-maxparts"),
+        ("grant", "clboss-xrebalance-grant"),
+        ("gain", "clboss-xrebalance-gain"),
     ):
         v = val(opt)
         if v is not None:
@@ -173,6 +175,18 @@ def safe_ppm(numerator_msat, denominator_msat):
     if denominator_msat <= 0:
         return None
     return (numerator_msat * 1_000_000) / denominator_msat
+
+
+def effective_net_ppm(net_msat, fwd_msat, peer_cap_msat, grant, gain):
+    """The NetPpm the driver joins for one side: strict (net / fwd) when
+    grant is 0, else the peer credited an assumed prior of grant ppm on
+    one capacity-turn -- (net + cap*grant/1e6) / (fwd + cap) -- and gain
+    scales the result either way.  Mirrors XRebalancer's joined()."""
+    g_vol = peer_cap_msat if grant > 0 else 0
+    denom = fwd_msat + g_vol
+    if denom <= 0:
+        return None
+    return (net_msat + g_vol * grant / 1e6) * 1_000_000 / denom * gain
 
 
 def fmt_ppm(value):
@@ -229,7 +243,7 @@ def pad_string(s, width):
     return s + " " * (width - wcswidth(s))
 
 
-def compute_row(channel, peer, window_days):
+def compute_row(channel, peer, window_days, peer_cap_msat, grant, gain):
     cap_msat = channel.get("total_msat", 0) or 0
     to_us_msat = channel.get("to_us_msat", 0) or 0
     pct_local = (100.0 * to_us_msat / cap_msat) if cap_msat > 0 else 0.0
@@ -238,19 +252,25 @@ def compute_row(channel, peer, window_days):
     age_days = max(1, age_secs // 86400)
     ops_days = min(age_days, window_days)
 
+    # Gross ppm columns stay raw; the NetPpm columns (and everything
+    # derived from them: tiers, pools, staircase, budgets, the emitted
+    # command) carry the grant/gain-adjusted value the driver joins.
+    # At grant=0 gain=1 the adjusted value equals the raw one.
     in_fwd = peer.get("in_forwarded", 0)
     in_earn = peer.get("in_earnings", 0)
     in_exp = peer.get("in_expenditures", 0)
     in_net = in_earn - in_exp
     in_ppm = safe_ppm(in_earn, in_fwd)
-    in_net_ppm = safe_ppm(in_net, in_fwd)
+    in_net_ppm = effective_net_ppm(in_net, in_fwd, peer_cap_msat,
+                                   grant, gain)
 
     out_fwd = peer.get("out_forwarded", 0)
     out_earn = peer.get("out_earnings", 0)
     out_exp = peer.get("out_expenditures", 0)
     out_net = out_earn - out_exp
     out_ppm = safe_ppm(out_earn, out_fwd)
-    out_net_ppm = safe_ppm(out_net, out_fwd)
+    out_net_ppm = effective_net_ppm(out_net, out_fwd, peer_cap_msat,
+                                    grant, gain)
 
     cap_sat = cap_msat // 1000
     local_sat = to_us_msat // 1000
@@ -367,6 +387,20 @@ def main():
              "accumulated TgtFill/TgtDrain deficit reaches SAT.  If omitted "
              "(and --fill-loc/--drain-loc is set), auto-derived to maximize "
              "the matched-pool cycle profit assuming --route-cost-floor."
+    )
+    parser.add_argument(
+        "--grant", type=float, default=None, metavar="PPM",
+        help="Assumed prior earnings rate (ppm) credited to every peer on "
+             "both sides, as if it had already earned that rate on one "
+             "capacity-turn of volume: (net + cap*grant/1e6) / (fwd + cap).  "
+             "Peers with no record read exactly PPM.  Default: live "
+             "clboss-xrebalance-grant, else 0 (record-only)."
+    )
+    parser.add_argument(
+        "--gain", type=float, default=None, metavar="MULT",
+        help="Multiplier (> 0) on the joined NetPpm, both sides, before "
+             "tiers, pools, and budget pricing.  Default: live "
+             "clboss-xrebalance-gain, else 1."
     )
     parser.add_argument(
         "--route-cost-floor", type=float, default=None, metavar="PPM",
@@ -502,6 +536,30 @@ def main():
         args.size_factor = 1.0
         settings.append(("size-factor", "1", "default"))
 
+    # grant / gain: strictness benders, same semantics as the driver's
+    # clboss-xrebalance-grant / -gain.  Overriding them on the command
+    # line previews a combo before setconfig-ing it live.
+    if args.grant is not None:
+        settings.append(("grant", f"{args.grant:g}", "arg"))
+    elif _num(live.get("grant")) is not None:
+        args.grant = _num(live["grant"])
+        settings.append(("grant", f"{args.grant:g}", "live"))
+    else:
+        args.grant = 0.0
+        settings.append(("grant", "0", "default"))
+    if args.gain is not None:
+        settings.append(("gain", f"{args.gain:g}", "arg"))
+    elif _num(live.get("gain")) is not None:
+        args.gain = _num(live["gain"])
+        settings.append(("gain", f"{args.gain:g}", "live"))
+    else:
+        args.gain = 1.0
+        settings.append(("gain", "1", "default"))
+    if args.grant < 0.0:
+        sys.exit("--grant must be >= 0")
+    if not (args.gain > 0.0):
+        sys.exit("--gain must be > 0")
+
     # maxparts: forwarded into the emitted clboss-xmovefunds command so the
     # manual command carries the driver's MPP cap (does not affect analysis).
     maxparts = None
@@ -590,10 +648,21 @@ def main():
             lightning_dir, network_option, peer_id, peer_metrics
         )
 
+    # grant's credit base: the peer's total capacity across its channels,
+    # matching the driver's per-node join.
+    peer_cap_msat = {}
+    for ch in channels.values():
+        peer_cap_msat[ch["peer_id"]] = (
+            peer_cap_msat.get(ch["peer_id"], 0)
+            + (ch.get("total_msat", 0) or 0)
+        )
+
     rows = []
     for scid, ch in channels.items():
         peer = peers[ch["peer_id"]]
-        rows.append(compute_row(ch, peer, args.days))
+        rows.append(compute_row(ch, peer, args.days,
+                                peer_cap_msat[ch["peer_id"]],
+                                args.grant, args.gain))
 
     # Band thresholds for "tier" sort: follow --fill-loc/--drain-loc when set,
     # else default to 10/90 so the tier sort always works.
