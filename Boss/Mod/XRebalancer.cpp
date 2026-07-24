@@ -570,12 +570,12 @@ private:
 	 * live: two-channel peer, three completed fills, zero deficit
 	 * movement).  Candidacy, deficits, and progress therefore live at
 	 * peer granularity -- the same granularity as NetPpm and the
-	 * EarningsTracker -- while scids carries all the peer's channels
+	 * EarningsTracker -- while chans carries all the peer's channels
 	 * for the request lists (sources we control exactly; destinations
 	 * the peer resolves anyway).  */
 	struct Peer {
 		Ln::NodeId node;
-		std::vector<std::string> scids;
+		std::vector<Chan> chans;
 		std::int64_t cap_sat = 0;
 		std::int64_t local_sat = 0;
 		bool online = false;
@@ -584,13 +584,69 @@ private:
 		std::int64_t tgt_drain_sat = 0;
 	};
 
+	/* One request-list entry: a channel plus the most this cycle may
+	 * move through it, passed to the xrebalance plugin as its
+	 * per-scid max_msat cap.  */
+	struct ScidCap {
+		std::string scid;
+		std::int64_t max_sat;
+	};
+
 	/* A pool member: aggregated peer plus its joined NetPpm on the
-	 * relevant side.  */
+	 * relevant side, and the peer's deficit distributed over its
+	 * channels as per-scid caps.  */
 	struct PoolItem {
 		Peer const* pr;
 		double ppm;       /* out_net for fill, in_net for drain */
 		std::int64_t deficit; /* tgt_fill for fill, tgt_drain for drain */
+		std::vector<ScidCap> caps;
 	};
+
+	/* Caps below this are dropped (and their channel with them):
+	 * below askrene's ~1000-sat single-path threshold a cap smaller
+	 * than the amount excludes the channel from the solve anyway, so
+	 * tiny caps are pure noise in the request.  */
+	static constexpr std::int64_t min_cap_sat = 1000;
+
+	/* Distribute a peer-level band deficit over the peer's channels
+	 * as per-scid caps: cap_i = deficit * h_i / sum(h), where h_i is
+	 * the channel's own headroom past the band edge.  The SUM of the
+	 * caps never exceeds the peer's deficit -- per-peer granularity
+	 * is the doctrine above, and with xrebalance enforcing the caps
+	 * the peer cannot be pushed past its band edge in one cycle no
+	 * matter how the MCF concentrates the flow -- while the
+	 * weighting points the flow at the peer's skewed channels.  */
+	static std::vector<ScidCap>
+	distribute_caps( Peer const& p
+		       , double band_pct
+		       , bool fill_side
+		       , std::int64_t deficit_sat
+		       ) {
+		auto h = std::vector<std::int64_t>(p.chans.size());
+		auto total = double(0.0);
+		for (auto i = std::size_t(0); i < p.chans.size(); ++i) {
+			auto const& c = p.chans[i];
+			auto edge = std::int64_t(
+				double(c.cap_sat) * band_pct / 100.0);
+			auto v = fill_side ? edge - c.local_sat
+					   : c.local_sat - edge;
+			h[i] = v > 0 ? v : 0;
+			total += double(h[i]);
+		}
+		auto out = std::vector<ScidCap>();
+		if (total <= 0.0 || deficit_sat <= 0)
+			return out;
+		for (auto i = std::size_t(0); i < p.chans.size(); ++i) {
+			if (h[i] <= 0)
+				continue;
+			auto cap = std::int64_t(
+				double(deficit_sat) * double(h[i]) / total);
+			if (cap < min_cap_sat)
+				continue;
+			out.push_back(ScidCap{p.chans[i].scid, cap});
+		}
+		return out;
+	}
 
 	/* One point on the joint(N) curve: cumulative matched volume N and
 	 * the marginal fill/drain NetPpm (and their sum) admitted at that
@@ -677,7 +733,7 @@ private:
 			for (auto const& c : *chans) {
 				auto& p = by_node[c.node];
 				p.node = c.node;
-				p.scids.push_back(c.scid);
+				p.chans.push_back(c);
 				p.cap_sat += c.cap_sat;
 				p.local_sat += c.local_sat;
 				p.online = p.online || c.online;
@@ -709,17 +765,29 @@ private:
 			auto const& np = it->second;
 			if (p.pct_local <= fill_band
 			 && np.has_out && np.out_net > 0.0
-			 && p.tgt_fill_sat > 0)
-				fill.push_back(PoolItem{
-					&p, np.out_net, p.tgt_fill_sat });
+			 && p.tgt_fill_sat > 0) {
+				auto caps = distribute_caps(
+					p, fill_band, true, p.tgt_fill_sat);
+				if (!caps.empty())
+					fill.push_back(PoolItem{
+						&p, np.out_net,
+						p.tgt_fill_sat,
+						std::move(caps) });
+			}
 			/* else: with overlapping bands (fill-loc set above
 			 * drain-loc) a peer could qualify for both pools;
 			 * fill wins so it cannot be picked against itself.  */
 			else if (p.pct_local >= drain_band
 			 && np.has_in && np.in_net > 0.0
-			 && p.tgt_drain_sat > 0)
-				drain.push_back(PoolItem{
-					&p, np.in_net, p.tgt_drain_sat });
+			 && p.tgt_drain_sat > 0) {
+				auto caps = distribute_caps(
+					p, drain_band, false, p.tgt_drain_sat);
+				if (!caps.empty())
+					drain.push_back(PoolItem{
+						&p, np.in_net,
+						p.tgt_drain_sat,
+						std::move(caps) });
+			}
 		}
 		std::sort(fill.begin(), fill.end(),
 			[](PoolItem const& a, PoolItem const& b){
@@ -844,21 +912,22 @@ private:
 				, window_days );
 
 		/* Bold set: peers accumulated to reach best_n on each side;
-		 * every channel of a picked peer joins the request list.  */
+		 * every capped channel of a picked peer joins the request
+		 * list.  */
 		auto pick = [best_n](std::vector<PoolItem> const& pool){
-			auto picks = std::vector<std::string>();
+			auto picks = std::vector<ScidCap>();
 			std::int64_t acc = 0;
 			for (auto const& it : pool) {
 				if (acc >= best_n)
 					break;
-				for (auto const& s : it.pr->scids)
-					picks.push_back(s);
+				picks.insert( picks.end()
+					    , it.caps.begin(), it.caps.end());
 				acc += it.deficit;
 			}
 			return picks;
 		};
-		auto dest_scids = pick(fill);    /* fill = where funds land */
-		auto source_scids = pick(drain); /* drain = where funds leave */
+		auto dest_caps = pick(fill);    /* fill = where funds land */
+		auto source_caps = pick(drain); /* drain = where funds leave */
 
 		/* size_factor may be a "lo:hi" range; draw a fresh multiplier
 		 * each cycle so the requested size sweeps (see handle_option).  */
@@ -893,15 +962,15 @@ private:
 			, Util::Str::group_digits(
 				std::int64_t(requested)).c_str()
 			, (unsigned)maxfee
-			, source_scids.size(), dest_scids.size()
-			).then([this, source_scids, dest_scids]() {
+			, source_caps.size(), dest_caps.size()
+			).then([this, source_caps, dest_caps]() {
 			return Boss::log( bus, Debug
 				, "XRebalancer:   sources=[%s] dests=[%s]"
-				, join_scids(source_scids).c_str()
-				, join_scids(dest_scids).c_str()
+				, join_caps(source_caps).c_str()
+				, join_caps(dest_caps).c_str()
 				);
-		}).then([this, source_scids, dest_scids, requested, maxfee]() {
-			return execute_cycle(source_scids, dest_scids,
+		}).then([this, source_caps, dest_caps, requested, maxfee]() {
+			return execute_cycle(source_caps, dest_caps,
 					     requested, maxfee);
 		});
 	}
@@ -935,33 +1004,33 @@ private:
 		auto maxfee = std::uint32_t(std::llround(
 			target.ppm + min_offered));
 		auto requested = target.deficit;
-		auto target_scids = target.pr->scids;
-		auto other_scids = std::vector<std::string>();
+		auto target_caps = target.caps;
+		auto other_caps = std::vector<ScidCap>();
 		for (auto const& it : opool)
-			for (auto const& s : it.pr->scids)
-				other_scids.push_back(s);
-		auto source_scids = fill_target ? other_scids : target_scids;
-		auto dest_scids = fill_target ? target_scids : other_scids;
+			other_caps.insert( other_caps.end()
+					 , it.caps.begin(), it.caps.end());
+		auto source_caps = fill_target ? other_caps : target_caps;
+		auto dest_caps = fill_target ? target_caps : other_caps;
 		return Boss::log( bus, Info
 			, "XRebalancer: cycle [focused %s] target=%s "
 			  "window=%.0fd -> request=%s sat (target deficit), "
 			  "maxfee=%u ppm (target %.1f + min offered %.1f); "
 			  "sources=%zu dests=%zu; executing."
 			, fill_target ? "fill" : "drain"
-			, join_scids(target.pr->scids).c_str()
+			, join_caps(target.caps).c_str()
 			, window_days
 			, Util::Str::group_digits(requested).c_str()
 			, (unsigned)maxfee
 			, target.ppm, min_offered
-			, source_scids.size(), dest_scids.size()
-			).then([this, source_scids, dest_scids]() {
+			, source_caps.size(), dest_caps.size()
+			).then([this, source_caps, dest_caps]() {
 			return Boss::log( bus, Debug
 				, "XRebalancer:   sources=[%s] dests=[%s]"
-				, join_scids(source_scids).c_str()
-				, join_scids(dest_scids).c_str()
+				, join_caps(source_caps).c_str()
+				, join_caps(dest_caps).c_str()
 				);
-		}).then([this, source_scids, dest_scids, requested, maxfee]() {
-			return execute_cycle(source_scids, dest_scids,
+		}).then([this, source_caps, dest_caps, requested, maxfee]() {
+			return execute_cycle(source_caps, dest_caps,
 					     requested, maxfee);
 		});
 	}
@@ -974,26 +1043,28 @@ private:
 	 * (the natural in-flight guard until the abandon/timeout
 	 * increment lands).  */
 	Ev::Io<void>
-	execute_cycle( std::vector<std::string> source_scids
-		     , std::vector<std::string> dest_scids
+	execute_cycle( std::vector<ScidCap> source_caps
+		     , std::vector<ScidCap> dest_caps
 		     , std::int64_t requested_sat
 		     , std::uint32_t maxfee_ppm
 		     ) {
 		if (use_plugin)
-			return execute_cycle_plugin( std::move(source_scids)
-						   , std::move(dest_scids)
+			return execute_cycle_plugin( std::move(source_caps)
+						   , std::move(dest_caps)
 						   , requested_sat
 						   , maxfee_ppm
 						   );
+		/* clboss-xmovefunds has no per-scid cap concept; it gets
+		 * the bare scids as before.  */
 		auto parms = Json::Out();
 		auto obj = parms.start_object();
 		auto sa = obj.start_array("source_scid");
-		for (auto const& s : source_scids)
-			sa.entry(s);
+		for (auto const& s : source_caps)
+			sa.entry(s.scid);
 		sa.end_array();
 		auto da = obj.start_array("dest_scid");
-		for (auto const& s : dest_scids)
-			da.entry(s);
+		for (auto const& s : dest_caps)
+			da.entry(s.scid);
 		da.end_array();
 		obj.field("amount_msat",
 			  std::uint64_t(requested_sat) * 1000);
@@ -1025,20 +1096,34 @@ private:
 	 * xrebalance_part notifications (XRebalancePartMonitor), never
 	 * from this response.  */
 	Ev::Io<void>
-	execute_cycle_plugin( std::vector<std::string> source_scids
-			    , std::vector<std::string> dest_scids
+	execute_cycle_plugin( std::vector<ScidCap> source_caps
+			    , std::vector<ScidCap> dest_caps
 			    , std::int64_t requested_sat
 			    , std::uint32_t maxfee_ppm
 			    ) {
+		/* Object-form entries carry the per-scid caps; the plugin
+		 * bounds each channel at min(cap, live liquidity) inside
+		 * one solve, so no peer overshoots its band edge however
+		 * the MCF concentrates the flow.  */
 		auto parms = Json::Out();
 		auto obj = parms.start_object();
 		auto sa = obj.start_array("sources");
-		for (auto const& s : source_scids)
-			sa.entry(s);
+		for (auto const& s : source_caps) {
+			auto so = sa.start_object();
+			so.field("scid", s.scid);
+			so.field("max_msat",
+				 std::uint64_t(s.max_sat) * 1000);
+			so.end_object();
+		}
 		sa.end_array();
 		auto da = obj.start_array("destinations");
-		for (auto const& s : dest_scids)
-			da.entry(s);
+		for (auto const& s : dest_caps) {
+			auto d = da.start_object();
+			d.field("scid", s.scid);
+			d.field("max_msat",
+				std::uint64_t(s.max_sat) * 1000);
+			d.end_object();
+		}
 		da.end_array();
 		obj.field("amount_msat",
 			  std::uint64_t(requested_sat) * 1000);
@@ -1214,6 +1299,23 @@ private:
 		auto label = str("label");
 		auto req = label.empty() ? std::string()
 			 : " [req " + label + "]";
+		/* The plugin clamps the ask to what the channels can
+		 * carry under their caps (less fee headroom) and reports
+		 * the clamp; surface it so a capped cycle is legible.  */
+		auto amount = num("amount_msat");
+		auto effective = num("effective_amount_msat");
+		auto capped = std::string();
+		if (effective >= 0.0 && amount > 0.0 && effective < amount) {
+			auto os = std::ostringstream();
+			os << " (ask "
+			   << Util::Str::group_digits(std::int64_t(
+				std::llround(amount)))
+			   << " capped to "
+			   << Util::Str::group_digits(std::int64_t(
+				std::llround(effective)))
+			   << " msat)";
+			capped = os.str();
+		}
 		auto ppm = std::string();
 		if (delivered > 0.0) {
 			auto os = std::ostringstream();
@@ -1292,28 +1394,32 @@ private:
 			return Boss::log( bus, Info
 				, "XRebalancer: transfer done%s: %zu/%zu "
 				  "parts, delivered %s msat, fee %s "
-				  "msat%s%s%s."
+				  "msat%s%s%s%s."
 				, req.c_str()
 				, parts_complete, parts_total
 				, Util::Str::group_digits(std::int64_t(
 					std::llround(delivered))).c_str()
 				, Util::Str::group_digits(std::int64_t(
 					std::llround(fee))).c_str()
-				, ppm.c_str(), reason.c_str()
+				, ppm.c_str(), capped.c_str()
+				, reason.c_str()
 				, pending_note.c_str() );
 		return Boss::log( bus, Info
-			, "XRebalancer: transfer failed%s: %zu part(s)%s%s%s."
-			, req.c_str(), parts_total, reason.c_str()
+			, "XRebalancer: transfer failed%s: %zu part(s)%s%s%s%s."
+			, req.c_str(), parts_total, capped.c_str()
+			, reason.c_str()
 			, detail_note.c_str(), pending_note.c_str() );
 	}
 
-	static std::string join_scids(std::vector<std::string> const& v) {
+	/* "scid:cap_sat" per entry, so the debug line shows where this
+	 * cycle is allowed to move how much.  */
+	static std::string join_caps(std::vector<ScidCap> const& v) {
 		auto os = std::ostringstream();
 		auto first = true;
 		for (auto const& s : v) {
 			if (!first) os << ",";
 			first = false;
-			os << s;
+			os << s.scid << ":" << s.max_sat;
 		}
 		return os.str();
 	}
