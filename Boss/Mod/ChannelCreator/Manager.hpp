@@ -9,6 +9,7 @@
 #include"Boss/Msg/ResponsePeerTrackRecord.hpp"
 #include"Ln/NodeId.hpp"
 #include<memory>
+#include<set>
 #include<utility>
 #include<vector>
 
@@ -52,6 +53,9 @@ private:
 	Ln::Amount max_amount;
 	Ln::Amount min_remaining;
 
+	/* clboss-candidate-prefer-spliceable.  */
+	bool prefer_spliceable;
+
 	void start();
 	Ev::Io<void> on_request_channel_creation(Ln::Amount);
 
@@ -64,6 +68,9 @@ private:
 	/* Partition proposals by earnings track record and log it.  */
 	Ev::Io<std::vector<std::pair<Ln::NodeId, Ln::NodeId>>>
 	prioritize_by_track_record(std::vector<std::pair<Ln::NodeId, Ln::NodeId>>);
+	/* Which of the given nodes announce splicing support.  */
+	Ev::Io<std::set<Ln::NodeId>>
+	get_spliceable_nodes(std::vector<Ln::NodeId>);
 
 public:
 	Manager() =delete;
@@ -81,6 +88,7 @@ public:
 		 , self()
 		 , dowser(bus)
 		 , track_record(bus)
+		 , prefer_spliceable(true)
 		 {
 		start();
 	}

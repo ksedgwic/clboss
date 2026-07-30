@@ -640,7 +640,7 @@ The defaults depend on the network:
 Setting the option to `-1` reverts to the built-in network-specific
 default.
 
-### `--clboss-candidate-record-window-days=<days>`, `--clboss-candidate-keeper-tral-bps=<bps>`, `--clboss-candidate-min-record-days=<days>`
+### `--clboss-candidate-record-window-days=<days>`, `--clboss-candidate-keeper-tral-bps=<bps>`, `--clboss-candidate-min-record-days=<days>`, `--clboss-candidate-prefer-spliceable=<true|false>`
 
 When CLBOSS selects which investigated candidates to actually open
 channels to, it partitions them by their earnings *track record*: what
@@ -648,7 +648,9 @@ a previous (now closed) channel with that node earned for us, net of
 rebalance costs.  Candidates with a proven good record ("keepers") are
 funded first, candidates with no usable history next, and candidates
 with a poor record are used only when no better candidate can absorb
-the available funds.
+the available funds.  Within the no-history tier, nodes announcing
+splicing support are preferred, since their channels can be resized
+later without a close+reopen.
 
 The judgment metric is TRAL — annualized net return on liquidity, in
 basis points — the same metric reported by the
@@ -665,8 +667,10 @@ channels are annualized fairly.
 * `clboss-candidate-min-record-days` — minimum observed operational
   days within the window before the record is trusted; below this the
   candidate is treated as having no record.  Default `7`.
+* `clboss-candidate-prefer-spliceable` — whether the no-history tier
+  is ordered with splicing-capable nodes first.  Default `true`.
 
-All three are *dynamic* options: set them in the `lightningd` config
+All four are *dynamic* options: set them in the `lightningd` config
 for the startup default, or change them at runtime without a restart
 with
 

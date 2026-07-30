@@ -6,16 +6,21 @@
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/AmountSettings.hpp"
 #include"Boss/Msg/Init.hpp"
+#include"Boss/Msg/ManifestOption.hpp"
+#include"Boss/Msg/Manifestation.hpp"
+#include"Boss/Msg/Option.hpp"
 #include"Boss/Msg/RequestChannelCreation.hpp"
 #include"Boss/Msg/SolicitChannelCandidates.hpp"
 #include"Boss/concurrent.hpp"
 #include"Boss/log.hpp"
 #include"Ev/Io.hpp"
+#include"Ev/map.hpp"
 #include"Ev/memoize.hpp"
 #include"Ev/yield.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
 #include"Ln/Amount.hpp"
+#include"Ln/FeatureBit.hpp"
 #include"Net/IPAddrOrOnion.hpp"
 #include"Net/IPBinnerBySubnet.hpp"
 #include"S/Bus.hpp"
@@ -33,6 +38,12 @@ bool plan_is_empty(std::map<Ln::NodeId, Ln::Amount> const& plan) {
 			  , [](std::pair<Ln::NodeId, Ln::Amount> const& e) {
 		return e.second == Ln::Amount::sat(0);
 	});
+}
+
+void append_entry(std::string& s, std::string const& entry) {
+	if (!s.empty())
+		s += ", ";
+	s += entry;
 }
 
 Ev::Io<void> report_proposals( S::Bus& bus, char const* prefix
@@ -61,6 +72,46 @@ Ev::Io<void> report_proposals( S::Bus& bus, char const* prefix
 namespace Boss { namespace Mod { namespace ChannelCreator {
 
 void Manager::start() {
+	bus.subscribe<Msg::Manifestation
+		     >([this](Msg::Manifestation const& _) {
+		return bus.raise(Msg::ManifestOption{
+			"clboss-candidate-prefer-spliceable",
+			Msg::OptionType_Bool,
+			Json::Out::direct(true),
+			"Whether channel-open candidates without a "
+			"track record are ordered so that nodes "
+			"announcing splicing support come first.  "
+			"Dynamic: settable at runtime via "
+			"`lightning-cli setconfig`.  Default true.",
+			/* dynamic = */ true
+		});
+	});
+	bus.subscribe<Msg::Option
+		     >([this](Msg::Option const& o) {
+		if (o.name != "clboss-candidate-prefer-spliceable")
+			return Ev::lift();
+		/* Tolerate both the bool-at-startup and
+		 * string-via-setconfig encodings.  */
+		if (o.value.is_boolean())
+			prefer_spliceable = bool(o.value);
+		else if ( o.value.is_string()
+		       && ( std::string(o.value) == "true"
+			 || std::string(o.value) == "false"
+			  ))
+			prefer_spliceable = (std::string(o.value) == "true");
+		else {
+			o.reject( "clboss-candidate-prefer-spliceable: "
+				  "expected true or false"
+				);
+			return Boss::log( bus, Warn
+					, "ChannelCreator: "
+					  "clboss-candidate-prefer-spliceable: "
+					  "expected true or false; keeping %s."
+					, prefer_spliceable ? "true" : "false"
+					);
+		}
+		return Ev::lift();
+	});
 	bus.subscribe<Msg::AmountSettings
 		     >([this](Msg::AmountSettings const& m) {
 		min_amount = m.min_channel;
@@ -323,6 +374,41 @@ Manager::get_peers() {
 		return Ev::lift(std::move(rv));
 	});
 }
+Ev::Io<std::set<Ln::NodeId>>
+Manager::get_spliceable_nodes(std::vector<Ln::NodeId> nodes) {
+	assert(rpc);
+	auto lookup = [this](Ln::NodeId n) {
+		return rpc->command("listnodes"
+				   , Json::Out()
+					.start_object()
+						.field("id", std::string(n))
+					.end_object()
+				   ).then([n](Jsmn::Object res) {
+			auto spliceable = false;
+			try {
+				auto ns = res["nodes"];
+				if (ns.length() != 0 && ns[0].has("features")) {
+					auto f = std::string(ns[0]["features"]);
+					/* BOLT #9 `option_splice`.  */
+					spliceable = Ln::feature_bit(f, 62)
+						  || Ln::feature_bit(f, 63)
+						   ;
+				}
+			} catch (...) { /* Treat as not spliceable.  */ }
+			return Ev::lift(std::make_pair(n, spliceable));
+		}).catching<RpcError>([n](RpcError const&) {
+			return Ev::lift(std::make_pair(n, false));
+		});
+	};
+	return Ev::map( std::move(lookup), std::move(nodes)
+		      ).then([](std::vector<std::pair<Ln::NodeId, bool>> flags) {
+		auto rv = std::set<Ln::NodeId>();
+		for (auto const& f : flags)
+			if (f.second)
+				rv.insert(f.first);
+		return Ev::lift(std::move(rv));
+	});
+}
 Ev::Io<std::vector<std::pair<Ln::NodeId, Ln::NodeId>>>
 Manager::reprioritize(std::vector<std::pair<Ln::NodeId, Ln::NodeId>> proposals_v) {
 	auto proposals = std::make_shared<std::vector<std::pair<Ln::NodeId, Ln::NodeId>>>
@@ -360,22 +446,16 @@ Manager::prioritize_by_track_record(std::vector<std::pair<Ln::NodeId, Ln::NodeId
 	}).then([ this
 		, proposals
 		](Msg::ResponsePeerTrackRecord resp) {
-		auto keepers = Proposals();
-		auto no_records = Proposals();
-		auto underperformers = Proposals();
+		auto keepers = std::make_shared<Proposals>();
+		auto no_records = std::make_shared<Proposals>();
+		auto underperformers = std::make_shared<Proposals>();
 
 		/* Per-tier report text; nodes within a tier keep their
-		 * relative order from the earlier stages.  */
-		auto keepers_s = std::string();
-		auto no_records_s = std::string();
-		auto underperformers_s = std::string();
-		auto append = []( std::string& s
-				, std::string const& entry
-				) {
-			if (!s.empty())
-				s += ", ";
-			s += entry;
-		};
+		 * relative order from the earlier stages.  The no-record
+		 * text is built later, after the splice preference has
+		 * settled that tier's order.  */
+		auto keepers_s = std::make_shared<std::string>();
+		auto underperformers_s = std::make_shared<std::string>();
 
 		for (auto const& p : *proposals) {
 			auto rec = Msg::TrackRecord{
@@ -398,46 +478,86 @@ Manager::prioritize_by_track_record(std::vector<std::pair<Ln::NodeId, Ln::NodeId
 
 			switch (rec.verdict) {
 			case Msg::TrackRecordVerdict::Keeper:
-				keepers.push_back(p);
-				append(keepers_s, os.str());
+				keepers->push_back(p);
+				append_entry(*keepers_s, os.str());
 				break;
 			case Msg::TrackRecordVerdict::NoRecord:
-				no_records.push_back(p);
-				append(no_records_s, os.str());
+				no_records->push_back(p);
 				break;
 			case Msg::TrackRecordVerdict::Underperformer:
-				underperformers.push_back(p);
-				append(underperformers_s, os.str());
+				underperformers->push_back(p);
+				append_entry(*underperformers_s, os.str());
 				break;
 			}
 		}
 
-		auto report = std::string();
-		if (!keepers_s.empty())
-			report += "keepers: " + keepers_s + "; ";
-		if (!no_records_s.empty())
-			report += "no record: " + no_records_s + "; ";
-		if (!underperformers_s.empty())
-			report += "underperformers: "
-				+ underperformers_s + "; "
-				;
-		/* Trim the trailing "; ".  */
-		report.erase(report.size() - 2);
+		/* The no-record tier carries no earnings evidence, so
+		 * order it by a capability prior: nodes announcing
+		 * splicing support first, since their channels can be
+		 * resized later without a close+reopen.  Keepers and
+		 * underperformers are left alone; earnings evidence
+		 * outranks the prior, and this must not move anyone
+		 * across a tier boundary.  Opt out with
+		 * clboss-candidate-prefer-spliceable=false, which also
+		 * skips the listnodes lookups.  */
+		auto no_record_nodes = std::vector<Ln::NodeId>();
+		if (prefer_spliceable)
+			for (auto const& p : *no_records)
+				no_record_nodes.push_back(p.first);
 
-		*proposals = std::move(keepers);
-		proposals->insert( proposals->end()
-				 , no_records.begin(), no_records.end()
-				 );
-		proposals->insert( proposals->end()
-				 , underperformers.begin()
-				 , underperformers.end()
-				 );
+		return get_spliceable_nodes( std::move(no_record_nodes)
+					   ).then([ this
+						  , proposals
+						  , keepers
+						  , no_records
+						  , underperformers
+						  , keepers_s
+						  , underperformers_s
+						  ](std::set<Ln::NodeId> spliceable) {
+			std::stable_partition( no_records->begin()
+					     , no_records->end()
+					     , [&spliceable]( std::pair< Ln::NodeId
+								       , Ln::NodeId
+								       > const& p) {
+				return spliceable.count(p.first) != 0;
+			});
 
-		return Boss::log( bus, Info
-				, "ChannelCreator: Track records: %s"
-				, report.c_str()
-				).then([proposals]() {
-			return Ev::lift(std::move(*proposals));
+			auto no_records_s = std::string();
+			for (auto const& p : *no_records) {
+				auto os = std::ostringstream();
+				os << p.first;
+				if (spliceable.count(p.first) != 0)
+					os << "(S)";
+				append_entry(no_records_s, os.str());
+			}
+
+			auto report = std::string();
+			if (!keepers_s->empty())
+				report += "keepers: " + *keepers_s + "; ";
+			if (!no_records_s.empty())
+				report += "no record: " + no_records_s + "; ";
+			if (!underperformers_s->empty())
+				report += "underperformers: "
+					+ *underperformers_s + "; "
+					;
+			/* Trim the trailing "; ".  */
+			report.erase(report.size() - 2);
+
+			*proposals = std::move(*keepers);
+			proposals->insert( proposals->end()
+					 , no_records->begin(), no_records->end()
+					 );
+			proposals->insert( proposals->end()
+					 , underperformers->begin()
+					 , underperformers->end()
+					 );
+
+			return Boss::log( bus, Info
+					, "ChannelCreator: Track records: %s"
+					, report.c_str()
+					).then([proposals]() {
+				return Ev::lift(std::move(*proposals));
+			});
 		});
 	});
 }

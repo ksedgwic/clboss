@@ -469,6 +469,8 @@ libclboss_la_SOURCES = \
 	Ln/Amount.hpp \
 	Ln/CommandId.cpp \
 	Ln/CommandId.hpp \
+	Ln/FeatureBit.cpp \
+	Ln/FeatureBit.hpp \
 	Ln/HtlcAccepted.cpp \
 	Ln/HtlcAccepted.hpp \
 	Ln/NodeId.cpp \
@@ -678,6 +680,7 @@ TESTS = \
 	tests/json/test_out_simple \
 	tests/ln/test_amount \
 	tests/ln/test_commandid \
+	tests/ln/test_featurebit \
 	tests/ln/test_htlcaccepted \
 	tests/ln/test_nodeid \
 	tests/ln/test_scid \
