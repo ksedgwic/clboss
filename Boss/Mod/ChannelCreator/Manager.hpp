@@ -9,6 +9,7 @@
 #include"Boss/Msg/ResponsePeerTrackRecord.hpp"
 #include"Ln/NodeId.hpp"
 #include<memory>
+#include<set>
 #include<utility>
 #include<vector>
 
@@ -64,6 +65,9 @@ private:
 	/* Partition proposals by earnings track record and log it.  */
 	Ev::Io<std::vector<std::pair<Ln::NodeId, Ln::NodeId>>>
 	prioritize_by_track_record(std::vector<std::pair<Ln::NodeId, Ln::NodeId>>);
+	/* Which of the given nodes announce splicing support.  */
+	Ev::Io<std::set<Ln::NodeId>>
+	get_spliceable_nodes(std::vector<Ln::NodeId>);
 
 public:
 	Manager() =delete;
