@@ -1,0 +1,134 @@
+#!/bin/sh
+# cln-plugin-bounce - stop and restart running CLN plugins without
+# restarting lightningd.
+#
+# usage: cln-plugin-bounce [lightning-cli options...] <plugin-name>...
+#
+# "plugin stop" requires a plugin's exact registered name, which for
+# versioned installs includes the version string (e.g.
+# /usr/local/bin/xrebalance-v0.4.1).  This script looks each exact
+# name up from "plugin list", stops the plugins in the order given,
+# then starts them again in reverse order, so the list order encodes
+# any shutdown dependency between them.  When an unversioned sibling
+# path exists (usually a symlink maintained by the install script),
+# the restart uses that, so a repointed symlink brings up the new
+# version.
+#
+# Plugin names are the arguments that do not start with "-"; each is
+# a short name ("clboss", "xrebalance"), or a full versioned basename
+# if the short name matches more than one running plugin.  All other
+# arguments are passed to every lightning-cli call, so names and
+# options may appear in any order:
+#   cln-plugin-bounce --signet --lightning-dir="$CLNDIR" xrebalance clboss
+# Set $LIGHTNING_CLI to override the lightning-cli binary.
+
+set -eu
+
+me=${0##*/}
+
+names=
+rebuilt=
+for arg do
+	[ -n "$rebuilt" ] || { set --; rebuilt=1; }
+	if [ "${arg#-}" = "$arg" ]; then
+		names="${names}${arg}
+"
+	else
+		set -- "$@" "$arg"
+	fi
+done
+
+if [ -z "$names" ]; then
+	echo "usage: $me [lightning-cli options...] <plugin-name>..." >&2
+	exit 2
+fi
+
+lcli=${LIGHTNING_CLI:-lightning-cli}
+
+if ! command -v jq >/dev/null; then
+	echo "$me: jq is required" >&2
+	exit 1
+fi
+
+# Registered paths whose basename is <name> or <name>-<anything>.
+match='.plugins[].name
+	| select((sub(".*/"; "")) as $b
+		| $b == $n or ($b | startswith($n + "-")))'
+
+# Resolve every name before touching anything, from one snapshot.
+plugins=$("$lcli" "$@" plugin list)
+
+resolved=
+while IFS= read -r n; do
+	[ -n "$n" ] || continue
+	running=$(printf '%s\n' "$plugins" | jq -r --arg n "$n" "$match")
+	if [ -z "$running" ]; then
+		echo "$me: no running plugin matches '$n'" >&2
+		exit 1
+	fi
+	if [ "$(printf '%s\n' "$running" | wc -l)" -gt 1 ]; then
+		echo "$me: '$n' matches more than one running plugin:" >&2
+		printf '%s\n' "$running" >&2
+		exit 1
+	fi
+	resolved="${resolved}${n} ${running}
+"
+done <<EOF
+$names
+EOF
+
+# Stop in the order given.
+stopped_names=
+tostart=
+while read -r n path; do
+	[ -n "$n" ] || continue
+	echo "stopping $path"
+	if ! "$lcli" "$@" plugin stop "$path" >/dev/null; then
+		echo "$me: stop failed for $path" >&2
+		if [ -n "$stopped_names" ]; then
+			echo "$me: already stopped, not restarted:$stopped_names" >&2
+		fi
+		exit 1
+	fi
+	stopped_names="$stopped_names $n"
+	tostart="${n} ${path}
+${tostart}"
+done <<EOF
+$resolved
+EOF
+
+# Start in reverse order, preferring the unversioned sibling; fall
+# back to the exact path that was stopped.
+failed=
+while read -r n path; do
+	[ -n "$n" ] || continue
+	start=$(dirname "$path")/$n
+	[ -e "$start" ] || start=$path
+	echo "starting $start"
+	if ! "$lcli" "$@" plugin start "$start" >/dev/null; then
+		ok=
+		if [ "$start" != "$path" ]; then
+			echo "$me: start failed; retrying with $path" >&2
+			if "$lcli" "$@" plugin start "$path" >/dev/null; then
+				ok=1
+			fi
+		fi
+		if [ -z "$ok" ]; then
+			echo "$me: failed to start $n" >&2
+			failed=1
+		fi
+	fi
+done <<EOF
+$tostart
+EOF
+
+plugins=$("$lcli" "$@" plugin list)
+while IFS= read -r n; do
+	[ -n "$n" ] || continue
+	printf '%s\n' "$plugins" | jq -r --arg n "$n" "$match" \
+		| sed 's/^/now running /'
+done <<EOF
+$names
+EOF
+
+[ -z "$failed" ] || exit 1

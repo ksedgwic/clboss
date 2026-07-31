@@ -60,6 +60,8 @@ cd contrib/
 
 ./clboss-askrene-layer-summary
 
+./cln-plugin-bounce <plugin-name>...
+
 The `clboss-routing-stats` and `clboss-forwarding-stats` scripts now accept `--days` to limit
 how many days of earnings history are considered when ranking channels.
 
@@ -83,6 +85,19 @@ how many days of earnings history are considered when ranking channels.
   with `--top N` resolving the busiest directions to node aliases.  Works on
   any persistent layer (`clboss` by default) and can replay a captured
   `askrene-listlayers` dump offline via `--input`.
+- **`cln-plugin-bounce`** stops and restarts running plugins without
+  restarting `lightningd`.  `plugin stop` needs a plugin's exact
+  registered name, which for versioned installs includes the version
+  string; the script looks each one up from `plugin list`, stops the
+  named plugins in the order given, and starts them again in reverse
+  order, so the list order encodes any shutdown dependency between
+  them.  Restarts use the unversioned sibling path when one exists
+  (usually a symlink maintained by the install script), so a repointed
+  symlink brings up the new version.  Plugin names are the arguments
+  not starting with `-`; every other argument is passed to
+  `lightning-cli` (e.g. `--signet --lightning-dir=...`), so names and
+  options may appear in any order.  Plain POSIX sh plus `jq`, so unlike
+  a shell alias it also works under `sudo`.
 - **`fee-log-parser`** is a parser that streams DEBUG-level logging and writes
   a sqlite database containing fee algorithm information. CLBOSS now records
   the same schema in its internal database (`data.clboss`, tables
