@@ -1,0 +1,349 @@
+#!/bin/sh
+# cln-plugin-bounce - stop and restart running CLN plugins without
+# restarting lightningd.
+#
+# usage: cln-plugin-bounce [lightning-cli options...] <plugin-name>...
+#
+# "plugin stop" requires a plugin's exact registered name, which for
+# versioned installs includes the version string (e.g.
+# /usr/local/bin/xrebalance-v0.4.1).  This script looks each exact
+# name up from "plugin list", stops the plugins in the order given,
+# then starts them again in reverse order, so the list order encodes
+# any shutdown dependency between them.  When an unversioned sibling
+# path exists (usually a symlink maintained by the install script),
+# the restart uses that, so a repointed symlink brings up the new
+# version.
+#
+# lightningd parses its config files once, at its own startup; a
+# bare "plugin start" hands the restarted plugin the option values
+# lightningd memorized back then, not what the files say now.  So
+# that a bounce picks up config edits, this script re-reads each
+# plugin's own options from the config files lightningd loaded (as
+# reported by listconfigs) and, where they differ from the running
+# values, passes them on the "plugin start" line, where they
+# override the memorized ones.  The files are concatenated in
+# sorted-path order and the last occurrence of an option wins; a
+# bare flag line is passed as "name=true".
+#
+# The restart is two-phase because of a lightningd bug present
+# through at least v26.04 (fix pending: "setconfig: fix crash when a
+# configvar outlives its plugin option"): a "plugin start" WITH
+# option parameters segfaults lightningd when any option named in
+# its configvars is unregistered, which is exactly the state while a
+# sibling plugin is stopped.  Phase one is the classic bounce --
+# ordered stops, reverse bare starts -- which cannot trip the bug.
+# Phase two then, for each plugin whose file values differ from its
+# running values, stops and restarts just that plugin with the
+# differing values passed as options, while every other plugin is
+# up.  When nothing differs, phase two is a no-op and the bounce is
+# exactly the classic single pass.  As a belt-and-suspenders check,
+# phase two is skipped entirely (with a warning) if any option named
+# in the config files is not currently registered -- e.g. some other
+# plugin was stopped by hand -- since that is the state that crashes
+# unfixed lightningd.  If an optioned start is rejected, the plugin
+# is restarted bare with a warning: a running plugin on stale values
+# beats a stopped one.
+#
+# Plugin names are the arguments that do not start with "-"; each is
+# a short name ("clboss", "xrebalance"), or a full versioned basename
+# if the short name matches more than one running plugin.  All other
+# arguments are passed to every lightning-cli call, so names and
+# options may appear in any order:
+#   cln-plugin-bounce --signet --lightning-dir="$CLNDIR" xrebalance clboss
+# Set $LIGHTNING_CLI to override the lightning-cli binary.
+
+set -eu
+
+me=${0##*/}
+
+names=
+rebuilt=
+for arg do
+	[ -n "$rebuilt" ] || { set --; rebuilt=1; }
+	if [ "${arg#-}" = "$arg" ]; then
+		names="${names}${arg}
+"
+	else
+		set -- "$@" "$arg"
+	fi
+done
+
+if [ -z "$names" ]; then
+	echo "usage: $me [lightning-cli options...] <plugin-name>..." >&2
+	exit 2
+fi
+
+lcli=${LIGHTNING_CLI:-lightning-cli}
+
+if ! command -v jq >/dev/null; then
+	echo "$me: jq is required" >&2
+	exit 1
+fi
+
+# Registered paths whose basename is <name> or <name>-<anything>.
+match='.plugins[].name
+	| select((sub(".*/"; "")) as $b
+		| $b == $n or ($b | startswith($n + "-")))'
+
+# Resolve every name before touching anything, from one snapshot.
+plugins=$("$lcli" "$@" plugin list)
+
+resolved=
+while IFS= read -r n; do
+	[ -n "$n" ] || continue
+	running=$(printf '%s\n' "$plugins" | jq -r --arg n "$n" "$match")
+	if [ -z "$running" ]; then
+		echo "$me: no running plugin matches '$n'" >&2
+		exit 1
+	fi
+	if [ "$(printf '%s\n' "$running" | wc -l)" -gt 1 ]; then
+		echo "$me: '$n' matches more than one running plugin:" >&2
+		printf '%s\n' "$running" >&2
+		exit 1
+	fi
+	resolved="${resolved}${n} ${running}
+"
+done <<EOF
+$names
+EOF
+
+tmpd=$(mktemp -d)
+trap 'rm -rf "$tmpd"' EXIT
+
+# Gather each plugin's options from the config files lightningd read
+# at its startup.  Must happen before the stops: a stopped plugin's
+# options vanish from listconfigs.
+configs=$("$lcli" "$@" listconfigs)
+
+printf '%s\n' "$configs" \
+	| jq -r '.configs | to_entries[] | .value
+		| (.source? // empty), (.sources[]? // empty)' \
+	| sed -n 's/:[0-9][0-9]*$//p' | sort -u \
+	| while IFS= read -r f; do
+		if [ -r "$f" ]; then
+			cat "$f"
+		else
+			echo "$me: warning: cannot re-read $f" >&2
+		fi
+	done >"$tmpd/cfg"
+
+while read -r n path; do
+	[ -n "$n" ] || continue
+	optnames=$(printf '%s\n' "$configs" \
+		| jq -r --arg p "$path" '.configs | to_entries[]
+			| select((.value.plugin? // "") == $p) | .key' \
+		| tr '\n' ' ')
+	awk -v names="$optnames" '
+		BEGIN {
+			n = split(names, a, " ")
+			for (i = 1; i <= n; i++)
+				if (a[i] != "") want[a[i]] = 1
+		}
+		{
+			sub(/^[ \t]+/, "")
+			if ($0 == "" || $0 ~ /^#/) next
+			eq = index($0, "=")
+			name = (eq ? substr($0, 1, eq - 1) : $0)
+			if (!(name in want)) next
+			if (!(name in val)) order[++cnt] = name
+			val[name] = (eq ? $0 : $0 "=true")
+		}
+		END { for (i = 1; i <= cnt; i++) print val[order[i]] }
+	' <"$tmpd/cfg" >"$tmpd/$n.opts"
+done <<EOF
+$resolved
+EOF
+
+# Which plugins have file values differing from the running values?
+# Only those get the phase-two optioned restart.
+while read -r n path; do
+	[ -n "$n" ] || continue
+	edits=
+	while IFS= read -r kv; do
+		[ -n "$kv" ] || continue
+		k=${kv%%=*}
+		v=${kv#*=}
+		cur=$(printf '%s\n' "$configs" | jq -r --arg k "$k" \
+			'.configs[$k] | if . == null then ""
+			 elif .value_str != null then .value_str
+			 elif .value_int != null then (.value_int | tostring)
+			 elif .value_bool != null then (.value_bool | tostring)
+			 elif .value_msat != null then (.value_msat | tostring)
+			 elif .set == true then "true"
+			 elif .set == false then "false"
+			 else "" end')
+		if [ "$v" != "$cur" ]; then
+			[ -n "$edits" ] || echo "config edits for $n:"
+			echo "    $k: ${cur:-unset} -> $v"
+			edits=1
+		fi
+	done <"$tmpd/$n.opts"
+	[ -z "$edits" ] || : >"$tmpd/$n.apply"
+done <<EOF
+$resolved
+EOF
+
+# Refuse the optioned restarts when any option named in the config
+# files is not currently registered: on lightningd without the
+# configvar_finalize_overrides NULL-guard fix, an optioned start in
+# that state is a segfault.
+unsafe=
+while IFS= read -r k; do
+	[ -n "$k" ] || continue
+	case "$k" in *" "*) continue ;; esac
+	if ! printf '%s\n' "$configs" \
+		| jq -e --arg k "$k" '.configs | has($k)' >/dev/null; then
+		if [ -z "$unsafe" ]; then
+			echo "$me: warning: config option(s) not registered (a plugin may be stopped); config edits will not be applied this run:" >&2
+			unsafe=1
+		fi
+		echo "    $k" >&2
+	fi
+done <<EOF
+$(awk '
+	{
+		sub(/^[ \t]+/, "")
+		if ($0 == "" || $0 ~ /^#/) next
+		eq = index($0, "=")
+		print (eq ? substr($0, 1, eq - 1) : $0)
+	}
+' <"$tmpd/cfg" | sort -u)
+EOF
+
+# Stop in the order given.
+stopped_names=
+tostart=
+while read -r n path; do
+	[ -n "$n" ] || continue
+	echo "stopping $path"
+	if ! "$lcli" "$@" plugin stop "$path" >/dev/null; then
+		echo "$me: stop failed for $path" >&2
+		if [ -n "$stopped_names" ]; then
+			echo "$me: already stopped, not restarted:$stopped_names" >&2
+		fi
+		exit 1
+	fi
+	stopped_names="$stopped_names $n"
+	tostart="${n} ${path}
+${tostart}"
+done <<EOF
+$resolved
+EOF
+
+# Start plugin $1 via "plugin start", appending the name=value options
+# in file $2 in keyword form (empty $2 means none); the rest of the
+# arguments are the lightning-cli options.
+try_start() {
+	ts_path=$1
+	ts_optfile=$2
+	shift 2
+	if [ -z "$ts_optfile" ]; then
+		# Positional form only: a keyword-form start hands
+		# lightningd an empty-but-present parameter object, and
+		# plugin_add_params runs configvar_finalize_overrides
+		# for it -- the very crash the phasing steps around.
+		set -- "$@" plugin start "$ts_path"
+	else
+		set -- "$@" -k plugin subcommand=start plugin="$ts_path"
+		while IFS= read -r ts_kv; do
+			[ -n "$ts_kv" ] || continue
+			set -- "$@" "$ts_kv"
+		done <"$ts_optfile"
+	fi
+	"$lcli" "$@" </dev/null >/dev/null
+}
+
+# Start plugin (short name $1, stopped path $2), preferring the
+# unversioned sibling and falling back to the exact path; append the
+# options in file $3 when non-empty, degrading to a bare start with a
+# warning when the optioned starts are rejected.  The rest of the
+# arguments are the lightning-cli options.
+start_plugin() {
+	sp_n=$1
+	sp_path=$2
+	sp_optfile=$3
+	shift 3
+	sp_start=$(dirname "$sp_path")/$sp_n
+	[ -e "$sp_start" ] || sp_start=$sp_path
+	echo "starting $sp_start"
+	[ -z "$sp_optfile" ] || sed 's/^/    /' "$sp_optfile"
+	if try_start "$sp_start" "$sp_optfile" "$@"; then
+		return 0
+	fi
+	if [ "$sp_start" != "$sp_path" ]; then
+		echo "$me: start failed; retrying with $sp_path" >&2
+		if try_start "$sp_path" "$sp_optfile" "$@"; then
+			return 0
+		fi
+	fi
+	if [ -n "$sp_optfile" ]; then
+		echo "$me: start failed; retrying without config options" >&2
+		if try_start "$sp_start" "" "$@" \
+			|| { [ "$sp_start" != "$sp_path" ] \
+				&& try_start "$sp_path" "" "$@"; }; then
+			echo "$me: warning: $sp_n started without re-read config options" >&2
+			return 0
+		fi
+	fi
+	echo "$me: failed to start $sp_n" >&2
+	return 1
+}
+
+# Phase one: start in reverse order, bare.
+failed=
+while read -r n path; do
+	[ -n "$n" ] || continue
+	if ! start_plugin "$n" "$path" "" "$@"; then
+		failed=1
+		: >"$tmpd/$n.failed"
+	fi
+done <<EOF
+$tostart
+EOF
+
+# Phase two: apply config edits one plugin at a time, while every
+# other plugin is up.
+while read -r n path; do
+	[ -n "$n" ] || continue
+	[ -e "$tmpd/$n.apply" ] || continue
+	if [ -e "$tmpd/$n.failed" ]; then
+		echo "$me: not applying config edits to $n: not running" >&2
+		continue
+	fi
+	if [ -n "$unsafe" ]; then
+		echo "$me: not applying config edits to $n (see warning above)" >&2
+		failed=1
+		continue
+	fi
+	echo "applying config edits to $n"
+	plugins=$("$lcli" "$@" plugin list)
+	cur=$(printf '%s\n' "$plugins" | jq -r --arg n "$n" "$match")
+	if [ -z "$cur" ] \
+		|| [ "$(printf '%s\n' "$cur" | wc -l)" -gt 1 ]; then
+		echo "$me: cannot re-resolve '$n'; config edits not applied" >&2
+		failed=1
+		continue
+	fi
+	echo "stopping $cur"
+	if ! "$lcli" "$@" plugin stop "$cur" >/dev/null; then
+		echo "$me: stop failed for $cur; config edits not applied" >&2
+		failed=1
+		continue
+	fi
+	if ! start_plugin "$n" "$cur" "$tmpd/$n.opts" "$@"; then
+		failed=1
+	fi
+done <<EOF
+$resolved
+EOF
+
+plugins=$("$lcli" "$@" plugin list)
+while IFS= read -r n; do
+	[ -n "$n" ] || continue
+	printf '%s\n' "$plugins" | jq -r --arg n "$n" "$match" \
+		| sed 's/^/now running /'
+done <<EOF
+$names
+EOF
+
+[ -z "$failed" ] || exit 1
