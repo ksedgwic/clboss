@@ -132,7 +132,6 @@ def read_live_config(lightning_dir, network_option):
         ("drain_loc", "clboss-xrebalance-drain-loc"),
         ("days", "clboss-xrebalance-earnings-window-days"),
         ("route_cost_floor", "clboss-xrebalance-route-cost-floor"),
-        ("size_factor", "clboss-xrebalance-size-factor"),
         ("maxparts", "clboss-xrebalance-maxparts"),
         ("grant", "clboss-xrebalance-grant"),
         ("gain", "clboss-xrebalance-gain"),
@@ -412,19 +411,6 @@ def main():
              "(a live value of \"auto\" means the driver sweeps a ladder; the "
              "full joint(N) staircase below shows every rung regardless)."
     )
-    parser.add_argument(
-        "--size-factor", type=float, default=None, metavar="MULT",
-        help="Multiplier (> 0) on the derived matched-pool amount in the "
-             "emitted command.  The full economic picture (bold set, "
-             "thresholds, budget) is still computed on the derived amount; "
-             "only the emitted amount_msat is scaled.  <1 requests a fraction "
-             "(incremental -- the matched pool may pile into one endpoint, and "
-             "the rebalancer converges over many cycles).  >1 over-fills past "
-             "the band targets (recoverable -- the channel drifts back) to "
-             "make each part larger so it amortizes the base fee.  Default: "
-             "1.0."
-    )
-
     args = parser.parse_args()
 
     # Reconcile network option (lightning-cli wants 'bitcoin' for mainnet)
@@ -511,31 +497,6 @@ def main():
         args.route_cost_floor = 50.0
         settings.append(("route-cost-floor", "50", "default"))
 
-    # --size-factor scales only the emitted amount.  A live "lo:hi" is a
-    # per-cycle uniform sweep; emit at the mean (its expected value) and note
-    # the range.
-    if args.size_factor is not None:
-        settings.append(("size-factor", f"{args.size_factor:g}", "arg"))
-    elif live.get("size_factor") is not None \
-            and ":" in str(live["size_factor"]):
-        lo, hi = (str(live["size_factor"]).split(":", 1) + [""])[:2]
-        lo, hi = _num(lo), _num(hi)
-        if lo is not None and hi is not None and lo > 0 and hi > 0:
-            args.size_factor = (lo + hi) / 2.0
-            settings.append(("size-factor",
-                             f"{args.size_factor:g} (live sweeps "
-                             f"{live['size_factor']}; emitted at the mean)",
-                             "live"))
-        else:
-            args.size_factor = 1.0
-            settings.append(("size-factor", "1", "default"))
-    elif _num(live.get("size_factor")) is not None:
-        args.size_factor = _num(live["size_factor"])
-        settings.append(("size-factor", f"{args.size_factor:g}", "live"))
-    else:
-        args.size_factor = 1.0
-        settings.append(("size-factor", "1", "default"))
-
     # grant / gain: strictness benders, same semantics as the driver's
     # clboss-xrebalance-grant / -gain.  Overriding them on the command
     # line previews a combo before setconfig-ing it live.
@@ -566,9 +527,6 @@ def main():
     if _num(live.get("maxparts")) is not None:
         maxparts = int(_num(live["maxparts"]))
         settings.append(("maxparts", str(maxparts), "live"))
-
-    if not (args.size_factor > 0.0):
-        sys.exit("--size-factor must be > 0")
 
     # The matched-pool cycle analysis (and its bands) always runs now, so
     # default to the tier sort that visualizes it: extreme bands ranked by
@@ -1441,15 +1399,7 @@ def main():
                           if r["scid"] in bold_scids
                           for s in peer_scids[r["peer_id"]]]
             if source_picks and dest_picks:
-                # Scale the requested amount: the bold set / budget above
-                # reflect the full matched-pool economics; the emitted amount
-                # is scaled by size_factor (<1 incremental, >1 over-fills).
-                requested_sat = max(1, round(args.transfer_size
-                                             * args.size_factor))
-                if args.size_factor != 1.0:
-                    print(f"# size_factor {args.size_factor:g}: requesting "
-                          f"{requested_sat:_} of {args.transfer_size:_} sat "
-                          f"derived (budget unchanged at {int(joint)} ppm).")
+                requested_sat = max(1, round(args.transfer_size))
                 cmd = build_xmovefunds_command(
                     network_option, lightning_dir,
                     source_picks, dest_picks,

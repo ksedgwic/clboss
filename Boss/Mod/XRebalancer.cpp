@@ -36,7 +36,6 @@ namespace {
 
 auto const opt_per_hour = std::string("clboss-xrebalance-per-hour");
 auto const opt_floor = std::string("clboss-xrebalance-route-cost-floor");
-auto const opt_size_factor = std::string("clboss-xrebalance-size-factor");
 auto const opt_window_days = std::string("clboss-xrebalance-earnings-window-days");
 auto const opt_fill_loc = std::string("clboss-xrebalance-fill-loc");
 auto const opt_drain_loc = std::string("clboss-xrebalance-drain-loc");
@@ -47,7 +46,6 @@ auto const opt_gain = std::string("clboss-xrebalance-gain");
 
 auto constexpr default_per_hour = double(12.0);
 auto constexpr default_floor = double(50.0);
-auto constexpr default_size_factor = double(0.1);
 auto constexpr default_window_days = double(90.0);
 /* Tier bands (Loc%); match clboss-xrebalance-view defaults.  */
 auto constexpr default_fill_band = double(10.0);
@@ -88,8 +86,6 @@ private:
 
 	double per_hour;
 	double floor_ppm;
-	double size_factor;       /* lo bound, or the fixed value */
-	double size_factor_hi;    /* hi bound when size_factor is a lo:hi range */
 	double window_days;
 	double fill_band;
 	double drain_band;
@@ -98,7 +94,6 @@ private:
 	double grant_ppm;         /* assumed prior rate (ppm of a capacity-turn) */
 	double gain;              /* NetPpm multiplier */
 	bool floor_auto;   /* floor option set to "auto" (sweep) */
-	bool size_factor_range;   /* size_factor set as lo:hi (per-cycle random) */
 	/* Mode xrebalance2: execute through the external xrebalance
 	 * plugin instead of clboss-xmovefunds.  Captured at cycle start;
 	 * cycles are serialized by the awaited loop, so one flag
@@ -129,8 +124,6 @@ private:
 	void start() {
 		per_hour = default_per_hour;
 		floor_ppm = default_floor;
-		size_factor = default_size_factor;
-		size_factor_hi = default_size_factor;
 		window_days = default_window_days;
 		fill_band = default_fill_band;
 		drain_band = default_drain_band;
@@ -139,7 +132,6 @@ private:
 		grant_ppm = default_grant;
 		gain = default_gain;
 		floor_auto = false;
-		size_factor_range = false;
 		use_plugin = false;
 		started = false;
 
@@ -163,19 +155,6 @@ private:
 				"amount and the maxfee budget.  Or \"auto\": "
 				"each cycle picks a random rung of the derived "
 				"floor ladder (sweep).")
-			     + manifest_option(opt_size_factor, default_size_factor,
-				"Multiplier (> 0) on the derived matched-pool "
-				"amount requested per cycle.  <1 requests a "
-				"fraction (incremental fills); >1 over-fills "
-				"past the band targets -- recoverable, the "
-				"channel drifts back -- to make each of the "
-				"maxparts parts larger so it amortizes the base "
-				"fee and clears the per-part budget.  Or a range "
-				"\"lo:hi\" (e.g. 0.5:3.0): each cycle draws a fresh "
-				"uniform-random multiplier in [lo,hi], sweeping the "
-				"request size so askrene's accumulated route state "
-				"does not stale into repeated 205/206 refusals the "
-				"way a single fixed value eventually does.")
 			     + manifest_option(opt_window_days, default_window_days,
 				"Trailing window (days) over which per-channel "
 				"NetPpm is measured for cycle selection.")
@@ -203,7 +182,7 @@ private:
 				"and price maxfee at the target's NetPpm plus "
 				"the minimum NetPpm of the offered pool.  The "
 				"remaining cycles run the matched-pool style "
-				"(floor ladder / size-factor).")
+				"(floor ladder).")
 			     + manifest_option(opt_grant, default_grant,
 				"Assumed prior earnings rate (ppm), credited "
 				"to every channeled peer on both sides as if "
@@ -266,48 +245,6 @@ private:
 		}
 		if (o.name == opt_floor)
 			floor_auto = false;
-		/* size-factor also accepts a "lo:hi" range (e.g. 0.5:3.0):
-		 * instead of one fixed multiplier, each cycle draws a fresh
-		 * uniform-random value in [lo,hi] (see plan_and_log).  Sweeping
-		 * the size keeps the request varying so askrene's accumulated
-		 * route state does not stale into repeated 205/206 refusals the
-		 * way a fixed value eventually does.  A plain number clears
-		 * range mode and falls through to the numeric path below. */
-		if (o.name == opt_size_factor) {
-			auto s = std::string(o.value);
-			auto colon = s.find(':');
-			if (colon != std::string::npos) {
-				auto lo = double(0.0);
-				auto hi = double(0.0);
-				try {
-					lo = std::stod(s.substr(0, colon));
-					hi = std::stod(s.substr(colon + 1));
-				} catch (std::exception const&) {
-					o.reject(o.name + ": invalid range");
-					return Boss::log( bus, Error
-							, "XRebalancer: ignoring invalid "
-							  "%s range \"%s\"."
-							, o.name.c_str(), s.c_str() );
-				}
-				if (!(lo > 0.0) || !(hi > 0.0)) {
-					o.reject( o.name + ": range bounds "
-						  "must be > 0");
-					return Boss::log( bus, Error
-							, "XRebalancer: %s range bounds "
-							  "must be > 0; ignoring \"%s\"."
-							, o.name.c_str(), s.c_str() );
-				}
-				if (hi < lo) { auto t = lo; lo = hi; hi = t; }
-				size_factor = lo;
-				size_factor_hi = hi;
-				size_factor_range = true;
-				return Boss::log( bus, Info
-						, "XRebalancer: %s set to range "
-						  "%.3g:%.3g (per-cycle random)."
-						, o.name.c_str(), lo, hi );
-			}
-			size_factor_range = false;
-		}
 		/* maxparts is an integer count, not a continuous knob, so it
 		 * gets dedicated handling: parse, round, floor at 1 (askrene
 		 * requires >= 1), and store as an integer.  */
@@ -339,7 +276,6 @@ private:
 		double* target = nullptr;
 		if (o.name == opt_per_hour)        target = &per_hour;
 		else if (o.name == opt_floor)      target = &floor_ppm;
-		else if (o.name == opt_size_factor) target = &size_factor;
 		else if (o.name == opt_window_days)target = &window_days;
 		else if (o.name == opt_fill_loc)   target = &fill_band;
 		else if (o.name == opt_drain_loc)  target = &drain_band;
@@ -365,7 +301,7 @@ private:
 					, o.name.c_str(), s.c_str()
 					);
 		}
-		if (o.name == opt_size_factor || o.name == opt_gain) {
+		if (o.name == opt_gain) {
 			if (!(v > 0.0)) {
 				o.reject(o.name + ": must be > 0");
 				return Boss::log( bus, Error
@@ -929,38 +865,21 @@ private:
 		auto dest_caps = pick(fill);    /* fill = where funds land */
 		auto source_caps = pick(drain); /* drain = where funds leave */
 
-		/* size_factor may be a "lo:hi" range; draw a fresh multiplier
-		 * each cycle so the requested size sweeps (see handle_option).  */
-		auto effective_size_factor = size_factor;
-		auto sf_note = std::string();
-		if (size_factor_range) {
-			auto dist = std::uniform_real_distribution<double>(
-				size_factor, size_factor_hi);
-			effective_size_factor = dist(Boss::random_engine);
-			auto os = std::ostringstream();
-			os << " (rand " << size_factor << ":" << size_factor_hi << ")";
-			sf_note = os.str();
-		}
-
-		auto requested = std::int64_t(
-			std::max<double>(1.0, std::llround(double(best_n)
-							   * effective_size_factor)));
+		/* Request the full matched volume; the per-channel caps in
+		 * the request lists bound what each channel absorbs.  */
+		auto requested = best_n;
 		auto maxfee = std::uint32_t(std::llround(best_joint));
 
 		return Boss::log( bus, Info, "%s", levels_str.c_str() )
 		     + Boss::log( bus, Info
 			, "XRebalancer: cycle [matched] floor=%.1f%s window=%.0fd "
-			  "-> derived N=%s sat, joint=%.1f ppm "
-			  "(fill>=%.1f + drain>=%.1f); size_factor=%.3g%s "
-			  "-> request=%s sat (maxfee %u ppm); "
+			  "-> request=%s sat (matched volume), joint=%.1f ppm "
+			  "(fill>=%.1f + drain>=%.1f), maxfee %u ppm; "
 			  "sources=%zu dests=%zu; executing."
 			, effective_floor, picked_note.c_str(), window_days
 			, Util::Str::group_digits(
-				std::int64_t(best_n)).c_str(), best_joint
+				std::int64_t(requested)).c_str(), best_joint
 			, best_fill_ppm, best_drain_ppm
-			, effective_size_factor, sf_note.c_str()
-			, Util::Str::group_digits(
-				std::int64_t(requested)).c_str()
 			, (unsigned)maxfee
 			, source_caps.size(), dest_caps.size()
 			).then([this, source_caps, dest_caps]() {
