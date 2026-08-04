@@ -173,7 +173,17 @@ void ChannelCreateDestroyMonitor::start() {
 		try {
 			auto payload = params["channel_state_changed"];
 			n = Ln::NodeId(std::string(payload["peer_id"]));
-			old_state = std::string(payload["old_state"]);
+			/* `old_state` may be omitted: as of CLN v26.06 the
+			 * previously-deprecated sentinel value "unknown"
+			 * is no longer emitted; the field is simply
+			 * absent instead.  Leave old_state as the empty
+			 * string in that case -- the CHANNELD_NORMAL /
+			 * CHANNELD_AWAITING_LOCKIN check below will not
+			 * match, so we skip silently, matching the
+			 * original intent for the "unknown" value.
+			 */
+			if (payload.has("old_state"))
+				old_state = std::string(payload["old_state"]);
 			new_state = std::string(payload["new_state"]);
 		} catch (std::runtime_error const& err) {
 			return Boss::log( bus, Error

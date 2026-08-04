@@ -6,11 +6,15 @@
 #include"Ln/Scid.hpp"
 #include<cstdint>
 #include<memory>
+#include<string>
 
 namespace Boss { namespace Mod { namespace FundsMover { class Attempter; }}}
 namespace Boss { namespace Mod { namespace FundsMover { class Claimer; }}}
 namespace Boss { namespace Mod { class Rpc; }}
+namespace Boss { namespace ModG { template<typename, typename> class ReqResp; }}
+namespace Boss { namespace Msg { struct RequestAskreneUpdates; }}
 namespace Boss { namespace Msg { struct RequestMoveFunds; }}
+namespace Boss { namespace Msg { struct ResponseAskreneUpdates; }}
 namespace Ev { template<typename a> class Io; }
 namespace S { class Bus; }
 
@@ -42,14 +46,31 @@ private:
 	 */
 	Ln::Amount orig_budget;
 
+	/* Minimum askrene route success probability (ppm) below which a
+	 * found route is not sent (the attempt fails and we split to a
+	 * smaller, more-probable amount).  0 disables.  From
+	 * clboss-min-rebalance-prob-ppm; snapshotted into each Attempter. */
+	std::uint64_t min_prob_ppm;
+
 	/* Time this run started.  */
 	double start_time;
+
+	/* Shared request/response to Boss::Mod::AskreneUpdates, owned by
+	 * FundsMover::Main; each attempt uses it to fetch the still-fresh
+	 * learned updates for its private layer.  */
+	Boss::ModG::ReqResp< Boss::Msg::RequestAskreneUpdates
+			   , Boss::Msg::ResponseAskreneUpdates
+			   >& updates_rr;
 
 	Runner( S::Bus& bus
 	      , Boss::Mod::Rpc& rpc
 	      , Ln::NodeId self
 	      , Boss::Mod::FundsMover::Claimer& claimer
 	      , Boss::Msg::RequestMoveFunds const& req
+	      , std::uint64_t min_prob_ppm
+	      , Boss::ModG::ReqResp< Boss::Msg::RequestAskreneUpdates
+				   , Boss::Msg::ResponseAskreneUpdates
+				   >& updates_rr
 	      );
 
 	Ev::Io<void> core_run();
@@ -84,6 +105,10 @@ public:
 	      , Ln::NodeId self
 	      , Boss::Mod::FundsMover::Claimer& claimer
 	      , Boss::Msg::RequestMoveFunds const& req
+	      , std::uint64_t min_prob_ppm
+	      , Boss::ModG::ReqResp< Boss::Msg::RequestAskreneUpdates
+				   , Boss::Msg::ResponseAskreneUpdates
+				   >& updates_rr
 	      ) {
 		/* Constructor is private, cannot use std::make_shared.  */
 		return std::shared_ptr<Runner>(
@@ -92,6 +117,8 @@ public:
 				  , std::move(self)
 				  , claimer
 				  , req
+				  , min_prob_ppm
+				  , updates_rr
 				  )
 		);
 	}

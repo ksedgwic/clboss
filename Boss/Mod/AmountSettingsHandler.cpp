@@ -78,7 +78,26 @@ private:
 
 		bus.subscribe<Msg::Option
 			     >([this](Msg::Option o) {
-			assert(settings);
+			/* Msg::Option was originally a startup-only signal
+			 * (delivered once per registered option between
+			 * Manifestation and EndOfOptions), and EndOfOptions
+			 * moves `settings` away on line below.  Now that
+			 * SetConfigHandler can re-raise Msg::Option at
+			 * runtime to deliver setconfig updates, this handler
+			 * may receive events for unrelated names long after
+			 * `settings` has been moved -- e.g. a runtime
+			 * `setconfig` on any dynamic option triggers a
+			 * Msg::Option that hits every subscriber.
+			 *
+			 * Drop those silently: none of the options this
+			 * handler owns is registered dynamic, so by the time
+			 * we see a post-EndOfOptions event it cannot
+			 * legitimately apply.  This also covers a latent
+			 * assertion crash that pre-existed dynamic options
+			 * (any post-EOO Msg::Option for any name would have
+			 * tripped the old assert(settings) here). */
+			if (!settings)
+				return Ev::lift();
 			auto const& name = o.name;
 			if (name == "clboss-min-onchain") {
 				settings->reserve = parse_sats(o.value);
