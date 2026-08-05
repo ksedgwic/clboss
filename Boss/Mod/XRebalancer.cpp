@@ -947,10 +947,18 @@ private:
 	 * just exited through.  Fill-pool membership is the entire
 	 * criterion -- demand controls WHEN we rebalance, never who
 	 * qualifies, how much, or the price.  Sized to the peer's
-	 * deficit to the fill edge and priced conservatively: target
-	 * NetPpm plus the minimum NetPpm of the offered pool, so every
-	 * sat moved earns at least the target's side plus at least the
-	 * cheapest offered channel's side.  */
+	 * deficit to the fill edge.  Sources are the top p% of the
+	 * offered pool by NetPpm, and the price is the cheapest source
+	 * actually offered, so every sat moved earns at least the
+	 * target's side plus at least its source's side no matter the
+	 * rung.  p is drawn per cycle -- the same sweep methodology as
+	 * the auto floor ladder: a narrow rung offers premium sources
+	 * at a rich budget, a wide rung offers most of the pool at a
+	 * lean one, and demand re-triggering redraws, so which rung
+	 * delivers is learned from the traffic itself.  Pricing at the
+	 * pool minimum was tried first and let the most-subsidized
+	 * peer (heavy past refill expenditures, near-zero net) cap
+	 * every budget.  */
 	Ev::Io<void>
 	plan_demand( std::vector<PoolItem> const& fill
 		   , std::vector<PoolItem> const& drain
@@ -971,26 +979,39 @@ private:
 				, "XRebalancer: demand on %s: peer not a "
 				  "fill candidate, no cycle."
 				, scid.c_str() );
-		/* Pools are sorted NetPpm-descending, so the minimum
-		 * offered NetPpm is the last element.  */
-		auto min_offered = drain.back().ppm;
+		static constexpr double rung_pct[] = {20.0, 50.0, 80.0};
+		auto rung = rung_pct[std::uniform_int_distribution<
+			std::size_t>(0, 2)(Boss::random_engine)];
+		/* Pools are sorted NetPpm-descending, so the kept prefix
+		 * is the top of the pool and its last element is the
+		 * cheapest source actually offered.  */
+		auto keep = std::size_t(std::ceil(
+			double(drain.size()) * rung / 100.0));
+		if (keep < 1)
+			keep = 1;
+		if (keep > drain.size())
+			keep = drain.size();
+		auto min_offered = drain[keep - 1].ppm;
 		auto maxfee = std::uint32_t(std::llround(
 			target->ppm + min_offered));
 		auto requested = target->deficit;
 		auto dest_caps = target->caps;
 		auto source_caps = std::vector<ScidCap>();
-		for (auto const& it : drain)
+		for (auto i = std::size_t(0); i < keep; ++i)
 			source_caps.insert( source_caps.end()
-					  , it.caps.begin(), it.caps.end());
+					  , drain[i].caps.begin()
+					  , drain[i].caps.end());
 		return Boss::log( bus, Info
 			, "XRebalancer: cycle [demand] trigger=%s target=%s "
 			  "window=%.0fd -> request=%s sat (deficit to fill "
-			  "edge), maxfee=%u ppm (target %.1f + min offered "
-			  "%.1f); sources=%zu dests=%zu; executing."
+			  "edge), rung=top %.0f%% -> maxfee=%u ppm (target "
+			  "%.1f + min offered %.1f); sources=%zu dests=%zu; "
+			  "executing."
 			, scid.c_str()
 			, join_caps(target->caps).c_str()
 			, window_days
 			, Util::Str::group_digits(requested).c_str()
+			, rung
 			, (unsigned)maxfee
 			, target->ppm, min_offered
 			, source_caps.size(), dest_caps.size()
