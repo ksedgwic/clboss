@@ -40,7 +40,6 @@ auto const opt_window_days = std::string("clboss-xrebalance-earnings-window-days
 auto const opt_fill_loc = std::string("clboss-xrebalance-fill-loc");
 auto const opt_drain_loc = std::string("clboss-xrebalance-drain-loc");
 auto const opt_maxparts = std::string("clboss-xrebalance-maxparts");
-auto const opt_focused_frac = std::string("clboss-xrebalance-focused-frac");
 auto const opt_grant = std::string("clboss-xrebalance-grant");
 auto const opt_gain = std::string("clboss-xrebalance-gain");
 
@@ -52,14 +51,6 @@ auto constexpr default_fill_band = double(10.0);
 auto constexpr default_drain_band = double(90.0);
 /* MCF split cap passed to the executor (askrene getroutes maxparts).  */
 auto constexpr default_maxparts = double(10.0);
-/* Fraction of cycles run focused (single random target, whole opposite
- * pool) instead of matched-pool; 50/50 so both styles accrue comparable
- * sample counts side by side.  */
-auto constexpr default_focused_frac = double(0.5);
-/* Within focused cycles, probability the target is a fill channel
- * (deliveries are the priority); the rest target a drain channel.  */
-auto constexpr focused_fill_prob = double(0.9);
-
 /* The fill/drain deficits aim toward the band edges themselves
  * (fill_band / drain_band): the band both admits a channel and
  * defines where its rebalancing stops.  */
@@ -90,7 +81,6 @@ private:
 	double fill_band;
 	double drain_band;
 	std::uint32_t maxparts;   /* MCF split cap (integer count) */
-	double focused_frac;      /* fraction of cycles run focused */
 	double grant_ppm;         /* assumed prior rate (ppm of a capacity-turn) */
 	double gain;              /* NetPpm multiplier */
 	bool floor_auto;   /* floor option set to "auto" (sweep) */
@@ -128,7 +118,6 @@ private:
 		fill_band = default_fill_band;
 		drain_band = default_drain_band;
 		maxparts = std::uint32_t(default_maxparts);
-		focused_frac = default_focused_frac;
 		grant_ppm = default_grant;
 		gain = default_gain;
 		floor_auto = false;
@@ -173,16 +162,6 @@ private:
 				"the per-part gate but need more liquidity; "
 				"higher = finer splitting, more learning, more "
 				"refusals.")
-			     + manifest_option(opt_focused_frac, default_focused_frac,
-				"Fraction (0..1) of cycles run as focused-"
-				"target cycles: pick one channel at random "
-				"(90% from the fill pool, 10% from the drain "
-				"pool), offer the entire opposite pool, size "
-				"the transfer to the target's own deficit, "
-				"and price maxfee at the target's NetPpm plus "
-				"the minimum NetPpm of the offered pool.  The "
-				"remaining cycles run the matched-pool style "
-				"(floor ladder).")
 			     + manifest_option(opt_grant, default_grant,
 				"Assumed prior earnings rate (ppm), credited "
 				"to every channeled peer on both sides as if "
@@ -279,7 +258,6 @@ private:
 		else if (o.name == opt_window_days)target = &window_days;
 		else if (o.name == opt_fill_loc)   target = &fill_band;
 		else if (o.name == opt_drain_loc)  target = &drain_band;
-		else if (o.name == opt_focused_frac) target = &focused_frac;
 		else if (o.name == opt_grant)      target = &grant_ppm;
 		else if (o.name == opt_gain)       target = &gain;
 		else return Ev::lift();
@@ -313,9 +291,6 @@ private:
 		} else if (o.name == opt_fill_loc || o.name == opt_drain_loc) {
 			if (v < 0.0)        v = 0.0;
 			else if (v > 100.0) v = 100.0;
-		} else if (o.name == opt_focused_frac) {
-			if (v < 0.0)      v = 0.0;
-			else if (v > 1.0) v = 1.0;
 		} else if (v < 0.0) {
 			v = 0.0;
 		}
@@ -740,16 +715,6 @@ private:
 				, fill.size(), drain.size()
 				, fill_band, drain_band, window_days );
 
-		/* Cycle style: focused (single random target, whole opposite
-		 * pool) vs matched (joint(N) curve below).  Both styles need
-		 * both pools, so the draw comes after the empty check.  */
-		if (focused_frac > 0.0) {
-			auto dist = std::uniform_real_distribution<double>(
-				0.0, 1.0);
-			if (dist(Boss::random_engine) < focused_frac)
-				return plan_focused(fill, drain);
-		}
-
 		/* Cumulative deficit + marginal ppm per side.  */
 		auto cum = [](std::vector<PoolItem> const& pool){
 			auto v = std::vector<std::pair<std::int64_t,double>>();
@@ -881,66 +846,6 @@ private:
 				std::int64_t(requested)).c_str(), best_joint
 			, best_fill_ppm, best_drain_ppm
 			, (unsigned)maxfee
-			, source_caps.size(), dest_caps.size()
-			).then([this, source_caps, dest_caps]() {
-			return Boss::log( bus, Debug
-				, "XRebalancer:   sources=[%s] dests=[%s]"
-				, join_caps(source_caps).c_str()
-				, join_caps(dest_caps).c_str()
-				);
-		}).then([this, source_caps, dest_caps, requested, maxfee]() {
-			return execute_cycle(source_caps, dest_caps,
-					     requested, maxfee);
-		});
-	}
-
-	/* Focused cycle: one uniformly random target (90% fill / 10%
-	 * drain), the entire opposite pool as counterparty, sized to the
-	 * target's own deficit, priced at the target's NetPpm plus the
-	 * minimum NetPpm of the offered pool -- the conservative joint:
-	 * every sat moved earns at least the target's side plus at least
-	 * the cheapest offered channel's side.  No curve/ladder/floor and
-	 * no size factor: the budget is the target's own economics, and
-	 * the variety the size sweep manufactured comes free from drawing
-	 * a different target/amount/pool every cycle.  Uniform pick on
-	 * purpose: discovery (no starvation traps) plus an unbiased
-	 * per-target census, same methodology as the floor-ladder sweep.  */
-	Ev::Io<void>
-	plan_focused( std::vector<PoolItem> const& fill
-		    , std::vector<PoolItem> const& drain
-		    ) {
-		auto side = std::uniform_real_distribution<double>(
-			0.0, 1.0)(Boss::random_engine);
-		auto fill_target = side < focused_fill_prob;
-		auto const& tpool = fill_target ? fill : drain;
-		auto const& opool = fill_target ? drain : fill;
-		auto pick = std::uniform_int_distribution<std::size_t>(
-			0, tpool.size() - 1)(Boss::random_engine);
-		auto const& target = tpool[pick];
-		/* Pools are sorted NetPpm-descending, so the minimum
-		 * offered NetPpm is the last element.  */
-		auto min_offered = opool.back().ppm;
-		auto maxfee = std::uint32_t(std::llround(
-			target.ppm + min_offered));
-		auto requested = target.deficit;
-		auto target_caps = target.caps;
-		auto other_caps = std::vector<ScidCap>();
-		for (auto const& it : opool)
-			other_caps.insert( other_caps.end()
-					 , it.caps.begin(), it.caps.end());
-		auto source_caps = fill_target ? other_caps : target_caps;
-		auto dest_caps = fill_target ? target_caps : other_caps;
-		return Boss::log( bus, Info
-			, "XRebalancer: cycle [focused %s] target=%s "
-			  "window=%.0fd -> request=%s sat (target deficit), "
-			  "maxfee=%u ppm (target %.1f + min offered %.1f); "
-			  "sources=%zu dests=%zu; executing."
-			, fill_target ? "fill" : "drain"
-			, join_caps(target.caps).c_str()
-			, window_days
-			, Util::Str::group_digits(requested).c_str()
-			, (unsigned)maxfee
-			, target.ppm, min_offered
 			, source_caps.size(), dest_caps.size()
 			).then([this, source_caps, dest_caps]() {
 			return Boss::log( bus, Debug
