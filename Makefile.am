@@ -143,6 +143,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/Connector.hpp \
 	Boss/Mod/ConstructedListpeers.cpp \
 	Boss/Mod/ConstructedListpeers.hpp \
+	Boss/Mod/DemandTracker.cpp \
+	Boss/Mod/DemandTracker.hpp \
 	Boss/Mod/Dowser.cpp \
 	Boss/Mod/Dowser.hpp \
 	Boss/Mod/EarningsRebalancer.cpp \
@@ -308,6 +310,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/CommandRequest.hpp \
 	Boss/Msg/CommandResponse.hpp \
 	Boss/Msg/DbResource.hpp \
+	Boss/Msg/DemandObserved.hpp \
 	Boss/Msg/MonitorFeeByBalance.hpp \
 	Boss/Msg/MonitorFeeByTheory.hpp \
 	Boss/Msg/MonitorFeeSetChannel.hpp \

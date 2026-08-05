@@ -23,6 +23,7 @@
 #include"Boss/Mod/ConnectFinderByHardcode.hpp"
 #include"Boss/Mod/Connector.hpp"
 #include"Boss/Mod/CommandReceiver.hpp"
+#include"Boss/Mod/DemandTracker.hpp"
 #include"Boss/Mod/Dowser.hpp"
 #include"Boss/Mod/EarningsRebalancer.hpp"
 #include"Boss/Mod/EarningsTracker.hpp"
@@ -216,6 +217,7 @@ std::shared_ptr<void> all( std::ostream& cout
 	all->install<FundsMover::Main>(bus);
 	all->install<XRebalancer>(bus, *waiter);
 	all->install<XRebalancePartMonitor>(bus);
+	all->install<DemandTracker>(bus);
 	all->install<MoveFundsCommand>(bus);
 	all->install<EarningsTracker>(bus);
 	all->install<JitRebalancer>(bus);

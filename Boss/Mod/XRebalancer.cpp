@@ -4,6 +4,7 @@
 #include"Boss/ModG/RebalanceModeProxy.hpp"
 #include"Boss/ModG/RpcProxy.hpp"
 #include"Boss/Msg/DbResource.hpp"
+#include"Boss/Msg/DemandObserved.hpp"
 #include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/Manifestation.hpp"
 #include"Boss/Msg/ManifestOption.hpp"
@@ -90,6 +91,13 @@ private:
 	 * suffices.  */
 	bool use_plugin;
 	bool started;
+	/* True while a cycle (matched or demand) runs.  The Poisson
+	 * loop and demand triggers exclude each other through it, and
+	 * a demand trigger arriving while it is set is discarded --
+	 * traffic recurrence re-arms real demand, so there is no
+	 * queue.  Both cycle paths clear it behind a catch-all, so an
+	 * exception cannot leave it wedged.  */
+	bool in_flight;
 
 	/* One row per CHANNELD_NORMAL channel, built live from
 	 * listpeerchannels each cycle (balances and online status must be
@@ -123,6 +131,7 @@ private:
 		floor_auto = false;
 		use_plugin = false;
 		started = false;
+		in_flight = false;
 
 		bus.subscribe<Msg::DbResource
 			     >([this](Msg::DbResource const& m) {
@@ -134,9 +143,10 @@ private:
 			     >([this](Msg::Manifestation const& _) {
 			return manifest_option(opt_per_hour, default_per_hour,
 				"Average number of flow-rebalance (xrebalance) "
-				"cycles per hour (0 = paused).  Poisson-paced; "
-				"only active when the rebalancer mode is "
-				"\"xrebalance\" or \"xrebalance2\".")
+				"cycles per hour (0 = pause matched cycles; "
+				"demand-triggered cycles still run).  "
+				"Poisson-paced; only active when the "
+				"rebalancer mode is \"xrebalance\" or \"xrebalance2\".")
 			     + manifest_option(opt_floor, default_floor,
 				"Route-cost floor (ppm): stop growing the "
 				"matched-pool cycle once the marginal joint "
@@ -184,6 +194,11 @@ private:
 			return handle_option(o);
 		});
 
+
+		bus.subscribe<Msg::DemandObserved
+			     >([this](Msg::DemandObserved const& m) {
+			return handle_demand(m);
+		});
 
 		bus.subscribe<Msg::Init
 			     >([this](Msg::Init const& _) {
@@ -366,6 +381,18 @@ private:
 	}
 
 	Ev::Io<void> tick() {
+		/* At rate 0 next_delay_secs() degrades to a short poll
+		 * so a setconfig re-enable is noticed; the poll itself
+		 * must not run a cycle.  Demand cycles are deliberately
+		 * unaffected -- clboss-rebalance-mode=off is the full
+		 * disable.  */
+		if (per_hour <= 0.0)
+			return Ev::lift();
+		if (in_flight)
+			return Boss::log( bus, Debug
+					, "XRebalancer: tick skipped, cycle "
+					  "in flight." );
+		in_flight = true;
 		return mode_proxy.get_mode().then([this](RebalanceMode m) {
 			if ( m != RebalanceMode::xrebalance
 			  && m != RebalanceMode::xrebalance2 )
@@ -377,29 +404,79 @@ private:
 						);
 			use_plugin = (m == RebalanceMode::xrebalance2);
 			return run_cycle();
+		/* The catch-all before the clear is load-bearing twice
+		 * over: an exception on the fail path would skip a bare
+		 * .then clear (wedging in_flight for good), and it would
+		 * kill the awaiting loop greenthread outright.  */
+		}).catching<std::exception>([this](std::exception const& e) {
+			return Boss::log( bus, Warn
+					, "XRebalancer: cycle error: %s"
+					, e.what() );
+		}).then([this]() {
+			in_flight = false;
+			return Ev::lift();
+		});
+	}
+
+	/* Demand triggers (DemandTracker's htlc_accepted deferrer, via
+	 * Msg::DemandObserved) run in the forwarding hook path, so the
+	 * synchronous part stays cheap: the busy test and the spawn.
+	 * Check and set have no await between them, so concurrent
+	 * triggers cannot both pass.  */
+	Ev::Io<void> handle_demand(Msg::DemandObserved const& m) {
+		if (!started || in_flight)
+			return Ev::lift();
+		in_flight = true;
+		return Boss::concurrent(
+			demand_cycle(std::string(m.out_scid)));
+	}
+
+	/* A demand-triggered cycle: the same pipeline as a matched one,
+	 * routed to the demand plan by the scid argument.  Runs outside
+	 * the loop greenthread, so it carries its own mode gate and
+	 * catch-all.  */
+	Ev::Io<void> demand_cycle(std::string scid) {
+		return mode_proxy.get_mode().then([this, scid](RebalanceMode m) {
+			if ( m != RebalanceMode::xrebalance
+			  && m != RebalanceMode::xrebalance2 )
+				return Ev::lift();
+			use_plugin = (m == RebalanceMode::xrebalance2);
+			return run_cycle(scid);
+		}).catching<std::exception>([this](std::exception const& e) {
+			return Boss::log( bus, Warn
+					, "XRebalancer: demand cycle error: %s"
+					, e.what() );
+		}).then([this]() {
+			in_flight = false;
+			return Ev::lift();
 		});
 	}
 
 	/* Fetch live balances/online (listpeerchannels), query the windowed
-	 * per-node NetPpm, join, derive the matched-pool cycle, execute.  */
-	Ev::Io<void> run_cycle() {
+	 * per-node NetPpm, join, derive the cycle, execute.  A non-empty
+	 * demand_scid routes planning to the demand style (the channel a
+	 * forward just exited through); empty runs the matched style.  */
+	Ev::Io<void> run_cycle(std::string demand_scid = "") {
 		return rpc.command( "listpeerchannels"
 				  , Json::Out::empty_object()
-				  ).then([this](Jsmn::Object res) {
+				  ).then([this, demand_scid](Jsmn::Object res) {
 			return run_cycle_with(std::make_shared<std::vector<Chan>>(
-				build_chans(res)));
+				build_chans(res)), demand_scid);
 		});
 	}
 
 	Ev::Io<void>
-	run_cycle_with(std::shared_ptr<std::vector<Chan>> chans) {
+	run_cycle_with( std::shared_ptr<std::vector<Chan>> chans
+		      , std::string demand_scid
+		      ) {
 		if (chans->empty())
 			return Boss::log( bus, Info
 					, "XRebalancer: no channel data, "
 					  "skipping cycle." );
 		auto cutoff = double(std::time(nullptr))
 			    - window_days * 24.0 * 60.0 * 60.0;
-		return db.transact().then([this, cutoff, chans](Sqlite3::Tx tx) {
+		return db.transact().then([ this, cutoff, chans, demand_scid
+					  ](Sqlite3::Tx tx) {
 			auto net = std::make_shared<std::map<Ln::NodeId, NetPpm>>();
 			/* Per-peer capacity (msat): grant's credit base and
 			 * notional volume.  */
@@ -469,7 +546,7 @@ private:
 					(*net)[ce.first] = p;
 				}
 			tx.commit();
-			return plan_and_log(chans, net);
+			return plan_and_log(chans, net, demand_scid);
 		});
 	}
 
@@ -632,6 +709,7 @@ private:
 	Ev::Io<void>
 	plan_and_log( std::shared_ptr<std::vector<Chan>> chans
 		    , std::shared_ptr<std::map<Ln::NodeId, NetPpm>> net
+		    , std::string const& demand_scid
 		    ) {
 		/* Aggregate channels into peers; deficits aim at the band
 		 * edges on the aggregate Loc%.  A peer with one full and
@@ -707,13 +785,27 @@ private:
 			[](PoolItem const& a, PoolItem const& b){
 				return a.ppm > b.ppm; });
 
-		if (fill.empty() || drain.empty())
+		if (fill.empty() || drain.empty()) {
+			/* Demand evaluations run per forward, so their
+			 * no-op outcomes log at Debug; the paced matched
+			 * cycle keeps the Info line.  */
+			if (!demand_scid.empty())
+				return Boss::log( bus, Debug
+					, "XRebalancer: demand on %s: no "
+					  "cycle -- NO_CANDIDATES (fill=%zu "
+					  "drain=%zu)."
+					, demand_scid.c_str()
+					, fill.size(), drain.size() );
 			return Boss::log( bus, Info
 				, "XRebalancer: no cycle -- NO_CANDIDATES "
 				  "(fill=%zu drain=%zu; bands fill<=%.1f "
 				  "drain>=%.1f, window=%.0fd)."
 				, fill.size(), drain.size()
 				, fill_band, drain_band, window_days );
+		}
+
+		if (!demand_scid.empty())
+			return plan_demand(fill, drain, demand_scid);
 
 		/* Cumulative deficit + marginal ppm per side.  */
 		auto cum = [](std::vector<PoolItem> const& pool){
@@ -846,6 +938,90 @@ private:
 				std::int64_t(requested)).c_str(), best_joint
 			, best_fill_ppm, best_drain_ppm
 			, (unsigned)maxfee
+			, source_caps.size(), dest_caps.size()
+			).then([this, source_caps, dest_caps]() {
+			return Boss::log( bus, Debug
+				, "XRebalancer:   sources=[%s] dests=[%s]"
+				, join_caps(source_caps).c_str()
+				, join_caps(dest_caps).c_str()
+				);
+		}).then([this, source_caps, dest_caps, requested, maxfee]() {
+			return execute_cycle(source_caps, dest_caps,
+					     requested, maxfee);
+		});
+	}
+
+	/* Demand cycle: the target is the peer whose channel a forward
+	 * just exited through.  Fill-pool membership is the entire
+	 * criterion -- demand controls WHEN we rebalance, never who
+	 * qualifies, how much, or the price.  Sized to the peer's
+	 * deficit to the fill edge.  Sources are the top p% of the
+	 * offered pool by NetPpm, and the price is the cheapest source
+	 * actually offered, so every sat moved earns at least the
+	 * target's side plus at least its source's side no matter the
+	 * rung.  p is drawn per cycle -- the same sweep methodology as
+	 * the auto floor ladder: a narrow rung offers premium sources
+	 * at a rich budget, a wide rung offers most of the pool at a
+	 * lean one, and demand re-triggering redraws, so which rung
+	 * delivers is learned from the traffic itself.  Pricing at the
+	 * pool minimum was tried first and let the most-subsidized
+	 * peer (heavy past refill expenditures, near-zero net) cap
+	 * every budget.  */
+	Ev::Io<void>
+	plan_demand( std::vector<PoolItem> const& fill
+		   , std::vector<PoolItem> const& drain
+		   , std::string const& scid
+		   ) {
+		auto target = (PoolItem const*) nullptr;
+		for (auto const& it : fill) {
+			for (auto const& c : it.pr->chans)
+				if (c.scid == scid) {
+					target = &it;
+					break;
+				}
+			if (target)
+				break;
+		}
+		if (!target)
+			return Boss::log( bus, Debug
+				, "XRebalancer: demand on %s: peer not a "
+				  "fill candidate, no cycle."
+				, scid.c_str() );
+		static constexpr double rung_pct[] = {20.0, 50.0, 80.0};
+		auto rung = rung_pct[std::uniform_int_distribution<
+			std::size_t>(0, 2)(Boss::random_engine)];
+		/* Pools are sorted NetPpm-descending, so the kept prefix
+		 * is the top of the pool and its last element is the
+		 * cheapest source actually offered.  */
+		auto keep = std::size_t(std::ceil(
+			double(drain.size()) * rung / 100.0));
+		if (keep < 1)
+			keep = 1;
+		if (keep > drain.size())
+			keep = drain.size();
+		auto min_offered = drain[keep - 1].ppm;
+		auto maxfee = std::uint32_t(std::llround(
+			target->ppm + min_offered));
+		auto requested = target->deficit;
+		auto dest_caps = target->caps;
+		auto source_caps = std::vector<ScidCap>();
+		for (auto i = std::size_t(0); i < keep; ++i)
+			source_caps.insert( source_caps.end()
+					  , drain[i].caps.begin()
+					  , drain[i].caps.end());
+		return Boss::log( bus, Info
+			, "XRebalancer: cycle [demand] trigger=%s target=%s "
+			  "window=%.0fd -> request=%s sat (deficit to fill "
+			  "edge), rung=top %.0f%% -> maxfee=%u ppm (target "
+			  "%.1f + min offered %.1f); sources=%zu dests=%zu; "
+			  "executing."
+			, scid.c_str()
+			, join_caps(target->caps).c_str()
+			, window_days
+			, Util::Str::group_digits(requested).c_str()
+			, rung
+			, (unsigned)maxfee
+			, target->ppm, min_offered
 			, source_caps.size(), dest_caps.size()
 			).then([this, source_caps, dest_caps]() {
 			return Boss::log( bus, Debug
