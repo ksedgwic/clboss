@@ -630,6 +630,18 @@ private:
 		return out;
 	}
 
+	/* Note active strictness benders on cycle lines: empty when
+	 * neutral, so strict operation keeps the plain format and a
+	 * granted/gained line says so itself.  */
+	std::string bender_note() const {
+		auto os = std::ostringstream();
+		if (grant_ppm > 0.0)
+			os << ", grant " << grant_ppm;
+		if (gain != 1.0)
+			os << ", gain " << gain;
+		return os.str();
+	}
+
 	/* One point on the joint(N) curve: cumulative matched volume N and
 	 * the marginal fill/drain NetPpm (and their sum) admitted at that
 	 * depth.  Mirrors the curve clboss-xrebalance-view prints.  */
@@ -925,13 +937,14 @@ private:
 		     + Boss::log( bus, Info
 			, "XRebalancer: cycle [matched] floor=%.1f%s window=%.0fd "
 			  "-> request=%s sat (matched volume), joint=%.1f ppm "
-			  "(fill>=%.1f + drain>=%.1f), maxfee %u ppm; "
+			  "(fill>=%.1f + drain>=%.1f), maxfee %u ppm%s; "
 			  "sources=%zu dests=%zu; executing."
 			, effective_floor, picked_note.c_str(), window_days
 			, Util::Str::group_digits(
 				std::int64_t(requested)).c_str(), best_joint
 			, best_fill_ppm, best_drain_ppm
 			, (unsigned)maxfee
+			, bender_note().c_str()
 			, source_caps.size(), dest_caps.size()
 			).then([this, source_caps, dest_caps]() {
 			return Boss::log( bus, Debug
@@ -1007,7 +1020,7 @@ private:
 			, "XRebalancer: cycle [demand] trigger=%s target=%s "
 			  "window=%.0fd -> request=%s sat (deficit to fill "
 			  "edge), rung=top %.0f%% -> maxfee=%u ppm (target "
-			  "%.1f + min offered %.1f); sources=%zu dests=%zu; "
+			  "%.1f + min offered %.1f)%s; sources=%zu dests=%zu; "
 			  "executing."
 			, scid.c_str()
 			, join_caps(target->caps).c_str()
@@ -1016,6 +1029,7 @@ private:
 			, rung
 			, (unsigned)maxfee
 			, target->ppm, min_offered
+			, bender_note().c_str()
 			, source_caps.size(), dest_caps.size()
 			).then([this, source_caps, dest_caps]() {
 			return Boss::log( bus, Debug
