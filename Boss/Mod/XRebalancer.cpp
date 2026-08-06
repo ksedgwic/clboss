@@ -15,6 +15,7 @@
 #include"Boss/log.hpp"
 #include"Boss/random_engine.hpp"
 #include"Ev/Io.hpp"
+#include"Ev/now.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
 #include"Ln/Amount.hpp"
@@ -27,6 +28,7 @@
 #include<cmath>
 #include<ctime>
 #include<limits>
+#include<iomanip>
 #include<map>
 #include<random>
 #include<sstream>
@@ -1122,9 +1124,10 @@ private:
 		obj.field("maxfee_ppm", std::uint64_t(maxfee_ppm));
 		obj.field("maxparts", maxparts);
 		obj.end_object();
+		auto started = Ev::now();
 		return rpc.command("xrebalance", std::move(parms))
-		.then([this](Jsmn::Object res) {
-			return log_plugin_result(std::move(res));
+		.then([this, started](Jsmn::Object res) {
+			return log_plugin_result(std::move(res), started);
 		}).catching<RpcError>([this](RpcError const& e) {
 			/* Also the plugin-not-loaded case ("Unknown
 			 * command"): one clean line per cycle, retried
@@ -1269,7 +1272,7 @@ private:
 	 * stream via xrebalance_part notifications).  The label is the
 	 * plugin's request id; logging it links this line to the
 	 * plugin's own "req <id>" lines.  */
-	Ev::Io<void> log_plugin_result(Jsmn::Object res) {
+	Ev::Io<void> log_plugin_result(Jsmn::Object res, double started) {
 		auto num = [&res](char const* k) -> double {
 			if (res.is_object() && res.has(k)) {
 				auto v = res[k];
@@ -1324,10 +1327,12 @@ private:
 		auto parts_failed = std::size_t(0);
 		auto reason = std::string();
 		auto best_short = std::numeric_limits<double>::max();
-		if (res.is_object() && res.has("parts")
-		 && res["parts"].is_array()) {
-			auto parts = res["parts"];
-			parts_total = parts.size();
+		/* Single-shot responses carry a top-level parts array;
+		 * multi-round responses nest one per round.  Census them
+		 * all: parts_total doubles as how many probes the request
+		 * sent, and the chokepoint spans the whole run.  */
+		auto census = [&](Jsmn::Object parts) {
+			parts_total += parts.size();
 			for (auto i = std::size_t(0); i < parts.size(); ++i) {
 				auto p = parts[i];
 				if (!p.is_object() || !p.has("status")
@@ -1368,6 +1373,19 @@ private:
 					   << std::dec << ")";
 				reason = os.str();
 			}
+		};
+		if (res.is_object() && res.has("parts")
+		 && res["parts"].is_array())
+			census(res["parts"]);
+		if (res.is_object() && res.has("rounds")
+		 && res["rounds"].is_array()) {
+			auto rounds = res["rounds"];
+			for (auto i = std::size_t(0); i < rounds.size(); ++i) {
+				auto r = rounds[i];
+				if (r.is_object() && r.has("parts")
+				 && r["parts"].is_array())
+					census(r["parts"]);
+			}
 		}
 		if (parts_failed > 1)
 			reason += " [closest of "
@@ -1382,23 +1400,54 @@ private:
 		auto detail = str("detail");
 		auto detail_note = detail.empty() ? std::string()
 				 : "; detail: " + detail;
+		auto rounds_run = num("rounds_run");
+		auto stop = str("stop_reason");
+		auto stop_note = stop.empty() ? std::string()
+			       : "; stop: " + stop;
+		auto run_note = std::string();
+		{
+			auto elapsed = Ev::now() - started;
+			auto os = std::ostringstream();
+			if (rounds_run >= 0.0)
+				os << " in "
+				   << (long long)std::llround(rounds_run)
+				   << " round(s)";
+			os << " over "
+			   << (long long)std::llround(elapsed)
+			   << "s";
+			/* Probe rate: the ceiling on the learning rate
+			 * (fresh-frontier parts add constraint dirs,
+			 * re-probes only refresh them).  */
+			if (parts_total > 0 && elapsed > 0.0)
+				os << " (" << std::fixed
+				   << std::setprecision(2)
+				   << (double(parts_total) / elapsed)
+				   << " parts/s)";
+			run_note = os.str();
+		}
 		if (delivered > 0.0)
 			return Boss::log( bus, Info
 				, "XRebalancer: transfer done%s: %zu/%zu "
-				  "parts, delivered %s msat, fee %s "
-				  "msat%s%s%s%s."
+				  "parts%s, delivered %s msat, fee %s "
+				  "msat%s%s%s%s%s."
 				, req.c_str()
 				, parts_complete, parts_total
+				, run_note.c_str()
 				, Util::Str::group_digits(std::int64_t(
 					std::llround(delivered))).c_str()
 				, Util::Str::group_digits(std::int64_t(
 					std::llround(fee))).c_str()
 				, ppm.c_str(), capped.c_str()
 				, reason.c_str()
-				, pending_note.c_str() );
+				, pending_note.c_str()
+				, stop_note.c_str() );
 		return Boss::log( bus, Info
-			, "XRebalancer: transfer failed%s: %zu part(s)%s%s%s%s."
-			, req.c_str(), parts_total, capped.c_str()
+			, "XRebalancer: transfer failed%s: %zu part(s)%s"
+			  "%s%s%s%s%s."
+			, req.c_str(), parts_total
+			, run_note.c_str()
+			, capped.c_str()
+			, stop_note.c_str()
 			, reason.c_str()
 			, detail_note.c_str(), pending_note.c_str() );
 	}
