@@ -15,6 +15,7 @@
 #include"Boss/log.hpp"
 #include"Boss/random_engine.hpp"
 #include"Ev/Io.hpp"
+#include"Ev/now.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
 #include"Ln/Amount.hpp"
@@ -27,6 +28,7 @@
 #include<cmath>
 #include<ctime>
 #include<limits>
+#include<iomanip>
 #include<map>
 #include<random>
 #include<sstream>
@@ -636,6 +638,18 @@ private:
 		return out;
 	}
 
+	/* Note active strictness benders on cycle lines: empty when
+	 * neutral, so strict operation keeps the plain format and a
+	 * granted/gained line says so itself.  */
+	std::string bender_note() const {
+		auto os = std::ostringstream();
+		if (grant_ppm > 0.0)
+			os << ", grant " << grant_ppm;
+		if (gain != 1.0)
+			os << ", gain " << gain;
+		return os.str();
+	}
+
 	/* One point on the joint(N) curve: cumulative matched volume N and
 	 * the marginal fill/drain NetPpm (and their sum) admitted at that
 	 * depth.  Mirrors the curve clboss-xrebalance-view prints.  */
@@ -930,14 +944,15 @@ private:
 		return Boss::log( bus, Info, "%s", levels_str.c_str() )
 		     + Boss::log( bus, Info
 			, "XRebalancer: cycle [matched] floor=%.1f%s window=%.0fd "
-			  "-> request=%s sat (matched volume), joint=%.1f ppm "
-			  "(fill>=%.1f + drain>=%.1f), maxfee %u ppm; "
+			  "-> request=%s msat (matched volume), joint=%.1f ppm "
+			  "(fill>=%.1f + drain>=%.1f), maxfee %u ppm%s; "
 			  "sources=%zu dests=%zu; executing."
 			, effective_floor, picked_note.c_str(), window_days
 			, Util::Str::group_digits(
-				std::int64_t(requested)).c_str(), best_joint
+				std::int64_t(requested) * 1000).c_str(), best_joint
 			, best_fill_ppm, best_drain_ppm
 			, (unsigned)maxfee
+			, bender_note().c_str()
 			, source_caps.size(), dest_caps.size()
 			).then([this, source_caps, dest_caps]() {
 			return Boss::log( bus, Debug
@@ -1011,17 +1026,19 @@ private:
 					  , drain[i].caps.end());
 		return Boss::log( bus, Info
 			, "XRebalancer: cycle [demand] trigger=%s target=%s "
-			  "window=%.0fd -> request=%s sat (deficit to fill "
+			  "window=%.0fd -> request=%s msat (deficit to fill "
 			  "edge), rung=top %.0f%% -> maxfee=%u ppm (target "
-			  "%.1f + min offered %.1f); sources=%zu dests=%zu; "
+			  "%.1f + min offered %.1f)%s; sources=%zu dests=%zu; "
 			  "executing."
 			, scid.c_str()
 			, join_caps(target->caps).c_str()
 			, window_days
-			, Util::Str::group_digits(requested).c_str()
+			, Util::Str::group_digits(
+				std::int64_t(requested) * 1000).c_str()
 			, rung
 			, (unsigned)maxfee
 			, target->ppm, min_offered
+			, bender_note().c_str()
 			, source_caps.size(), dest_caps.size()
 			).then([this, source_caps, dest_caps]() {
 			return Boss::log( bus, Debug
@@ -1130,9 +1147,10 @@ private:
 		obj.field("maxfee_ppm", std::uint64_t(maxfee_ppm));
 		obj.field("maxparts", maxparts);
 		obj.end_object();
+		auto started = Ev::now();
 		return rpc.command("xrebalance", std::move(parms))
-		.then([this](Jsmn::Object res) {
-			return log_plugin_result(std::move(res));
+		.then([this, started](Jsmn::Object res) {
+			return log_plugin_result(std::move(res), started);
 		}).catching<RpcError>([this](RpcError const& e) {
 			/* Also the plugin-not-loaded case ("Unknown
 			 * command"): one clean line per cycle, retried
@@ -1265,7 +1283,7 @@ private:
 	 * stream via xrebalance_part notifications).  The label is the
 	 * plugin's request id; logging it links this line to the
 	 * plugin's own "req <id>" lines.  */
-	Ev::Io<void> log_plugin_result(Jsmn::Object res) {
+	Ev::Io<void> log_plugin_result(Jsmn::Object res, double started) {
 		auto num = [&res](char const* k) -> double {
 			if (res.is_object() && res.has(k)) {
 				auto v = res[k];
@@ -1313,17 +1331,21 @@ private:
 		}
 		/* Part census, plus the chokepoint: among failed parts,
 		 * the one that got closest to delivery (smallest
-		 * hops_short) is the informative frontier.  */
+		 * hops_short) is the informative frontier.  Logged only
+		 * when nothing delivered: a completed part IS the
+		 * frontier, and outranks any near-miss.  */
 		auto parts_total = std::size_t(0);
 		auto parts_complete = std::size_t(0);
 		auto parts_pending = std::size_t(0);
 		auto parts_failed = std::size_t(0);
 		auto reason = std::string();
 		auto best_short = std::numeric_limits<double>::max();
-		if (res.is_object() && res.has("parts")
-		 && res["parts"].is_array()) {
-			auto parts = res["parts"];
-			parts_total = parts.size();
+		/* Single-shot responses carry a top-level parts array;
+		 * multi-round responses nest one per round.  Census them
+		 * all: parts_total doubles as how many probes the request
+		 * sent, and the chokepoint spans the whole run.  */
+		auto census = [&](Jsmn::Object parts) {
+			parts_total += parts.size();
 			for (auto i = std::size_t(0); i < parts.size(); ++i) {
 				auto p = parts[i];
 				if (!p.is_object() || !p.has("status")
@@ -1364,6 +1386,19 @@ private:
 					   << std::dec << ")";
 				reason = os.str();
 			}
+		};
+		if (res.is_object() && res.has("parts")
+		 && res["parts"].is_array())
+			census(res["parts"]);
+		if (res.is_object() && res.has("rounds")
+		 && res["rounds"].is_array()) {
+			auto rounds = res["rounds"];
+			for (auto i = std::size_t(0); i < rounds.size(); ++i) {
+				auto r = rounds[i];
+				if (r.is_object() && r.has("parts")
+				 && r["parts"].is_array())
+					census(r["parts"]);
+			}
 		}
 		if (parts_failed > 1)
 			reason += " [closest of "
@@ -1378,23 +1413,53 @@ private:
 		auto detail = str("detail");
 		auto detail_note = detail.empty() ? std::string()
 				 : "; detail: " + detail;
+		auto rounds_run = num("rounds_run");
+		auto stop = str("stop_reason");
+		auto stop_note = stop.empty() ? std::string()
+			       : "; stop: " + stop;
+		auto run_note = std::string();
+		{
+			auto elapsed = Ev::now() - started;
+			auto os = std::ostringstream();
+			if (rounds_run >= 0.0)
+				os << " in "
+				   << (long long)std::llround(rounds_run)
+				   << " round(s)";
+			os << " over "
+			   << (long long)std::llround(elapsed)
+			   << "s";
+			/* Probe rate: the ceiling on the learning rate
+			 * (fresh-frontier parts add constraint dirs,
+			 * re-probes only refresh them).  */
+			if (parts_total > 0 && elapsed > 0.0)
+				os << " (" << std::fixed
+				   << std::setprecision(2)
+				   << (double(parts_total) / elapsed)
+				   << " parts/s)";
+			run_note = os.str();
+		}
 		if (delivered > 0.0)
 			return Boss::log( bus, Info
 				, "XRebalancer: transfer done%s: %zu/%zu "
-				  "parts, delivered %s msat, fee %s "
+				  "parts%s, delivered %s msat, fee %s "
 				  "msat%s%s%s%s."
 				, req.c_str()
 				, parts_complete, parts_total
+				, run_note.c_str()
 				, Util::Str::group_digits(std::int64_t(
 					std::llround(delivered))).c_str()
 				, Util::Str::group_digits(std::int64_t(
 					std::llround(fee))).c_str()
 				, ppm.c_str(), capped.c_str()
-				, reason.c_str()
-				, pending_note.c_str() );
+				, pending_note.c_str()
+				, stop_note.c_str() );
 		return Boss::log( bus, Info
-			, "XRebalancer: transfer failed%s: %zu part(s)%s%s%s%s."
-			, req.c_str(), parts_total, capped.c_str()
+			, "XRebalancer: transfer failed%s: %zu part(s)%s"
+			  "%s%s%s%s%s."
+			, req.c_str(), parts_total
+			, run_note.c_str()
+			, capped.c_str()
+			, stop_note.c_str()
 			, reason.c_str()
 			, detail_note.c_str(), pending_note.c_str() );
 	}
