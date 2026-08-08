@@ -936,12 +936,12 @@ private:
 		return Boss::log( bus, Info, "%s", levels_str.c_str() )
 		     + Boss::log( bus, Info
 			, "XRebalancer: cycle [matched] floor=%.1f%s window=%.0fd "
-			  "-> request=%s sat (matched volume), joint=%.1f ppm "
+			  "-> request=%s msat (matched volume), joint=%.1f ppm "
 			  "(fill>=%.1f + drain>=%.1f), maxfee %u ppm%s; "
 			  "sources=%zu dests=%zu; executing."
 			, effective_floor, picked_note.c_str(), window_days
 			, Util::Str::group_digits(
-				std::int64_t(requested)).c_str(), best_joint
+				std::int64_t(requested) * 1000).c_str(), best_joint
 			, best_fill_ppm, best_drain_ppm
 			, (unsigned)maxfee
 			, bender_note().c_str()
@@ -1018,14 +1018,15 @@ private:
 					  , drain[i].caps.end());
 		return Boss::log( bus, Info
 			, "XRebalancer: cycle [demand] trigger=%s target=%s "
-			  "window=%.0fd -> request=%s sat (deficit to fill "
+			  "window=%.0fd -> request=%s msat (deficit to fill "
 			  "edge), rung=top %.0f%% -> maxfee=%u ppm (target "
 			  "%.1f + min offered %.1f)%s; sources=%zu dests=%zu; "
 			  "executing."
 			, scid.c_str()
 			, join_caps(target->caps).c_str()
 			, window_days
-			, Util::Str::group_digits(requested).c_str()
+			, Util::Str::group_digits(
+				std::int64_t(requested) * 1000).c_str()
 			, rung
 			, (unsigned)maxfee
 			, target->ppm, min_offered
