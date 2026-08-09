@@ -1335,7 +1335,9 @@ private:
 		}
 		/* Part census, plus the chokepoint: among failed parts,
 		 * the one that got closest to delivery (smallest
-		 * hops_short) is the informative frontier.  */
+		 * hops_short) is the informative frontier.  Logged only
+		 * when nothing delivered: a completed part IS the
+		 * frontier, and outranks any near-miss.  */
 		auto parts_total = std::size_t(0);
 		auto parts_complete = std::size_t(0);
 		auto parts_pending = std::size_t(0);
@@ -1444,7 +1446,7 @@ private:
 			return Boss::log( bus, Info
 				, "XRebalancer: transfer done%s: %zu/%zu "
 				  "parts%s, delivered %s msat, fee %s "
-				  "msat%s%s%s%s%s."
+				  "msat%s%s%s%s."
 				, req.c_str()
 				, parts_complete, parts_total
 				, run_note.c_str()
@@ -1453,7 +1455,6 @@ private:
 				, Util::Str::group_digits(std::int64_t(
 					std::llround(fee))).c_str()
 				, ppm.c_str(), capped.c_str()
-				, reason.c_str()
 				, pending_note.c_str()
 				, stop_note.c_str() );
 		return Boss::log( bus, Info
