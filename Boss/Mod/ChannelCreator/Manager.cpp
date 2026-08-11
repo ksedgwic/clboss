@@ -91,6 +91,28 @@ void Manager::start() {
 
 Ev::Io<void>
 Manager::on_request_channel_creation(Ln::Amount amt) {
+	/* The Planner asserts both of these at construction; check
+	 * here and skip the cycle instead of aborting.  The first
+	 * can fail if onchain funds changed between the decider's
+	 * trigger and now; the second is enforced at option
+	 * validation, so failing it here is a bug.  */
+	if (amt < min_amount * 2.0)
+		return Boss::log( bus, Warn
+				, "ChannelCreator: Onchain amount %s "
+				  "below twice the minimum channel size "
+				  "%s, not creating channels."
+				, std::string(amt).c_str()
+				, std::string(min_amount).c_str()
+				);
+	if (min_amount + min_remaining > max_amount)
+		return Boss::log( bus, Error
+				, "ChannelCreator: Channel size limits "
+				  "(min %s, max %s) violate the planner "
+				  "precondition, not creating channels."
+				, std::string(min_amount).c_str()
+				, std::string(max_amount).c_str()
+				);
+
 	auto num_chans = std::make_shared<std::size_t>();
 	auto plan = std::make_shared<std::map<Ln::NodeId, Ln::Amount>>();
 

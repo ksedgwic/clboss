@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- Channel size options that violate the channel-creation planner's
+  sizing requirement (`max-channel >= 3 * min-channel + 20000`
+  satoshis) no longer crash CLBOSS on the first creation run after
+  startup (#147).  The maximum is kept, since it sets typical open
+  size, and the minimum is lowered to the largest fitting value,
+  with a warning logged.  The creator also now skips a creation
+  cycle with a log line, instead of aborting, if onchain funds
+  drop below twice the minimum channel size between the decider's
+  trigger and planning (#137).
+
 ## [0.16.3] - Unreleased
 
 ### Security

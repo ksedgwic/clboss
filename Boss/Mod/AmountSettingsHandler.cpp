@@ -24,14 +24,21 @@ auto const default_reserve =     Ln::Amount::sat(   30000);
 
 /* The absolute lowest min_channel setting.  */
 auto const min_min_channel =     Ln::Amount::sat(  500000);
-/* How much larger the max_channel should be over the min_channel.  */
-auto const max_channel_factor = double(2.0);
 /* How much larger the channel-creation trigger should be over
  * the min_channel.  */
 auto const trigger_factor = double(2.0);
 /* How much to add to the channel-creation trigger above, to get
  * the amount to leave after creation.  */
 auto const additional_remaining = Ln::Amount::sat(20000);
+
+/* The ChannelCreator Planner requires
+ *   min_channel + min_remaining <= max_channel
+ * where min_remaining = trigger_factor * min_channel
+ * + additional_remaining.  This is the lowest max_channel that
+ * satisfies it at the lowest allowed min_channel; below this no
+ * valid min_channel exists.  */
+auto const min_usable_max_channel =
+	(1.0 + trigger_factor) * min_min_channel + additional_remaining;
 
 Ln::Amount parse_sats(Jsmn::Object value) {
 	auto is = std::istringstream(std::string(value));
@@ -134,19 +141,19 @@ private:
 						  min_min_channel.to_sat()
 						);
 			}
-			if (settings->max_channel < ( max_channel_factor
-						    * settings->min_channel
-						    )) {
-				settings->max_channel = ( max_channel_factor
-							* settings->min_channel
-							);
-				act += Boss::log( bus, Info
+			if (settings->max_channel < min_usable_max_channel) {
+				act += Boss::log( bus, Warn
 						, "AmountSettingsHandler: "
-						  "--clboss-max-channel too "
-						  "low, forced to %u."
+						  "--clboss-max-channel %u too "
+						  "low for any allowed "
+						  "--clboss-min-channel, "
+						  "forced to %u."
 						, (unsigned int)
 						  settings->max_channel.to_sat()
+						, (unsigned int)
+						  min_usable_max_channel.to_sat()
 						);
+				settings->max_channel = min_usable_max_channel;
 			}
 
 			/* Compute the rest.  */
@@ -156,6 +163,50 @@ private:
 			settings->min_remaining = settings->min_amount
 						+ additional_remaining
 						;
+
+			/* The ChannelCreator Planner asserts
+			 *   min_channel + min_remaining <= max_channel
+			 * at construction, so a violating config would
+			 * abort on the first channel-creation run.
+			 * max_channel is the knob that sets typical
+			 * channel size: keep it, and lower min_channel
+			 * to the largest value that fits.  */
+			if ( settings->min_channel + settings->min_remaining
+			   > settings->max_channel
+			   ) {
+				auto lowered = Ln::Amount::sat(
+					( settings->max_channel
+					- additional_remaining
+					).to_sat()
+					/ (std::uint64_t)(1.0 + trigger_factor)
+				);
+				act += Boss::log( bus, Warn
+						, "AmountSettingsHandler: "
+						  "--clboss-min-channel %u "
+						  "and --clboss-max-channel %u "
+						  "conflict (max must be at "
+						  "least %u), "
+						  "--clboss-min-channel "
+						  "forced to %u."
+						, (unsigned int)
+						  settings->min_channel.to_sat()
+						, (unsigned int)
+						  settings->max_channel.to_sat()
+						, (unsigned int)
+						  ( settings->min_channel
+						  + settings->min_remaining
+						  ).to_sat()
+						, (unsigned int)
+						  lowered.to_sat()
+						);
+				settings->min_channel = lowered;
+				settings->min_amount = trigger_factor
+						     * settings->min_channel
+						     ;
+				settings->min_remaining = settings->min_amount
+							+ additional_remaining
+							;
+			}
 
 			/* Grab the settings and send it.  */
 			auto msg = std::move(settings);
