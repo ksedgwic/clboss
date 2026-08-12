@@ -671,6 +671,7 @@ TESTS = \
 	tests/boss/test_xrebalancepartmonitor \
 	tests/boss/test_xrebalancepredict \
 	tests/boss/test_xrebalancepredictor \
+	tests/boss/test_xrebalancer \
 	tests/boss/test_peerjudge_algo \
 	tests/boss/test_peerjudge_datagatherer \
 	tests/boss/test_peerstatistician \
