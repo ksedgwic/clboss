@@ -2,6 +2,7 @@
 #include"Boss/Mod/Waiter.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/ModG/RebalanceModeProxy.hpp"
+#include"Boss/ModG/RebalanceUnmanagerProxy.hpp"
 #include"Boss/ModG/RpcProxy.hpp"
 #include"Boss/Msg/DbResource.hpp"
 #include"Boss/Msg/DemandObserved.hpp"
@@ -31,6 +32,7 @@
 #include<iomanip>
 #include<map>
 #include<random>
+#include<set>
 #include<sstream>
 #include<string>
 #include<vector>
@@ -76,6 +78,7 @@ private:
 	Waiter& waiter;
 	ModG::RebalanceModeProxy mode_proxy;
 	ModG::RpcProxy rpc;
+	ModG::RebalanceUnmanagerProxy unmanager;
 	Sqlite3::Db db;
 
 	double per_hour;
@@ -720,10 +723,51 @@ private:
 		return ladder;
 	}
 
+	/* Fetch the "balance"-unmanaged set (clboss-unmanage), then
+	 * plan; unmanaged peers are excluded from both pools, which
+	 * covers matched and demand cycles in either executor mode.
+	 * Channeled peers the set withholds are named in one Debug
+	 * line per cycle, so an operator can see the exclusion doing
+	 * its work.  */
 	Ev::Io<void>
 	plan_and_log( std::shared_ptr<std::vector<Chan>> chans
 		    , std::shared_ptr<std::map<Ln::NodeId, NetPpm>> net
 		    , std::string const& demand_scid
+		    ) {
+		return unmanager.get_unmanaged().then([ this, chans, net
+						      , demand_scid
+						      ](std::set<Ln::NodeId> const* unmanaged) {
+			auto excluded = std::ostringstream();
+			auto seen = std::set<Ln::NodeId>();
+			for (auto const& c : *chans) {
+				if (unmanaged->count(c.node) == 0)
+					continue;
+				if (!seen.insert(c.node).second)
+					continue;
+				if (seen.size() > 1)
+					excluded << " ";
+				excluded << std::string(c.node);
+			}
+			auto act = Ev::lift();
+			if (!seen.empty())
+				act = Boss::log( bus, Debug
+					, "XRebalancer: unmanaged (balance), "
+					  "excluded: %s"
+					, excluded.str().c_str() );
+			return std::move(act).then([ this, chans, net
+						   , demand_scid, unmanaged
+						   ]() {
+				return plan_and_log( chans, net, demand_scid
+						   , *unmanaged );
+			});
+		});
+	}
+
+	Ev::Io<void>
+	plan_and_log( std::shared_ptr<std::vector<Chan>> chans
+		    , std::shared_ptr<std::map<Ln::NodeId, NetPpm>> net
+		    , std::string const& demand_scid
+		    , std::set<Ln::NodeId> const& unmanaged
 		    ) {
 		/* Aggregate channels into peers; deficits aim at the band
 		 * edges on the aggregate Loc%.  A peer with one full and
@@ -761,6 +805,8 @@ private:
 		auto drain = std::vector<PoolItem>();
 		for (auto const& p : peers) {
 			if (!p.online)
+				continue;
+			if (unmanaged.count(p.node) != 0)
 				continue;
 			auto it = net->find(p.node);
 			if (it == net->end())
@@ -1484,7 +1530,8 @@ public:
 
 	explicit
 	Impl(S::Bus& bus_, Waiter& waiter_)
-		: bus(bus_), waiter(waiter_), mode_proxy(bus_), rpc(bus_) {
+		: bus(bus_), waiter(waiter_), mode_proxy(bus_), rpc(bus_)
+		, unmanager(bus_) {
 		start();
 	}
 };

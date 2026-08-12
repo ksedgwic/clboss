@@ -651,6 +651,7 @@ TESTS = \
 	tests/boss/test_recentearnings \
 	tests/boss/test_earningshistory \
 	tests/boss/test_xrebalancepartmonitor \
+	tests/boss/test_xrebalancer \
 	tests/boss/test_peerjudge_algo \
 	tests/boss/test_peerjudge_datagatherer \
 	tests/boss/test_peerstatistician \
