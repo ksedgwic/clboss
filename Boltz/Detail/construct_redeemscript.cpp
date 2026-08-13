@@ -4,10 +4,6 @@
 
 namespace {
 
-/* Bitcoin Script opcodes for the reverse submarine swap HTLC template.
- * Same template as Electrum WITNESS_TEMPLATE_SWAP and
- * boltz-core swapScript().
- */
 constexpr std::uint8_t OP_SIZE                = 0x82;
 constexpr std::uint8_t OP_EQUAL               = 0x87;
 constexpr std::uint8_t OP_IF                  = 0x63;

@@ -14,10 +14,6 @@ namespace Boltz { namespace Detail {
  * @brief Rebuilds the expected reverse submarine swap
  * HTLC redeemScript from the known swap parameters.
  *
- * Used by SwapSetupHandler to byte-compare against the
- * server-provided redeemScript, following Electrum's
- * _construct_swap_scriptcode pattern.
- *
  * The script template is:
  *   OP_SIZE PUSH(32) OP_EQUAL OP_IF
  *     OP_HASH160 PUSH(20) <hash160> OP_EQUALVERIFY

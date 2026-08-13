@@ -152,17 +152,6 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 			});
 		}
 
-		/* Rebuild the expected script from our known parameters and
-		 * byte-compare, following the same pattern as Electrum's
-		 * _construct_swap_scriptcode / _check_swap_scriptcode.
-		 * Ref: electrum/submarine_swaps.py
-		 *   "if redeem_script != _construct_swap_scriptcode(...): raise"
-		 */
-		// SPEC (Boltz dont-trust-verify.md): "clients should verify that the redeem script
-		// is valid by checking preimage hash, public key, timeout block height of the HTLC and OP codes"
-		// REF: https://github.com/BoltzExchange/boltz-backend/blob/master/docs/dont-trust-verify.md
-		// REF: electrum/submarine_swaps.py _check_swap_scriptcode(): rebuilds script from
-		//   scratch and compares: "if redeem_script != _construct_swap_scriptcode(...): raise"
 		{
 			auto expected = Detail::construct_redeemscript
 				( script_hash160
