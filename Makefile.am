@@ -599,6 +599,7 @@ TESTS = \
 	tests/bitcoin/test_tx \
 	tests/boltz/test_match_lockscript \
 	tests/boltz/test_construct_redeemscript \
+	tests/boltz/test_swap_setup_handler \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
 	tests/boss/channelcandidateinvestigator/test_secretary \
 	tests/boss/test_availablerpccommandsannouncer \

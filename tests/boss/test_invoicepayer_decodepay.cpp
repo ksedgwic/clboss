@@ -92,25 +92,44 @@ std::string make_decode_response( std::string const& payment_hash
 				, std::uint64_t amount_msat
 				, double created_at
 				, double expiry
+				, bool include_hash = true
+				, bool include_amount = true
+				, bool include_created = true
+				, bool include_expiry = true
 				) {
 	auto os = std::ostringstream();
 	os << R"({
 	   "type": "bolt11 invoice",
-	   "currency": "tb",
+	   "currency": "tb",)";
+	if (include_created) {
+	   os << R"(
 	   "created_at": )"
-	   << created_at << R"(,
+	   << created_at << R"(,)";
+	}
+	if (include_expiry) {
+	   os << R"(
 	   "expiry": )"
-	   << expiry << R"(,
-	   "payee": "0225bbc2a7341993cd592d7b0c185bb8c6359cc1dd1337975c6d41354e4703bf64",
+	   << expiry << R"(,)";
+	}
+	   os << R"(
+	   "payee": "0225bbc2a7341993cd592d7b0c185bb8c6359cc1dd1337975c6d41354e4703bf64",)";
+	if (include_amount) {
+	   os << R"(
 	   "amount_msat": )"
-	   << amount_msat << R"(,
+	   << amount_msat << R"(,)";
+	}
+	   os << R"(
 	   "description": "decode testing",
 	   "min_final_cltv_expiry": 10,
 	   "payment_secret": "d8577cf3c01f0b9b124adee87f552c2b3195db83f4dea30874d5b27d26201e85",
 	   "features": "02024100",
-	   "routes": [],
+	   "routes": [],)";
+	if (include_hash) {
+	   os << R"(
 	   "payment_hash": ")"
-	   << payment_hash << R"(",
+	   << payment_hash << R"(",)";
+	}
+	   os << R"(
 	   "signature": "3045022100e745b9b7fe8133c7385e40561217e4717f7a2868c60d794b160047512c8d3a79022074619d6d2ee5c07b3099ca3684f896886aab04854bfade8f5a0f9014d5418ab6",
 	   "valid": true
 	})";
@@ -304,13 +323,17 @@ Ev::Io<void> wait_for(std::shared_ptr<bool> flag,
 
 struct Scenario {
 	char const* label;
-	std::string expected_hash;       /* PayInvoice.expected_payment_hash  */
-	std::uint64_t expected_amount;   /* PayInvoice.expected_amount_msat   */
-	std::string decode_hash;         /* decode response payment_hash      */
-	std::uint64_t decode_amount;     /* decode response amount_msat       */
+	std::string expected_hash;
+	std::uint64_t expected_amount;
+	std::string decode_hash;
+	std::uint64_t decode_amount;
 	double decode_created_at;
 	double decode_expiry;
 	bool expect_pay;
+	bool include_hash = true;
+	bool include_amount = true;
+	bool include_created = true;
+	bool include_expiry = true;
 };
 
 int run_scenario(Scenario const& sc) {
@@ -332,7 +355,9 @@ int run_scenario(Scenario const& sc) {
 
 	auto decode_response = make_decode_response(
 		sc.decode_hash, sc.decode_amount,
-		sc.decode_created_at, sc.decode_expiry
+		sc.decode_created_at, sc.decode_expiry,
+		sc.include_hash, sc.include_amount,
+		sc.include_created, sc.include_expiry
 	);
 	auto server = MockRpcServer( std::move(server_socket)
 				   , pay_replied
@@ -464,6 +489,45 @@ int main() {
 		      , now
 		      , 604800
 		      , true
+	});
+
+	/* 8. Missing payment_hash in decode — fail-closed, pay refused.  */
+	run_scenario({ "missing payment_hash"
+		      , GOOD_HASH
+		      , 0
+		      , GOOD_HASH
+		      , GOOD_AMOUNT
+		      , now
+		      , 604800
+		      , false
+		      , false          /* include_hash = false */
+	});
+
+	/* 9. Missing amount_msat in decode — fail-closed, pay refused.  */
+	run_scenario({ "missing amount_msat"
+		      , ""
+		      , GOOD_AMOUNT
+		      , GOOD_HASH
+		      , GOOD_AMOUNT
+		      , now
+		      , 604800
+		      , false
+		      , true           /* include_hash    */
+		      , false          /* include_amount */
+	});
+
+	/* 10. Missing created_at in decode — fail-closed, pay refused.  */
+	run_scenario({ "missing created_at"
+		      , GOOD_HASH
+		      , 0
+		      , GOOD_HASH
+		      , GOOD_AMOUNT
+		      , now
+		      , 604800
+		      , false
+		      , true           /* include_hash    */
+		      , true           /* include_amount  */
+		      , false          /* include_created */
 	});
 
 	return 0;
