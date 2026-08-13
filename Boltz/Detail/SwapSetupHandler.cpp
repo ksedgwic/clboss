@@ -199,30 +199,6 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 			});
 		}
 
-		// SPEC (Boltz dont-trust-verify.md): "clients should calculate swap amounts locally to
-		// verify that expectedAmount in the API responses matches the locally calculated amount"
-		// REF: electrum/submarine_swaps.py _sanity_check_swap_costs(): rejects if costs_ratio > 0.15
-		// REF: electrum commit cbdaa035 (PR #10827)
-		{
-			auto offchain_sat = offchainAmount.to_sat();
-			auto actual_fee = offchain_sat - tmp_onchainAmount;
-			if (actual_fee > 0 && offchain_sat > 0) {
-				auto fee_ratio = double(actual_fee) / double(offchain_sat);
-				if (fee_ratio > 0.15) {
-					auto os = std::ostringstream();
-					os << "Swap fee ratio " << fee_ratio
-					   << " exceeds 15% limit (fee="
-					   << actual_fee << ", amount="
-					   << offchain_sat << ")"
-					    ;
-					return loge(os.str()).then([]() {
-						throw Fail();
-						return Ev::lift();
-					});
-				}
-			}
-		}
-
 		/* Check we have enough time.  */
 		if ( current_blockheight + min_timeout > tmp_timeoutBlockheight
 		  || current_blockheight + max_timeout < tmp_timeoutBlockheight

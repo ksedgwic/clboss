@@ -123,6 +123,7 @@ private:
 	Jsmn::Parser parser;
 	std::deque<Jsmn::Object> requests;
 	std::shared_ptr<bool> pay_replied;
+	std::shared_ptr<bool> server_done;
 	std::string decode_response;
 	bool expect_pay;
 
@@ -151,6 +152,38 @@ private:
 			for (auto& p : parsed)
 				requests.push_back(std::move(p));
 			return read_request(retries + 1);
+		});
+	}
+
+	Ev::Io<Jsmn::Object> read_request_bounded(std::size_t max_retries
+						  , std::size_t retries = 0) {
+		return Ev::yield().then([this]() {
+			if (requests.empty())
+				return Ev::lift(Jsmn::Object());
+			auto req = std::move(requests.front());
+			requests.pop_front();
+			return Ev::lift(std::move(req));
+		}).then([this, max_retries, retries](Jsmn::Object req) {
+			if (!req.is_null())
+				return Ev::lift(std::move(req));
+			if (retries >= max_retries)
+				return Ev::lift(Jsmn::Object());
+
+			char buf[512];
+			auto rd = ssize_t();
+			do {
+				rd = read(socket.get(), buf, sizeof(buf));
+			} while (rd < 0 && errno == EINTR);
+			if (rd < 0 && (errno == EWOULDBLOCK || errno == EAGAIN))
+				return read_request_bounded(max_retries
+							   , retries + 1);
+			if (rd <= 0)
+				return Ev::lift(Jsmn::Object());
+
+			auto parsed = parser.feed(std::string(buf, std::size_t(rd)));
+			for (auto& p : parsed)
+				requests.push_back(std::move(p));
+			return read_request_bounded(max_retries, retries + 1);
 		});
 	}
 
@@ -198,12 +231,14 @@ private:
 public:
 	MockRpcServer( Net::Fd socket_
 		     , std::shared_ptr<bool> pay_replied_
+		     , std::shared_ptr<bool> server_done_
 		     , std::string decode_response_
 		     , bool expect_pay_
 		     ) : socket(std::move(socket_))
 		       , parser()
 		       , requests()
 		       , pay_replied(std::move(pay_replied_))
+		       , server_done(std::move(server_done_))
 		       , decode_response(std::move(decode_response_))
 		       , expect_pay(expect_pay_)
 	{
@@ -223,10 +258,14 @@ public:
 			assert(std::string(params["string"]) == invoice);
 			return reply_result(id, decode_response);
 		}).then([this, invoice]() {
-			if (!expect_pay)
-				/* Payer should reject the invoice; no pay
-				 * request will arrive.  */
-				return Ev::lift();
+			if (!expect_pay) {
+				return read_request_bounded(500).then(
+					[this](Jsmn::Object req) {
+					if (!req.is_null())
+						*pay_replied = true;
+					return Ev::lift();
+				});
+			}
 			return read_request().then([this, invoice](Jsmn::Object req) {
 				auto id = assert_method(req, "pay");
 				auto params = req["params"];
@@ -244,6 +283,9 @@ public:
 				*pay_replied = true;
 				return Ev::lift();
 			});
+		}).then([this]() {
+			*server_done = true;
+			return Ev::lift();
 		});
 	}
 };
@@ -257,18 +299,6 @@ Ev::Io<void> wait_for(std::shared_ptr<bool> flag,
 		return Ev::yield().then([flag, retries]() {
 			return wait_for(flag, retries + 1);
 		});
-	});
-}
-
-/* Yield a bounded number of times to let async tasks settle, without
- * requiring a specific flag.  Used for rejection scenarios where the
- * payer throws internally and no pay_replied flag is ever set.
- */
-Ev::Io<void> settle(std::size_t remaining = 200) {
-	return Ev::yield().then([remaining]() {
-		if (remaining == 0)
-			return Ev::lift();
-		return settle(remaining - 1);
 	});
 }
 
@@ -292,6 +322,7 @@ int run_scenario(Scenario const& sc) {
 	auto signer = DummySigner();
 	auto db = Sqlite3::Db(":memory:");
 	auto pay_replied = std::make_shared<bool>(false);
+	auto server_done = std::make_shared<bool>(false);
 
 	int sockets[2];
 	auto sockres = socketpair(AF_UNIX, SOCK_STREAM, 0, sockets);
@@ -305,6 +336,7 @@ int run_scenario(Scenario const& sc) {
 	);
 	auto server = MockRpcServer( std::move(server_socket)
 				   , pay_replied
+				   , server_done
 				   , decode_response
 				   , sc.expect_pay
 				   );
@@ -332,9 +364,7 @@ int run_scenario(Scenario const& sc) {
 	}).then([&]() {
 		return Ev::concurrent(client_code);
 	}).then([&]() {
-		if (sc.expect_pay)
-			return wait_for(pay_replied);
-		return settle();
+		return wait_for(server_done);
 	}).then([&]() {
 		return bus.raise(Boss::Shutdown{});
 	}).then([]() {

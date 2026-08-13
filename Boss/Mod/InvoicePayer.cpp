@@ -84,22 +84,31 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice, std::string expected_hash,
 			throw Jsmn::TypeError();
 		}
 
-		if (!exp_hash->empty() && res.has("payment_hash")) {
+		if (!exp_hash->empty()) {
+			if (!res.has("payment_hash")) {
+				throw Jsmn::TypeError();
+			}
 			auto actual_hash = std::string(res["payment_hash"]);
 			if (actual_hash != *exp_hash) {
 				throw Jsmn::TypeError();
 			}
 		}
 
-		if (exp_amt != 0 && res.has("amount_msat")) {
+		if (exp_amt != 0) {
+			if (!res.has("amount_msat")) {
+				throw Jsmn::TypeError();
+			}
 			auto actual_amt = (std::uint64_t)(double)res["amount_msat"];
 			if (actual_amt != exp_amt) {
 				throw Jsmn::TypeError();
 			}
 		}
 
-		if (!exp_hash->empty() && res.has("timestamp") && res.has("expiry")) {
-			auto created = (std::time_t)(double)res["timestamp"];
+		if (!exp_hash->empty()) {
+			if (!res.has("created_at") || !res.has("expiry")) {
+				throw Jsmn::TypeError();
+			}
+			auto created = (std::time_t)(double)res["created_at"];
 			auto expiry = (std::time_t)(double)res["expiry"];
 			auto now = std::time(nullptr);
 			if (created + expiry < now) {

@@ -509,7 +509,7 @@ private:
 					  , provider_name
 					  ](Sqlite3::Tx tx) {
 			auto uuid = needs_invoice.front();
-			auto swap_amount = Ln::Amount::sat(0);
+			auto swap_amount = Ln::Amount::msat(0);
 
 			auto amt_query = tx.query(R"QRY(
 			SELECT amount FROM "SwapManager"
@@ -519,7 +519,7 @@ private:
 				.bind(":uuid", std::string(uuid))
 				.execute();
 			for (auto& r : amt_query) {
-				swap_amount = Ln::Amount::sat(r.get<std::uint64_t>(0));
+				swap_amount = Ln::Amount::msat(r.get<std::uint64_t>(0));
 				break;
 			}
 
