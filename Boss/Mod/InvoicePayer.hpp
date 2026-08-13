@@ -4,6 +4,8 @@
 #include<vector>
 #include<string>
 
+#include"Boss/Msg/PayInvoice.hpp"
+
 namespace Boss { namespace Mod { class Rpc; }}
 namespace Ev { template<typename a> class Io; }
 namespace S { class Bus; }
@@ -26,10 +28,10 @@ private:
 	S::Bus& bus;
 	Boss::Mod::Rpc* rpc;
 
-	std::vector<std::string> pending_invoices;
+	std::vector<Msg::PayInvoice> pending_invoices;
 
 	void start();
-	Ev::Io<void> pay(std::string);
+	Ev::Io<void> pay(std::string, std::string, std::uint64_t);
 
 public:
 	InvoicePayer() =delete;

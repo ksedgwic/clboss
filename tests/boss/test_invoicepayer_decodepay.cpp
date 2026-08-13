@@ -259,7 +259,7 @@ int main() {
 			false
 		});
 	}).then([&]() {
-		return bus.raise(Boss::Msg::PayInvoice{invoice});
+		return bus.raise(Boss::Msg::PayInvoice{invoice, "", 0});
 	});
 
 	auto code = Ev::lift().then([&]() {

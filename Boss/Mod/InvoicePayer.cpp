@@ -11,6 +11,7 @@
 #include"S/Bus.hpp"
 #include"Util/Str.hpp"
 #include<memory>
+#include<ctime>
 
 namespace {
 
@@ -39,9 +40,8 @@ void InvoicePayer::start() {
 	bus.subscribe<Msg::Init
 		     >([this](Msg::Init const& init) {
 		rpc = &init.rpc;
-		/* Pay pending invoices.  */
-		auto f = [this](std::string invoice) {
-			return pay(std::move(invoice));
+		auto f = [this](Msg::PayInvoice p) {
+			return pay(std::move(p.invoice), std::move(p.expected_payment_hash), p.expected_amount_msat);
 		};
 		return Boss::concurrent(
 			Ev::foreach(f, std::move(pending_invoices))
@@ -51,16 +51,17 @@ void InvoicePayer::start() {
 	bus.subscribe<Msg::PayInvoice
 		     >([this](Msg::PayInvoice const& p) {
 		if (!rpc) {
-			/* Not yet ready, add to pending.  */
-			pending_invoices.push_back(p.invoice);
+			pending_invoices.push_back(p);
 			return Ev::lift();
 		}
-		return Boss::concurrent(pay(p.invoice));
+		return Boss::concurrent(pay(p.invoice, p.expected_payment_hash, p.expected_amount_msat));
 	});
 }
 
-Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
+Ev::Io<void> InvoicePayer::pay(std::string n_invoice, std::string expected_hash, std::uint64_t expected_amount) {
 	auto inv = std::make_shared<std::string>(std::move(n_invoice));
+	auto exp_hash = std::make_shared<std::string>(std::move(expected_hash));
+	auto exp_amt = expected_amount;
 	return Ev::lift().then([this, inv]() {
 		return Boss::log( bus, Debug
 				, "InvoicePayer: Initiating: %s"
@@ -73,7 +74,7 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 			.end_object()
 			;
 		return rpc->command("decode", std::move(parms));
-	}).then([this, inv](Jsmn::Object res) {
+	}).then([this, inv, exp_hash, exp_amt](Jsmn::Object res) {
 		if (!res.has("type")
 		|| std::string(res["type"]) != "bolt11 invoice"
 		|| !res.has("valid")
@@ -81,6 +82,29 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 		|| !bool(res["valid"])
 		) {
 			throw Jsmn::TypeError();
+		}
+
+		if (!exp_hash->empty() && res.has("payment_hash")) {
+			auto actual_hash = std::string(res["payment_hash"]);
+			if (actual_hash != *exp_hash) {
+				throw Jsmn::TypeError();
+			}
+		}
+
+		if (exp_amt != 0 && res.has("amount_msat")) {
+			auto actual_amt = (std::uint64_t)(double)res["amount_msat"];
+			if (actual_amt != exp_amt) {
+				throw Jsmn::TypeError();
+			}
+		}
+
+		if (!exp_hash->empty() && res.has("timestamp") && res.has("expiry")) {
+			auto created = (std::time_t)(double)res["timestamp"];
+			auto expiry = (std::time_t)(double)res["expiry"];
+			auto now = std::time(nullptr);
+			if (created + expiry < now) {
+				throw Jsmn::TypeError();
+			}
 		}
 
 		/* Check the features and see if this is MPP-enabled.  */

@@ -509,6 +509,19 @@ private:
 					  , provider_name
 					  ](Sqlite3::Tx tx) {
 			auto uuid = needs_invoice.front();
+			auto swap_amount = Ln::Amount::sat(0);
+
+			auto amt_query = tx.query(R"QRY(
+			SELECT amount FROM "SwapManager"
+			 WHERE uuid = :uuid
+			     ;
+			)QRY")
+				.bind(":uuid", std::string(uuid))
+				.execute();
+			for (auto& r : amt_query) {
+				swap_amount = Ln::Amount::sat(r.get<std::uint64_t>(0));
+				break;
+			}
 
 			tx.query(R"QRY(
 			UPDATE "SwapManager"
@@ -538,7 +551,7 @@ private:
 				.execute();
 			tx.commit();
 			/* Now send the PayInvoice message.  */
-			return bus.raise(Msg::PayInvoice{swap->invoice});
+			return bus.raise(Msg::PayInvoice{swap->invoice, std::string(swap->hash), swap_amount.to_msat()});
 		}).then([this, swap]() {
 			auto uuid = needs_invoice.front();
 			return Boss::log( bus, Debug
