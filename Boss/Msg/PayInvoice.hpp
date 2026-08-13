@@ -14,7 +14,7 @@ namespace Boss { namespace Msg {
 struct PayInvoice {
 	std::string invoice;
 	std::string expected_payment_hash;
-	std::uint64_t expected_amount_msat;
+	std::uint64_t expected_amount_msat = 0;
 };
 
 }}
