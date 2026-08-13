@@ -192,7 +192,6 @@ void run_test( MockConn::Mode mode
 	);
 	auto conn = MockConn(mode, current_height, their_pubkey_hex, timeout_delta);
 	auto db = Sqlite3::Db(":memory:");
-	init_db(db);
 
 	auto offchain = Ln::Amount::sat(100000);
 	auto handler = Boltz::Detail::SwapSetupHandler::create(

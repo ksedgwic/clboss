@@ -551,7 +551,7 @@ private:
 				.execute();
 			tx.commit();
 			/* Now send the PayInvoice message.  */
-			return bus.raise(Msg::PayInvoice{swap->invoice, std::string(swap->hash), swap_amount.to_msat()});
+			return bus.raise(Msg::PayInvoice{swap->invoice, std::string(swap->hash), swap_amount.to_sat() * 1000});
 		}).then([this, swap]() {
 			auto uuid = needs_invoice.front();
 			return Boss::log( bus, Debug

@@ -8,6 +8,7 @@
 #include"Ev/foreach.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
+#include"Ln/Amount.hpp"
 #include"S/Bus.hpp"
 #include"Util/Str.hpp"
 #include<memory>
@@ -98,7 +99,7 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice, std::string expected_hash,
 			if (!res.has("amount_msat")) {
 				throw Jsmn::TypeError();
 			}
-			auto actual_amt = (std::uint64_t)(double)res["amount_msat"];
+			auto actual_amt = Ln::Amount::object(res["amount_msat"]).to_msat();
 			if (actual_amt != exp_amt) {
 				throw Jsmn::TypeError();
 			}
