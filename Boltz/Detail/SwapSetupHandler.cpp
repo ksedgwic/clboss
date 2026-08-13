@@ -2,6 +2,7 @@
 #include"Boltz/ConnectionIF.hpp"
 #include"Boltz/Detail/SwapSetupHandler.hpp"
 #include"Boltz/Detail/compute_preimage.hpp"
+#include"Boltz/Detail/construct_redeemscript.hpp"
 #include"Boltz/Detail/match_lockscript.hpp"
 #include"Boltz/EnvIF.hpp"
 #include"Boltz/SwapInfo.hpp"
@@ -16,24 +17,6 @@
 #include<sstream>
 
 namespace {
-
-// Bitcoin Script opcodes for the reverse submarine swap HTLC template.
-// Same template as Electrum WITNESS_TEMPLATE_SWAP and boltz-core swapScript().
-constexpr std::uint8_t OP_SIZE              = 0x82;
-constexpr std::uint8_t OP_EQUAL             = 0x87;
-constexpr std::uint8_t OP_IF                = 0x63;
-constexpr std::uint8_t OP_HASH160           = 0xa9;
-constexpr std::uint8_t OP_EQUALVERIFY       = 0x88;
-constexpr std::uint8_t OP_ELSE              = 0x67;
-constexpr std::uint8_t OP_DROP              = 0x75;
-constexpr std::uint8_t OP_CHECKLOCKTIMEVERIFY = 0xb1;
-constexpr std::uint8_t OP_ENDIF             = 0x68;
-constexpr std::uint8_t OP_CHECKSIG          = 0xac;
-constexpr std::uint8_t PUSHBYTE_1           = 0x01;
-constexpr std::uint8_t PUSHBYTE_3           = 0x03;
-constexpr std::uint8_t PUSHBYTE_20          = 0x14;
-constexpr std::uint8_t PUSHBYTE_32          = 0x20;
-constexpr std::uint8_t PUSHBYTE_33          = 0x21;
 
 /* Thrown to get out and fail.  */
 struct Fail {};
@@ -181,42 +164,12 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		// REF: electrum/submarine_swaps.py _check_swap_scriptcode(): rebuilds script from
 		//   scratch and compares: "if redeem_script != _construct_swap_scriptcode(...): raise"
 		{
-			auto expected = std::vector<std::uint8_t>();
-			expected.push_back(OP_SIZE);
-			expected.push_back(PUSHBYTE_1);
-			expected.push_back(PUSHBYTE_32);
-			expected.push_back(OP_EQUAL);
-			expected.push_back(OP_IF);
-			expected.push_back(OP_HASH160);
-			expected.push_back(PUSHBYTE_20);
-			{
-				std::uint8_t buf[20];
-				script_hash160.to_buffer(buf);
-				expected.insert(expected.end(), buf, buf + 20);
-			}
-			expected.push_back(OP_EQUALVERIFY);
-			expected.push_back(PUSHBYTE_33);
-			{
-				std::uint8_t buf[33];
-				script_mypubkey.to_buffer(buf);
-				expected.insert(expected.end(), buf, buf + 33);
-			}
-			expected.push_back(OP_ELSE);
-			expected.push_back(OP_DROP);
-			expected.push_back(PUSHBYTE_3);
-			expected.push_back(std::uint8_t(tmp_timeoutBlockheight & 0xFF));
-			expected.push_back(std::uint8_t((tmp_timeoutBlockheight >> 8) & 0xFF));
-			expected.push_back(std::uint8_t((tmp_timeoutBlockheight >> 16) & 0xFF));
-			expected.push_back(OP_CHECKLOCKTIMEVERIFY);
-			expected.push_back(OP_DROP);
-			expected.push_back(PUSHBYTE_33);
-			{
-				std::uint8_t buf[33];
-				script_theirpubkey.to_buffer(buf);
-				expected.insert(expected.end(), buf, buf + 33);
-			}
-			expected.push_back(OP_ENDIF);
-			expected.push_back(OP_CHECKSIG);
+			auto expected = Detail::construct_redeemscript
+				( script_hash160
+				, script_mypubkey
+				, tmp_timeoutBlockheight
+				, script_theirpubkey
+				);
 
 			if (expected != tmp_redeemScript) {
 				return loge( std::string("redeemScript byte-compare "

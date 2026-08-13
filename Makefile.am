@@ -54,6 +54,8 @@ libclboss_la_SOURCES = \
 	Boltz/Detail/find_lockup_outnum.hpp \
 	Boltz/Detail/initial_claim_tx.cpp \
 	Boltz/Detail/initial_claim_tx.hpp \
+	Boltz/Detail/construct_redeemscript.cpp \
+	Boltz/Detail/construct_redeemscript.hpp \
 	Boltz/Detail/match_lockscript.cpp \
 	Boltz/Detail/match_lockscript.hpp \
 	Boltz/EnvIF.hpp \
@@ -596,6 +598,7 @@ TESTS = \
 	tests/bitcoin/test_sighash \
 	tests/bitcoin/test_tx \
 	tests/boltz/test_match_lockscript \
+	tests/boltz/test_construct_redeemscript \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
 	tests/boss/channelcandidateinvestigator/test_secretary \
 	tests/boss/test_availablerpccommandsannouncer \

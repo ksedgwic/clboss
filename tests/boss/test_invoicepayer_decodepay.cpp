@@ -23,6 +23,7 @@
 #include"Sha256/Hash.hpp"
 #include"Sqlite3.hpp"
 #include<assert.h>
+#include<ctime>
 #include<deque>
 #include<errno.h>
 #include<fcntl.h>
@@ -33,6 +34,15 @@
 #include<unistd.h>
 
 namespace {
+
+/* The payment_hash and amount_msat baked into the canonical decode
+ * response below.  Tests that exercise the verification logic vary
+ * these values to trigger acceptance or rejection.
+ */
+auto const GOOD_HASH = std::string(
+	"7814817188071aec26c943f4864ef150aaff45def81b36b0dd4bc6ce8f1809a3"
+);
+auto const GOOD_AMOUNT = std::uint64_t(1000000);
 
 class DummyConnector : public Net::Connector {
 public:
@@ -74,12 +84,47 @@ public:
 	}
 };
 
+/* Build a decode-response JSON string with configurable payment_hash,
+ * amount_msat, created_at timestamp, and expiry.  The rest of the
+ * fields mirror a real CLN decode result.
+ */
+std::string make_decode_response( std::string const& payment_hash
+				, std::uint64_t amount_msat
+				, double created_at
+				, double expiry
+				) {
+	auto os = std::ostringstream();
+	os << R"({
+	   "type": "bolt11 invoice",
+	   "currency": "tb",
+	   "created_at": )"
+	   << created_at << R"(,
+	   "expiry": )"
+	   << expiry << R"(,
+	   "payee": "0225bbc2a7341993cd592d7b0c185bb8c6359cc1dd1337975c6d41354e4703bf64",
+	   "amount_msat": )"
+	   << amount_msat << R"(,
+	   "description": "decode testing",
+	   "min_final_cltv_expiry": 10,
+	   "payment_secret": "d8577cf3c01f0b9b124adee87f552c2b3195db83f4dea30874d5b27d26201e85",
+	   "features": "02024100",
+	   "routes": [],
+	   "payment_hash": ")"
+	   << payment_hash << R"(",
+	   "signature": "3045022100e745b9b7fe8133c7385e40561217e4717f7a2868c60d794b160047512c8d3a79022074619d6d2ee5c07b3099ca3684f896886aab04854bfade8f5a0f9014d5418ab6",
+	   "valid": true
+	})";
+	return os.str();
+}
+
 class MockRpcServer {
 private:
 	Net::Fd socket;
 	Jsmn::Parser parser;
 	std::deque<Jsmn::Object> requests;
 	std::shared_ptr<bool> pay_replied;
+	std::string decode_response;
+	bool expect_pay;
 
 	Ev::Io<Jsmn::Object> read_request(std::size_t retries = 0) {
 		return Ev::yield().then([this]() {
@@ -151,7 +196,17 @@ private:
 	}
 
 public:
-	MockRpcServer(Net::Fd socket_, std::shared_ptr<bool> pay_replied_) : socket(std::move(socket_)), parser(), requests(), pay_replied(std::move(pay_replied_)) {
+	MockRpcServer( Net::Fd socket_
+		     , std::shared_ptr<bool> pay_replied_
+		     , std::string decode_response_
+		     , bool expect_pay_
+		     ) : socket(std::move(socket_))
+		       , parser()
+		       , requests()
+		       , pay_replied(std::move(pay_replied_))
+		       , decode_response(std::move(decode_response_))
+		       , expect_pay(expect_pay_)
+	{
 		auto flags = fcntl(socket.get(), F_GETFL);
 		assert(flags >= 0);
 		flags |= O_NONBLOCK;
@@ -166,33 +221,12 @@ public:
 			assert(params.is_object());
 			assert(params.has("string"));
 			assert(std::string(params["string"]) == invoice);
-			return reply_result(id, R"({
-			   "type": "bolt11 invoice",
-			   "currency": "tb",
-			   "created_at": 1771010577,
-			   "expiry": 604800,
-			   "payee": "0225bbc2a7341993cd592d7b0c185bb8c6359cc1dd1337975c6d41354e4703bf64",
-			   "amount_msat": 1000000,
-			   "description": "decode testing",
-			   "min_final_cltv_expiry": 10,
-			   "payment_secret": "d8577cf3c01f0b9b124adee87f552c2b3195db83f4dea30874d5b27d26201e85",
-			   "features": "02024100",
-			   "routes": [
-			      [
-			         {
-			            "pubkey": "031c64a68e6d1b9e50711336d92b434c584ce668b2fae59ee688bd73713fee1569",
-			            "short_channel_id": "4659673x21x0",
-			            "fee_base_msat": 2000,
-			            "fee_proportional_millionths": 2,
-			            "cltv_expiry_delta": 80
-			         }
-			      ]
-			   ],
-			   "payment_hash": "7814817188071aec26c943f4864ef150aaff45def81b36b0dd4bc6ce8f1809a3",
-			   "signature": "3045022100e745b9b7fe8133c7385e40561217e4717f7a2868c60d794b160047512c8d3a79022074619d6d2ee5c07b3099ca3684f896886aab04854bfade8f5a0f9014d5418ab6",
-			   "valid": true
-			})");
+			return reply_result(id, decode_response);
 		}).then([this, invoice]() {
+			if (!expect_pay)
+				/* Payer should reject the invoice; no pay
+				 * request will arrive.  */
+				return Ev::lift();
 			return read_request().then([this, invoice](Jsmn::Object req) {
 				auto id = assert_method(req, "pay");
 				auto params = req["params"];
@@ -214,21 +248,42 @@ public:
 	}
 };
 
-Ev::Io<void> wait_for_pay_reply(std::shared_ptr<bool> pay_replied,
-				std::size_t retries = 0) {
-	return Ev::lift().then([pay_replied, retries]() {
-		if (*pay_replied)
+Ev::Io<void> wait_for(std::shared_ptr<bool> flag,
+		      std::size_t retries = 0) {
+	return Ev::lift().then([flag, retries]() {
+		if (*flag)
 			return Ev::lift();
 		assert(retries < 100000);
-		return Ev::yield().then([pay_replied, retries]() {
-			return wait_for_pay_reply(pay_replied, retries + 1);
+		return Ev::yield().then([flag, retries]() {
+			return wait_for(flag, retries + 1);
 		});
 	});
 }
 
-} // namespace
+/* Yield a bounded number of times to let async tasks settle, without
+ * requiring a specific flag.  Used for rejection scenarios where the
+ * payer throws internally and no pay_replied flag is ever set.
+ */
+Ev::Io<void> settle(std::size_t remaining = 200) {
+	return Ev::yield().then([remaining]() {
+		if (remaining == 0)
+			return Ev::lift();
+		return settle(remaining - 1);
+	});
+}
 
-int main() {
+struct Scenario {
+	char const* label;
+	std::string expected_hash;       /* PayInvoice.expected_payment_hash  */
+	std::uint64_t expected_amount;   /* PayInvoice.expected_amount_msat   */
+	std::string decode_hash;         /* decode response payment_hash      */
+	std::uint64_t decode_amount;     /* decode response amount_msat       */
+	double decode_created_at;
+	double decode_expiry;
+	bool expect_pay;
+};
+
+int run_scenario(Scenario const& sc) {
 	auto bus = S::Bus();
 	auto payer = Boss::Mod::InvoicePayer(bus);
 
@@ -244,7 +299,15 @@ int main() {
 	auto server_socket = Net::Fd(sockets[0]);
 	auto client_socket = Net::Fd(sockets[1]);
 
-	auto server = MockRpcServer(std::move(server_socket), pay_replied);
+	auto decode_response = make_decode_response(
+		sc.decode_hash, sc.decode_amount,
+		sc.decode_created_at, sc.decode_expiry
+	);
+	auto server = MockRpcServer( std::move(server_socket)
+				   , pay_replied
+				   , decode_response
+				   , sc.expect_pay
+				   );
 	auto rpc = Boss::Mod::Rpc(bus, std::move(client_socket));
 
 	auto client_code = Ev::lift().then([&]() {
@@ -259,7 +322,9 @@ int main() {
 			false
 		});
 	}).then([&]() {
-		return bus.raise(Boss::Msg::PayInvoice{invoice, "", 0});
+		return bus.raise(Boss::Msg::PayInvoice{
+			invoice, sc.expected_hash, sc.expected_amount
+		});
 	});
 
 	auto code = Ev::lift().then([&]() {
@@ -267,7 +332,9 @@ int main() {
 	}).then([&]() {
 		return Ev::concurrent(client_code);
 	}).then([&]() {
-		return wait_for_pay_reply(pay_replied);
+		if (sc.expect_pay)
+			return wait_for(pay_replied);
+		return settle();
 	}).then([&]() {
 		return bus.raise(Boss::Shutdown{});
 	}).then([]() {
@@ -275,7 +342,99 @@ int main() {
 	});
 
 	auto ec = Ev::start(code);
-	assert(*pay_replied);
 	assert(ec == 0);
+
+	if (sc.expect_pay) {
+		assert(*pay_replied);
+	} else {
+		assert(!*pay_replied);
+	}
+	return 0;
+}
+
+} // namespace
+
+int main() {
+	auto const now = double(std::time(nullptr));
+
+	/* 1. No expected hash set — backward-compat happy path.  */
+	run_scenario({ "no-expected-hash (backward compat)"
+		      , ""              /* expected_hash   */
+		      , 0               /* expected_amount */
+		      , GOOD_HASH       /* decode_hash     */
+		      , GOOD_AMOUNT     /* decode_amount   */
+		      , now             /* created_at      */
+		      , 604800          /* expiry          */
+		      , true            /* expect_pay      */
+	});
+
+	/* 2. Matching payment_hash — pay succeeds.  */
+	run_scenario({ "matching payment_hash"
+		      , GOOD_HASH
+		      , 0
+		      , GOOD_HASH
+		      , GOOD_AMOUNT
+		      , now
+		      , 604800
+		      , true
+	});
+
+	/* 3. Mismatched payment_hash — pay refused.  */
+	run_scenario({ "mismatched payment_hash"
+		      , std::string(64, '0')   /* wrong hash */
+		      , 0
+		      , GOOD_HASH
+		      , GOOD_AMOUNT
+		      , now
+		      , 604800
+		      , false                   /* expect_pay */
+	});
+
+	/* 4. Matching amount — pay succeeds.  */
+	run_scenario({ "matching amount_msat"
+		      , GOOD_HASH
+		      , GOOD_AMOUNT
+		      , GOOD_HASH
+		      , GOOD_AMOUNT
+		      , now
+		      , 604800
+		      , true
+	});
+
+	/* 5. Mismatched amount — pay refused.  */
+	run_scenario({ "mismatched amount_msat"
+		      , ""
+		      , GOOD_AMOUNT
+		      , GOOD_HASH
+		      , GOOD_AMOUNT + 1     /* different amount */
+		      , now
+		      , 604800
+		      , false
+	});
+
+	/* 6. Expired invoice — pay refused.
+	 * created_at + expiry far in the past.
+	 */
+	run_scenario({ "expired invoice"
+		      , GOOD_HASH
+		      , 0
+		      , GOOD_HASH
+		      , GOOD_AMOUNT
+		      , 1.0             /* created_at = epoch         */
+		      , 1.0             /* expiry = 1 second          */
+		      , false
+	});
+
+	/* 7. Non-expired invoice with expected_hash — pay succeeds.  */
+	run_scenario({ "non-expired invoice"
+		      , GOOD_HASH
+		      , 0
+		      , GOOD_HASH
+		      , GOOD_AMOUNT
+		      , now
+		      , 604800
+		      , true
+	});
+
 	return 0;
 }
