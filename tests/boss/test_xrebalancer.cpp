@@ -150,12 +150,12 @@ int main() {
 	auto bus = S::Bus();
 	Boss::Mod::Waiter waiter(bus);
 
-	/* Mode stub: always xrebalance2 (the cycle surfaces as an
+	/* Mode stub: always xrebalance (the cycle surfaces as an
 	 * `xrebalance` plugin RPC we can capture).  */
 	bus.subscribe<Boss::Msg::RequestRebalanceMode
 		     >([&](Boss::Msg::RequestRebalanceMode const& m) {
 		return bus.raise(Boss::Msg::ResponseRebalanceMode{
-			m.requester, Boss::RebalanceMode::xrebalance2
+			m.requester, Boss::RebalanceMode::xrebalance
 		});
 	});
 

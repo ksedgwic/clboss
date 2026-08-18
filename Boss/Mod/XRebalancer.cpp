@@ -144,7 +144,7 @@ private:
 				"Average number of flow-rebalance (xrebalance) "
 				"cycles per hour (0 = paused).  Poisson-paced; "
 				"only active when the rebalancer mode is "
-				"\"xrebalance2\".")
+				"\"xrebalance\".")
 			     + manifest_option(opt_floor, default_floor,
 				"Route-cost floor (ppm): stop growing the "
 				"matched-pool cycle once the marginal joint "
@@ -385,10 +385,10 @@ private:
 					  "in flight." );
 		in_flight = true;
 		return mode_proxy.get_mode().then([this](RebalanceMode m) {
-			if (m != RebalanceMode::xrebalance2)
+			if (m != RebalanceMode::xrebalance)
 				return Boss::log( bus, Debug
 						, "XRebalancer: idle (mode is "
-						  "\"%s\", not \"xrebalance2\")."
+						  "\"%s\", not \"xrebalance\")."
 						, rebalance_mode_to_string(m)
 						);
 			return run_cycle();
@@ -425,7 +425,7 @@ private:
 	 * catch-all.  */
 	Ev::Io<void> demand_cycle(std::string scid) {
 		return mode_proxy.get_mode().then([this, scid](RebalanceMode m) {
-			if (m != RebalanceMode::xrebalance2)
+			if (m != RebalanceMode::xrebalance)
 				return Ev::lift();
 			return run_cycle(scid);
 		}).catching<std::exception>([this](std::exception const& e) {

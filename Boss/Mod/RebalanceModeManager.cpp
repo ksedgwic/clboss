@@ -43,7 +43,7 @@ private:
 						default_rebalance_mode
 					)
 				)),
-				"Rebalancer mode: \"xrebalance2\" (the circular "
+				"Rebalancer mode: \"xrebalance\" (the circular "
 				"askrene rebalancer, tuned by clboss-xrebalance-*, "
 				"executing through the external xrebalance plugin, "
 				"which must be loaded into lightningd), or "

@@ -17,7 +17,7 @@ namespace Boss { namespace Mod {
  * Cadence is a memoryless Poisson process whose average rate is the
  * `clboss-xrebalance-per-hour` option (0 = paused), tunable at runtime.
  * The loop self-gates on the rebalance mode and only runs a cycle when
- * the active mode is `xrebalance2`; in other modes it idles (skips the
+ * the active mode is `xrebalance`; in other modes it idles (skips the
  * cycle body) so flipping the mode at runtime starts firing without a
  * restart.
  */
