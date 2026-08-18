@@ -35,11 +35,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - **BREAKING**: CLBOSS now requires **Core Lightning v26.06 or later**.
-  The rebalancer and probing subsystems build routes from the
+  The probing subsystems build routes from the
   `getroutes` per-hop fields `node_id_out` / `amount_out_msat` /
   `cltv_out`, which shipped in v26.06; the deprecated pre-v26.06
-  fields carry one-hop-shifted values that would misprice routes and
-  poison CLBOSS's failure-learning askrene layer.  CLBOSS checks the
+  fields carry one-hop-shifted values that would misprice routes.
+  CLBOSS checks the
   CLN version at startup and refuses to run on older nodes, before
   creating or modifying any on-disk state (note: with
   `important-plugin`, a refused start stops lightningd itself).

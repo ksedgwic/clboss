@@ -9,9 +9,7 @@
 #include"Jsmn/Object.hpp"
 #include"Jsmn/Parser.hpp"
 #include"Json/Out.hpp"
-#include"Ln/Amount.hpp"
 #include"Ln/NodeId.hpp"
-#include"Ln/Scid.hpp"
 #include"Net/Fd.hpp"
 #include"S/Bus.hpp"
 #include<assert.h>
@@ -150,76 +148,7 @@ std::uint64_t assert_method(Jsmn::Object const& req, char const* method) {
 	return std::uint64_t(double(req["id"]));
 }
 
-/* Test 1: inform_channel_constrained sends the expected JSON-RPC
- * call shape and completes when the server replies success.
- *
- * Pattern (from test_rpc.cpp): server runs as Ev::concurrent in the
- * background; the helper runs in the main chain.  When the helper
- * completes, the chain ends -- no flag polling required.
- */
-Ev::Io<void>
-test_inform_channel_constrained( MockRpcServer& server
-			       , Boss::Mod::Rpc& rpc
-			       ) {
-	auto asserter = [](Jsmn::Object const& req) {
-		auto id = assert_method(req, "askrene-inform-channel");
-		assert(req.has("params"));
-		auto params = req["params"];
-		assert(params.is_object());
-		assert(params.has("layer"));
-		assert(std::string(params["layer"]) == "test-layer");
-		assert(params.has("short_channel_id_dir"));
-		assert(std::string(params["short_channel_id_dir"]) == "100x1x0/1");
-		assert(params.has("amount_msat"));
-		assert(double(params["amount_msat"]) == 500000.0);
-		assert(params.has("inform"));
-		assert(std::string(params["inform"]) == "constrained");
-		return id;
-	};
-
-	return Ev::lift().then([&server, asserter]() {
-		return Ev::concurrent(server.serve_ok(std::move(asserter)));
-	}).then([&rpc]() {
-		return Boss::Mod::AskreneLayer::inform_channel_constrained(
-			rpc, std::string("test-layer"),
-			Ln::Scid("100x1x0"), std::uint32_t(1),
-			Ln::Amount::msat(500000)
-		);
-	});
-}
-
-/* Test 2: inform_channel_unconstrained sends the same shape but
- * inform="unconstrained".  This is askrene's mode for "channel
- * proved capacity >= amount; raise the lower bound."  Askrene
- * also has an inform="succeeded" mode but that one is currently
- * a no-op stub upstream, so we use "unconstrained" for the
- * lower-bound-raise semantic (same as xpay does).
- */
-Ev::Io<void>
-test_inform_channel_unconstrained( MockRpcServer& server
-				 , Boss::Mod::Rpc& rpc
-				 ) {
-	auto asserter = [](Jsmn::Object const& req) {
-		auto id = assert_method(req, "askrene-inform-channel");
-		auto params = req["params"];
-		assert(std::string(params["short_channel_id_dir"]) == "200x2x0/0");
-		assert(double(params["amount_msat"]) == 750000.0);
-		assert(std::string(params["inform"]) == "unconstrained");
-		return id;
-	};
-
-	return Ev::lift().then([&server, asserter]() {
-		return Ev::concurrent(server.serve_ok(std::move(asserter)));
-	}).then([&rpc]() {
-		return Boss::Mod::AskreneLayer::inform_channel_unconstrained(
-			rpc, std::string("test-layer"),
-			Ln::Scid("200x2x0"), std::uint32_t(0),
-			Ln::Amount::msat(750000)
-		);
-	});
-}
-
-/* Test 3: disable_node sends askrene-disable-node with the right
+/* Test 1: disable_node sends askrene-disable-node with the right
  * shape.
  */
 Ev::Io<void>
@@ -249,7 +178,7 @@ test_disable_node( MockRpcServer& server
 	});
 }
 
-/* Test 4: helper silently swallows RpcError -- if the layer is
+/* Test 2: helper silently swallows RpcError -- if the layer is
  * missing (e.g. CLN without askrene), the helper's Ev::Io<void>
  * should still complete cleanly rather than propagating the
  * exception.  Verify by having the mock reply with an RPC error
@@ -261,16 +190,15 @@ test_silent_rpc_error( MockRpcServer& server
 		     , Boss::Mod::Rpc& rpc
 		     ) {
 	auto asserter = [](Jsmn::Object const& req) {
-		return assert_method(req, "askrene-inform-channel");
+		return assert_method(req, "askrene-disable-node");
 	};
 
 	return Ev::lift().then([&server, asserter]() {
 		return Ev::concurrent(server.serve_error(std::move(asserter)));
 	}).then([&rpc]() {
-		return Boss::Mod::AskreneLayer::inform_channel_constrained(
+		return Boss::Mod::AskreneLayer::disable_node(
 			rpc, std::string("test-layer"),
-			Ln::Scid("300x3x0"), std::uint32_t(0),
-			Ln::Amount::msat(100)
+			Ln::NodeId("020000000000000000000000000000000000000000000000000000000000000000")
 		);
 	});
 }
@@ -290,10 +218,6 @@ int main() {
 	auto rpc = Boss::Mod::Rpc(bus, std::move(client_socket));
 
 	auto code = Ev::lift().then([&]() {
-		return test_inform_channel_constrained(server, rpc);
-	}).then([&]() {
-		return test_inform_channel_unconstrained(server, rpc);
-	}).then([&]() {
 		return test_disable_node(server, rpc);
 	}).then([&]() {
 		return test_silent_rpc_error(server, rpc);
