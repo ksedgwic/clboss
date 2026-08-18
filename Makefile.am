@@ -147,8 +147,6 @@ libclboss_la_SOURCES = \
 	Boss/Mod/DemandTracker.hpp \
 	Boss/Mod/Dowser.cpp \
 	Boss/Mod/Dowser.hpp \
-	Boss/Mod/EarningsRebalancer.cpp \
-	Boss/Mod/EarningsRebalancer.hpp \
 	Boss/Mod/EarningsTracker.cpp \
 	Boss/Mod/EarningsTracker.hpp \
 	Boss/Mod/FeeModderByBalance.cpp \
@@ -161,30 +159,16 @@ libclboss_la_SOURCES = \
 	Boss/Mod/FeeModderBySize.hpp \
 	Boss/Mod/ForwardFeeMonitor.cpp \
 	Boss/Mod/ForwardFeeMonitor.hpp \
-	Boss/Mod/FundsMover/Attempter.cpp \
-	Boss/Mod/FundsMover/Attempter.hpp \
-	Boss/Mod/FundsMover/Claimer.cpp \
-	Boss/Mod/FundsMover/Claimer.hpp \
-	Boss/Mod/FundsMover/Main.cpp \
-	Boss/Mod/FundsMover/Main.hpp \
-	Boss/Mod/FundsMover/Runner.cpp \
-	Boss/Mod/FundsMover/Runner.hpp \
-	Boss/Mod/FundsMover/create_label.cpp \
-	Boss/Mod/FundsMover/create_label.hpp \
 	Boss/Mod/HtlcAcceptor.cpp \
 	Boss/Mod/HtlcAcceptor.hpp \
 	Boss/Mod/InitialConnect.cpp \
 	Boss/Mod/InitialConnect.hpp \
-	Boss/Mod/InitialRebalancer.cpp \
-	Boss/Mod/InitialRebalancer.hpp \
 	Boss/Mod/Initiator.cpp \
 	Boss/Mod/Initiator.hpp \
 	Boss/Mod/InternetConnectionMonitor.cpp \
 	Boss/Mod/InternetConnectionMonitor.hpp \
 	Boss/Mod/InvoicePayer.cpp \
 	Boss/Mod/InvoicePayer.hpp \
-	Boss/Mod/JitRebalancer.cpp \
-	Boss/Mod/JitRebalancer.hpp \
 	Boss/Mod/JsonOutputter.cpp \
 	Boss/Mod/JsonOutputter.hpp \
 	Boss/Mod/ListfundsAnalyzer.cpp \
@@ -199,8 +183,6 @@ libclboss_la_SOURCES = \
 	Boss/Mod/ListpeersAnnouncer.hpp \
 	Boss/Mod/Manifester.cpp \
 	Boss/Mod/Manifester.hpp \
-	Boss/Mod/MoveFundsCommand.cpp \
-	Boss/Mod/MoveFundsCommand.hpp \
 	Boss/Mod/NeedsConnectSolicitor.cpp \
 	Boss/Mod/NeedsConnectSolicitor.hpp \
 	Boss/Mod/NeedsOnchainFundsSwapper.cpp \
@@ -361,7 +343,6 @@ libclboss_la_SOURCES = \
 	Boss/Msg/RequestEarningsInfo.hpp \
 	Boss/Msg/RequestGetOnchainIgnoreFlag.hpp \
 	Boss/Msg/RequestListpays.hpp \
-	Boss/Msg/RequestMoveFunds.hpp \
 	Boss/Msg/RequestNewaddr.hpp \
 	Boss/Msg/RequestPeerFromScid.hpp \
 	Boss/Msg/RequestPeerMetrics.hpp \
@@ -376,7 +357,6 @@ libclboss_la_SOURCES = \
 	Boss/Msg/ResponseEarningsInfo.hpp \
 	Boss/Msg/ResponseGetOnchainIgnoreFlag.hpp \
 	Boss/Msg/ResponseListpays.hpp \
-	Boss/Msg/ResponseMoveFunds.hpp \
 	Boss/Msg/ResponseNewaddr.hpp \
 	Boss/Msg/ResponsePeerFromScid.hpp \
 	Boss/Msg/ResponsePeerMetrics.hpp \
@@ -632,16 +612,13 @@ TESTS = \
 	tests/boss/test_channelcreator_planner \
 	tests/boss/test_channelcreator_rearrangerbysize \
 	tests/boss/test_channelcreator_reprioritizer \
-	tests/boss/test_earningsrebalancer \
 	tests/boss/test_earningstracker \
 	tests/boss/test_feemon_history \
 	tests/boss/test_feemodderbypricetheory \
 	tests/boss/test_forwardfeemonitor \
 	tests/boss/test_getmanifest \
 	tests/boss/test_invoicepayer_decodepay \
-	tests/boss/test_initialrebalancer \
 	tests/boss/test_initiator_listconfigs_proxy \
-	tests/boss/test_jitrebalancer \
 	tests/boss/test_needsconnectsolicitor \
 	tests/boss/test_onchainfeemonitor_samples_init \
 	tests/boss/test_peerjudge_agetracker \

@@ -10,8 +10,6 @@ namespace Boss {
  * @brief which rebalancing track, if any, is currently active.
  *
  * @desc
- *   - `classic`    : Track A, the original clboss rebalancer/funds-mover
- *                    ported to getroutes/askrene (heuristic, JIT-capable).
  *   - `xrebalance` : Track B, the circular askrene min-cost-flow
  *                    rebalancer (the XRebalancer driver on top of the
  *                    XMoveFunds primitive -- "xpay, for rebalancing");
@@ -29,34 +27,31 @@ namespace Boss {
  *                    way to disable the rebalancer entirely.
  */
 enum class RebalanceMode {
-	classic,
 	xrebalance,
 	xrebalance2,
 	off
 };
 
-/* Default mode at startup if the operator does not configure one.  */
-constexpr RebalanceMode default_rebalance_mode = RebalanceMode::classic;
+/* Default mode at startup if the operator does not configure one.
+ * The external-plugin mode: without the xrebalance plugin loaded it
+ * idles with a log hint, so upgraders get a clear install-the-plugin
+ * message rather than silently no rebalancing.  */
+constexpr RebalanceMode default_rebalance_mode = RebalanceMode::xrebalance2;
 
 inline
 char const* rebalance_mode_to_string(RebalanceMode m) {
 	switch (m) {
-	case RebalanceMode::classic:     return "classic";
 	case RebalanceMode::xrebalance:  return "xrebalance";
 	case RebalanceMode::xrebalance2: return "xrebalance2";
 	case RebalanceMode::off:         return "off";
 	}
-	return "classic";
+	return "off";
 }
 
 /* Parse a mode string; returns true and sets `out` on success,
  * false on an unrecognized string (leaving `out` untouched).  */
 inline
 bool rebalance_mode_from_string(std::string const& s, RebalanceMode& out) {
-	if (s == "classic") {
-		out = RebalanceMode::classic;
-		return true;
-	}
 	if (s == "xrebalance") {
 		out = RebalanceMode::xrebalance;
 		return true;

@@ -3,8 +3,7 @@
 #include"Boss/Mod/EarningsTracker.hpp"
 #include"Boss/Msg/DbResource.hpp"
 #include"Boss/Msg/ForwardFee.hpp"
-#include"Boss/Msg/RequestMoveFunds.hpp"
-#include"Boss/Msg/ResponseMoveFunds.hpp"
+#include"Boss/Msg/XRebalanceAttribution.hpp"
 #include"Boss/Msg/CommandResponse.hpp"
 #include"Boss/Msg/CommandRequest.hpp"
 #include"Ev/start.hpp"
@@ -53,20 +52,11 @@ Ev::Io<void> raiseMoveFundsLoop(S::Bus& bus, int count) {
 		return Ev::lift();
 	}
 	return bus.raise(
-		Boss::Msg::RequestMoveFunds{
-			nullptr,        	// requester (match ResponseMoveFunds)
+		Boss::Msg::XRebalanceAttribution{
 			C,              	// source
 			A,              	// destination
-			Ln::Amount::sat(1000),  // amount
-			Ln::Amount::sat(3)      // fee_budget
-		})
-		.then([&bus]() {
-			return bus.raise(
-				Boss::Msg::ResponseMoveFunds{
-					nullptr,        	// requester (see RequestMoveFunds)
-					Ln::Amount::sat(1000),  // amount_moved
-					Ln::Amount::sat(1)      // fee_spent
-				});
+			Ln::Amount::sat(1000),  // amount_moved
+			Ln::Amount::sat(1)      // fee_spent
 		})
 		.then([&bus, count]() {
 			mock_now += 24 * 60 * 60; // advance one day
