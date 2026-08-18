@@ -1,57 +1,40 @@
 # CLBOSS Channel Balancing
 
+Rebalance planning lives in `XRebalancer`; execution lives in the
+external [`xrebalance`](https://github.com/ksedgwic/xrebalance)
+plugin, which reports per-part results back via `xrebalance_part`
+notifications.
+
 ```mermaid
    %%{init: {"flowchart": {"defaultRenderer": "elk"}} }%%
 
    flowchart LR
 
-   style InitialRebalancer fill:#9fb,stroke:#333,stroke-width:4px
-   ListpeersAnnouncer-->|ListpeersResult|InitialRebalancer
-   InitialRebalancer-->|RequestEarningsInfo|EarningsTracker
-   EarningsTracker-->|ResponseEarningsInfo|InitialRebalancer
+   XrebalancePlugin["xrebalance plugin (external)"]
 
-   style EarningsRebalancer fill:#9fb,stroke:#333,stroke-width:4px
-   Timers-->|TimerRandomHourly|EarningsRebalancer
-   %% elk doesn't like: EarningsRebalancer-->|SelfTrigger|EarningsRebalancer
-   ListpeersAnnouncer-->|ListpeersResult|EarningsRebalancer
-   Manifester-->|Manifestation|EarningsRebalancer
-   CommandReceiver-->|CommandRequest|EarningsRebalancer
-   EarningsTracker-->|ResponseEarningsInfo|EarningsRebalancer
-   EarningsRebalancer-->|RequestEarningsInfo|EarningsTracker
-   EarningsRebalancer-->|ManifestCommand|Manifester
-   EarningsRebalancer-->|CommandResponse|CommandReceiver
+   style RebalanceModeManager fill:#9fb,stroke:#333,stroke-width:4px
+   Manifester-->|Manifestation|RebalanceModeManager
+   XRebalancer-->|RequestRebalanceMode|RebalanceModeManager
+   RebalanceModeManager-->|ResponseRebalanceMode|XRebalancer
 
-   style JitRebalancer fill:#9fb,stroke:#333,stroke-width:4px
-   EarningsTracker-->|ResponseEarningsInfo|JitRebalancer
-   PeerFromScidMapper-->|ResponsePeerFromScid|JitRebalancer
-   JitRebalancer-->|ProvideHtlcAcceptedDeferrer|HtlcAcceptor
-   JitRebalancer-->|ReleaseHtlcAccepted|HtlcAcceptor
-   JitRebalancer-->|RequestPeerFromScid|PeerFromScidMapper
-   JitRebalancer-->|RequestEarningsInfo|EarningsTracker
-   HtlcAcceptor-->|SolicitHtlcAcceptedDeferrer|JitRebalancer
+   style DemandTracker fill:#9fb,stroke:#333,stroke-width:4px
+   HtlcAcceptor-->|SolicitHtlcAcceptedDeferrer|DemandTracker
+   DemandTracker-->|ProvideHtlcAcceptedDeferrer|HtlcAcceptor
+   DemandTracker-->|DemandObserved|XRebalancer
 
-   style FundsMover fill:#9bf,stroke:#333,stroke-width:4px
-   Initiator-->|Init|FundsMover
-   InitialRebalancer-->|RequestMoveFunds|FundsMover
-   EarningsRebalancer-->|RequestMoveFunds|FundsMover
-   JitRebalancer-->|RequestMoveFunds|FundsMover
-   ActiveProber-->|SolicitDeletablePaymentLabelFilter|FundsMover
-   FundsMover-->|ProvideDeletablePaymentLabelFilter|PaymentDeleter
-   FundsMover-->|"spawn()"|Runner
+   style XRebalancer fill:#9bf,stroke:#333,stroke-width:4px
+   Initiator-->|Init|XRebalancer
+   Initiator-->|DbResource|XRebalancer
+   Manifester-->|Manifestation|XRebalancer
+   XRebalancer-->|RequestRebalanceUnmanaged|RebalanceUnmanager
+   RebalanceUnmanager-->|ResponseRebalanceUnmanaged|XRebalancer
+   XRebalancer-->|"xrebalance (RPC)"|XrebalancePlugin
 
-   style Runner fill:#9bf,stroke:#333,stroke-width:4px
-   Runner-->|ResponseMoveFunds|EarningsTracker
-
-   style Claimer fill:#9bf,stroke:#333,stroke-width:4px
-   HtlcAcceptor-->|SolicitHtlcAcceptedDeferrer|Claimer
-   Claimer-->|ReleaseHtlcAccepted|HtlcAcceptor
-   Claimer-->|ProvideHtlcAcceptedDeferrer|HtlcAcceptor
-   Timers-->|TimerRandomHourly|Claimer
-
-   MoveFundsCommand-->|RequestMoveFunds|FundsMover
-   FundsMover-->|ResponseMoveFunds|MoveFundsCommand
-   CommandReceiver-->|CommandRequest|MoveFundsCommand
-   MoveFundsCommand-->|CommandResponse|CommandReceiver
-   Manifester-->|Manifestation|MoveFundsCommand
-   MoveFundsCommand-->|ManifestCommand|Manifester
+   style XRebalancePartMonitor fill:#9bf,stroke:#333,stroke-width:4px
+   Manifester-->|Manifestation|XRebalancePartMonitor
+   XRebalancePartMonitor-->|ManifestNotification|Manifester
+   XrebalancePlugin-.->|"xrebalance_part (notification)"|XRebalancePartMonitor
+   XRebalancePartMonitor-->|RequestPeerFromScid|PeerFromScidMapper
+   PeerFromScidMapper-->|ResponsePeerFromScid|XRebalancePartMonitor
+   XRebalancePartMonitor-->|XRebalanceAttribution|EarningsTracker
 ```

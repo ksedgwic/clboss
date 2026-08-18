@@ -84,7 +84,7 @@
    AmountSettingsHandler-->|AmountSettings|ChannelCandidateMatchmaker
    Initiator-->|Init|ChannelCandidateMatchmaker
    ChannelCandidateMatchmaker-->|PreinvestigateChannelCandidates|ChannelCandidatePreinvestigator
-   ChannelCandidateMatchmaker-->|getroute|CLN
+   ChannelCandidateMatchmaker-->|getroutes|CLN
    CLN-->|route|ChannelCandidateMatchmaker
 
    style ChannelCreator_Manager fill:#fb9,stroke:#333,stroke-width:4px
