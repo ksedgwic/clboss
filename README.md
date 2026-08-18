@@ -30,7 +30,7 @@ So far CLBOSS can do the following automatically:
 
 * Open channels to other, useful nodes when fees are low and there are onchain funds
 * Acquire incoming capacity via `boltz.exchange` swaps.
-* Rebalance open channels by self-payment (including JIT rebalancer).
+* Rebalance open channels, via the external `xrebalance` plugin.
 * Set forwarding fees so that they're competitive to other nodes
 
 You can read more information about CLBOSS here:
@@ -594,10 +594,55 @@ Selects how CLBOSS rebalances channel liquidity:
   `lightningd`.  Without the plugin, CLBOSS idles with a log hint.
 * `off`: disable autonomous rebalancing entirely.
 
+The `xrebalance` plugin is a separate CLN plugin; releases and install
+instructions are at <https://github.com/ksedgwic/xrebalance>.
+
+Rebalance cycles run on a Poisson clock (`clboss-xrebalance-per-hour`
+below) and are additionally triggered on demand, when an observed
+forward drains a channel that is low on local liquidity.
+
 This is a *dynamic* option: set it in the `lightningd` config for the
 startup default, or change it at runtime without a restart with
 
     lightning-cli setconfig clboss-rebalance-mode <mode>
+
+### `--clboss-xrebalance-*` tuning options
+
+Each xrebalance cycle selects fill candidates (channels low on local
+liquidity) and drain candidates (channels high on it), admits and
+sizes them from each peer's windowed net earnings, matches them into
+one min-cost-flow transfer, and prices that transfer from what the
+involved peers actually earn — so rebalancing never spends more on a
+corridor than the corridor's own track record justifies.
+
+All of the following are *dynamic* (`setconfig`) options:
+
+* `clboss-xrebalance-per-hour` — average matched-cycle rate, Poisson
+  paced; `0` pauses the matched loop (demand-triggered cycles still
+  run).  Default `12`.
+* `clboss-xrebalance-route-cost-floor` — the ppm floor at which the
+  matched pool stops growing; also sets the cycle's amount and fee
+  budget.  `auto` derives a ladder of floors and sweeps a random rung
+  each cycle.  Default `50`.
+* `clboss-xrebalance-earnings-window-days` — trailing window over
+  which per-peer net earnings rates are measured.  Default `90`.
+* `clboss-xrebalance-fill-loc` / `clboss-xrebalance-drain-loc` — the
+  band edges, in percent of local liquidity: channels at or below
+  `fill-loc` are fill candidates, at or above `drain-loc` are drain
+  candidates, and each transfer aims the channel back at its band
+  edge.  Defaults `10` and `90`.
+* `clboss-xrebalance-maxparts` — how many parts (paths) the
+  min-cost-flow solve may split a transfer into.  Lower means fewer,
+  fatter parts; higher means finer splitting and more learning but
+  more refusals.  Default `10`.
+* `clboss-xrebalance-grant` — assumed prior earnings rate (ppm),
+  credited to every channeled peer as if already earned on one
+  capacity-turn of volume; admits peers with no track record at that
+  rate, and real volume dilutes the credit toward the measured rate.
+  Default `0` (record-only).
+* `clboss-xrebalance-gain` — multiplier on the measured earnings
+  rates before candidacy and pricing; above `1` accepts routes
+  costing up to gain times the measured rate.  Default `1` (strict).
 
 ### `--clboss-min-nodes-to-process=<number>`
 

@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A new rebalancer, **xrebalance**: circular rebalances planned from
+  each peer's earnings record and executed through the external
+  [`xrebalance`](https://github.com/ksedgwic/xrebalance) plugin on
+  CLN's `askrene` min-cost-flow router.  Cycles run on a Poisson
+  clock and are also triggered on demand when a forward drains a
+  channel.  Pricing is strict by default: a cycle's fee budget
+  derives from what the involved peers actually earn, tunable with
+  the `clboss-xrebalance-*` options (see README).  Select with
+  `clboss-rebalance-mode=<xrebalance|off>`; without the plugin
+  loaded, CLBOSS idles with a log hint.
+
+- Channel-open candidates are now ranked by their earnings **track
+  record**: nodes whose previous channels earned well ("keepers")
+  are funded first, unknowns next, proven underperformers last;
+  within the no-record tier, peers advertising splicing are
+  preferred (opt out with
+  `clboss-candidate-prefer-spliceable=false`).  The new
+  `clboss-track-record` command shows the verdict for any node, and
+  the `clboss-candidate-*` options tune the judgment.
+
+- Many options are now **dynamic**: settable at runtime with
+  `lightning-cli setconfig`, no restart needed.  Each option's README
+  entry says whether it is dynamic.  Invalid setconfig values are
+  rejected with a proper error instead of being silently ignored.
+
 ### Removed
 
 - **BREAKING**: the built-in rebalancer (`JitRebalancer`,
