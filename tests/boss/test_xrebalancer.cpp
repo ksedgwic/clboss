@@ -126,9 +126,11 @@ public:
 	}
 };
 
+/* The plugin request carries sources/destinations as arrays of
+ * {scid, max_msat} objects.  */
 bool has_scid(Jsmn::Object const& arr, char const* scid) {
 	for (auto i = std::size_t(0); i < arr.size(); ++i)
-		if (std::string(arr[i]) == scid)
+		if (std::string(arr[i]["scid"]) == scid)
 			return true;
 	return false;
 }
@@ -148,8 +150,8 @@ int main() {
 	auto bus = S::Bus();
 	Boss::Mod::Waiter waiter(bus);
 
-	/* Mode stub: always xrebalance (the in-clboss executor, so the
-	 * cycle surfaces as a clboss-xmovefunds RPC we can capture).  */
+	/* Mode stub: always xrebalance (the cycle surfaces as an
+	 * `xrebalance` plugin RPC we can capture).  */
 	bus.subscribe<Boss::Msg::RequestRebalanceMode
 		     >([&](Boss::Msg::RequestRebalanceMode const& m) {
 		return bus.raise(Boss::Msg::ResponseRebalanceMode{
@@ -167,8 +169,8 @@ int main() {
 	});
 
 	/* RPC stub.  */
-	auto xmf_called = false;
-	auto xmf_params = std::string();
+	auto xreb_called = false;
+	auto xreb_params = std::string();
 	bus.subscribe<Boss::Msg::RequestRpcCommand
 		     >([&](Boss::Msg::RequestRpcCommand const& m) {
 		auto respond = [&](char const* res) {
@@ -179,10 +181,10 @@ int main() {
 		};
 		if (m.command == "listpeerchannels")
 			return respond(listpeerchannels_result);
-		if (m.command == "clboss-xmovefunds") {
-			xmf_params = m.params.output();
-			xmf_called = true;
-			return respond(R"JSON({"execution": {}})JSON");
+		if (m.command == "xrebalance") {
+			xreb_params = m.params.output();
+			xreb_called = true;
+			return respond(R"JSON({})JSON");
 		}
 		std::cerr << "UNMOCKED COMMAND " << m.command << std::endl;
 		assert(0);
@@ -276,11 +278,11 @@ int main() {
 			Ln::Scid(std::string(scid_a))
 		});
 	}).then([&]() {
-		return wait_flag(xmf_called, Ev::now());
+		return wait_flag(xreb_called, Ev::now());
 	}).then([&]() {
-		auto req = Jsmn::Object::parse_json(xmf_params.c_str());
-		auto srcs = req["source_scid"];
-		auto dsts = req["dest_scid"];
+		auto req = Jsmn::Object::parse_json(xreb_params.c_str());
+		auto srcs = req["sources"];
+		auto dsts = req["destinations"];
 
 		/* The demand target fills A.  */
 		assert(has_scid(dsts, scid_a));

@@ -17,7 +17,7 @@ namespace Boss { namespace Mod {
  * `xrebalance_part` notifications and raises
  * `Boss::Msg::XRebalanceAttribution` for each completed part,
  * so EarningsTracker accounts funds the plugin moves --
- * whether the `xrebalance2` mode or some other plugin client
+ * whether the `xrebalance` mode or some other plugin client
  * initiated the transfer.
  *
  * The notification's `first_hop` and `return_hop` are real

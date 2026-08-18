@@ -585,15 +585,13 @@ suffix, e.g.
 
     lightningd --clboss-min-channel=1000000
 
-### `--clboss-rebalance-mode=<xrebalance2|xrebalance|off>`
+### `--clboss-rebalance-mode=<xrebalance|off>`
 
 Selects how CLBOSS rebalances channel liquidity:
 
-* `xrebalance2` (default): the circular askrene rebalancer, executing
+* `xrebalance` (default): the circular askrene rebalancer, executing
   through the external `xrebalance` plugin, which must be loaded into
   `lightningd`.  Without the plugin, CLBOSS idles with a log hint.
-* `xrebalance`: the same rebalancer executing through CLBOSS's internal
-  `clboss-xmovefunds` primitive.
 * `off`: disable autonomous rebalancing entirely.
 
 This is a *dynamic* option: set it in the `lightningd` config for the

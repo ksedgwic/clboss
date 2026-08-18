@@ -11,10 +11,9 @@ namespace Boss { namespace Msg {
  * @brief Per-part earnings attribution from a successful
  * rebalance sendpay part.
  *
- * Raised once per successfully completed part -- by
- * Boss::Mod::XMoveFunds for its own waitsendpay parts, and by
- * Boss::Mod::XRebalancePartMonitor for the external xrebalance
- * plugin's part notifications.  Boss::Mod::EarningsTracker
+ * Raised by Boss::Mod::XRebalancePartMonitor once per successfully
+ * completed part, from the external xrebalance plugin's
+ * xrebalance_part notifications.  Boss::Mod::EarningsTracker
  * subscribes and applies a symmetric DB update: source peer gets
  * `in_expenditures += fee_spent` / `in_rebalanced += amount_moved`,
  * destination peer gets the matching `out_*` increments.

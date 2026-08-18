@@ -90,11 +90,6 @@ private:
 	double grant_ppm;         /* assumed prior rate (ppm of a capacity-turn) */
 	double gain;              /* NetPpm multiplier */
 	bool floor_auto;   /* floor option set to "auto" (sweep) */
-	/* Mode xrebalance2: execute through the external xrebalance
-	 * plugin instead of clboss-xmovefunds.  Captured at cycle start;
-	 * cycles are serialized by the awaited loop, so one flag
-	 * suffices.  */
-	bool use_plugin;
 	bool started;
 	/* True while a cycle (matched or demand) runs.  The Poisson
 	 * loop and demand triggers exclude each other through it, and
@@ -134,7 +129,6 @@ private:
 		grant_ppm = default_grant;
 		gain = default_gain;
 		floor_auto = false;
-		use_plugin = false;
 		started = false;
 		in_flight = false;
 
@@ -151,7 +145,7 @@ private:
 				"cycles per hour (0 = pause matched cycles; "
 				"demand-triggered cycles still run).  "
 				"Poisson-paced; only active when the "
-				"rebalancer mode is \"xrebalance\" or \"xrebalance2\".")
+				"rebalancer mode is \"xrebalance\".")
 			     + manifest_option(opt_floor, default_floor,
 				"Route-cost floor (ppm): stop growing the "
 				"matched-pool cycle once the marginal joint "
@@ -399,15 +393,12 @@ private:
 					  "in flight." );
 		in_flight = true;
 		return mode_proxy.get_mode().then([this](RebalanceMode m) {
-			if ( m != RebalanceMode::xrebalance
-			  && m != RebalanceMode::xrebalance2 )
+			if (m != RebalanceMode::xrebalance)
 				return Boss::log( bus, Debug
 						, "XRebalancer: idle (mode is "
-						  "\"%s\", not \"xrebalance\" "
-						  "or \"xrebalance2\")."
+						  "\"%s\", not \"xrebalance\")."
 						, rebalance_mode_to_string(m)
 						);
-			use_plugin = (m == RebalanceMode::xrebalance2);
 			return run_cycle();
 		/* The catch-all before the clear is load-bearing twice
 		 * over: an exception on the fail path would skip a bare
@@ -442,10 +433,8 @@ private:
 	 * catch-all.  */
 	Ev::Io<void> demand_cycle(std::string scid) {
 		return mode_proxy.get_mode().then([this, scid](RebalanceMode m) {
-			if ( m != RebalanceMode::xrebalance
-			  && m != RebalanceMode::xrebalance2 )
+			if (m != RebalanceMode::xrebalance)
 				return Ev::lift();
-			use_plugin = (m == RebalanceMode::xrebalance2);
 			return run_cycle(scid);
 		}).catching<std::exception>([this](std::exception const& e) {
 			return Boss::log( bus, Warn
@@ -1098,72 +1087,19 @@ private:
 		});
 	}
 
-	/* Drive the chosen cycle through the executor the mode selects:
-	 * the in-clboss clboss-xmovefunds command (mode xrebalance,
-	 * reusing its sendpay/waitsendpay/harvest/attribution), or the
-	 * external xrebalance plugin (mode xrebalance2).  The loop
-	 * awaits this, so no new cycle starts while one is in flight
-	 * (the natural in-flight guard until the abandon/timeout
-	 * increment lands).  */
+	/* Execute the chosen cycle through the external xrebalance
+	 * plugin (layer-splitting on stock askrene).  The plugin owns
+	 * constraint knowledge and failure feedback; earnings
+	 * attribution arrives separately via its xrebalance_part
+	 * notifications (XRebalancePartMonitor), never from this
+	 * response.  The loop awaits this, so no new cycle starts
+	 * while one is in flight.  */
 	Ev::Io<void>
 	execute_cycle( std::vector<ScidCap> source_caps
 		     , std::vector<ScidCap> dest_caps
 		     , std::int64_t requested_sat
 		     , std::uint32_t maxfee_ppm
 		     ) {
-		if (use_plugin)
-			return execute_cycle_plugin( std::move(source_caps)
-						   , std::move(dest_caps)
-						   , requested_sat
-						   , maxfee_ppm
-						   );
-		/* clboss-xmovefunds has no per-scid cap concept; it gets
-		 * the bare scids as before.  */
-		auto parms = Json::Out();
-		auto obj = parms.start_object();
-		auto sa = obj.start_array("source_scid");
-		for (auto const& s : source_caps)
-			sa.entry(s.scid);
-		sa.end_array();
-		auto da = obj.start_array("dest_scid");
-		for (auto const& s : dest_caps)
-			da.entry(s.scid);
-		da.end_array();
-		obj.field("amount_msat",
-			  std::uint64_t(requested_sat) * 1000);
-		obj.field("maxfee_ppm", maxfee_ppm);
-		obj.field("maxparts", maxparts);
-		obj.field("execute", true);
-		obj.end_object();
-		return rpc.command("clboss-xmovefunds", std::move(parms))
-		.then([this](Jsmn::Object res) {
-			return log_result(res);
-		}).catching<RpcError>([this](RpcError const& e) {
-			/* Expected outcome on a tight/walled corridor (e.g.
-			 * getroutes 206): log one clean line, not the
-			 * BacktraceException's what().  No funds moved.  */
-			return Boss::log( bus, Info
-				, "XRebalancer: xmovefunds did not execute: %s"
-				, rpc_error_summary(e).c_str() );
-		}).catching<std::exception>([this](std::exception const& e) {
-			return Boss::log( bus, Warn
-				, "XRebalancer: xmovefunds error: %s"
-				, e.what() );
-		});
-	}
-
-	/* xrebalance2: the same cycle, executed by the external
-	 * xrebalance plugin (layer-splitting on stock askrene).  The
-	 * plugin owns constraint knowledge and failure feedback;
-	 * earnings attribution arrives separately via its
-	 * xrebalance_part notifications (XRebalancePartMonitor), never
-	 * from this response.  */
-	Ev::Io<void>
-	execute_cycle_plugin( std::vector<ScidCap> source_caps
-			    , std::vector<ScidCap> dest_caps
-			    , std::int64_t requested_sat
-			    , std::uint32_t maxfee_ppm
-			    ) {
 		/* Object-form entries carry the per-scid caps; the plugin
 		 * bounds each channel at min(cap, live liquidity) inside
 		 * one solve, so no peer overshoots its band edge however
@@ -1225,105 +1161,8 @@ private:
 		return msg;
 	}
 
-	/* Log one summary line for the transfer plus one line per part,
-	 * all under the "XRebalancer:" prefix so a single grep tells the
-	 * whole story.  The per-part / chokepoint detail comes from the
-	 * xmovefunds response (results[]/errors[]); nothing is re-derived. */
-	Ev::Io<void> log_result(Jsmn::Object res) {
-		/* The xmovefunds reply wraps the per-payment summary
-		 * (parts/delivered/fee/results/errors) under "execution";
-		 * the top level carries status/source_scids/amount/askrene. */
-		auto exec = (res.is_object() && res.has("execution"))
-			  ? res["execution"] : res;
-		auto num = [&exec](char const* k) -> double {
-			if (exec.is_object() && exec.has(k)) {
-				auto v = exec[k];
-				if (v.is_number())
-					return double(v);
-			}
-			return -1.0;
-		};
-		auto delivered = num("delivered_msat");
-		auto fee = num("fee_total_msat");
-		auto ppm = std::string();
-		if (delivered > 0.0) {
-			auto os = std::ostringstream();
-			os << " (" << std::llround(fee * 1e6 / delivered)
-			   << " ppm)";
-			ppm = os.str();
-		}
-		/* Chokepoint: among the failed parts, surface the one that got
-		 * CLOSEST to delivery -- the smallest from_target magnitude --
-		 * because that frontier (how near the best attempt came, and
-		 * the node that walled it) is the informative number, not
-		 * whichever part happens to carry the lowest partid.  Parts
-		 * with no parseable from_target (non-204 fallbacks) sort last;
-		 * if none parse we keep the first.  The failcode rides along in
-		 * the error string, so a 0x100c fee-wall vs 0x1007 liquidity-
-		 * wall frontier stays distinguishable.  */
-		auto reason = std::string();
-		if (exec.is_object() && exec.has("errors")
-		 && exec["errors"].is_array() && exec["errors"].size() > 0) {
-			auto errs = exec["errors"];
-			/* "from_target=N" -> N; sentinel max if absent.  */
-			auto from_target_mag = [](std::string const& s) -> long {
-				auto key = std::string("from_target=");
-				auto pos = s.find(key);
-				if (pos == std::string::npos)
-					return std::numeric_limits<long>::max();
-				pos += key.size();
-				auto n = 0L;
-				auto any = false;
-				while (pos < s.size()
-				    && s[pos] >= '0' && s[pos] <= '9') {
-					n = n * 10 + (s[pos] - '0');
-					++pos;
-					any = true;
-				}
-				return any ? n : std::numeric_limits<long>::max();
-			};
-			auto best_i = std::size_t(0);
-			auto best = std::numeric_limits<long>::max();
-			for (auto i = std::size_t(0); i < errs.size(); ++i) {
-				auto m = from_target_mag(
-					std::string(errs[i]));
-				if (m < best) {
-					best = m;
-					best_i = i;
-				}
-			}
-			auto e = std::string(errs[best_i]);
-			for (auto& ch : e)
-				if (ch == '\n' || ch == '\t')
-					ch = ' ';
-			reason = "; reason: " + e;
-			if (errs.size() > 1)
-				reason += " [closest of "
-					+ std::to_string(errs.size()) + "]";
-		}
-		if (delivered > 0.0)
-			/* Full or partial delivery: settled/total parts and the
-			 * economics; reason is present only on a partial.  */
-			return Boss::log( bus, Info
-				, "XRebalancer: transfer done: %.0f/%.0f parts, "
-				  "delivered %s msat, fee %s msat%s%s."
-				, num("parts_complete"), num("parts")
-				, Util::Str::group_digits(
-					std::int64_t(std::llround(
-						delivered))).c_str()
-				, Util::Str::group_digits(
-					std::int64_t(std::llround(
-						fee))).c_str()
-				, ppm.c_str(), reason.c_str() );
-		/* Nothing delivered: a clean failure -- show the part count
-		 * attempted and the chokepoint, not three zeros.  */
-		return Boss::log( bus, Info
-			, "XRebalancer: transfer failed: %.0f part(s)%s."
-			, num("parts"), reason.c_str() );
-	}
-
-	/* Plugin-response counterpart of log_result.  The xrebalance
-	 * reply is flat (no "execution" wrapper); parts[] carry status
+	/* Log one summary line for the transfer plus part detail.
+	 * The xrebalance reply is flat; parts[] carry status
 	 * strings plus failure geometry (hops_short / erring_scidd /
 	 * failcode), and stragglers show as "pending" (their results
 	 * stream via xrebalance_part notifications).  The label is the

@@ -43,11 +43,10 @@ private:
 						default_rebalance_mode
 					)
 				)),
-				"Rebalancer mode: \"xrebalance\" (the circular askrene "
-				"rebalancer, tuned by clboss-xrebalance-*), "
-				"\"xrebalance2\" (the same rebalancer executing "
-				"through the external xrebalance plugin, which "
-				"must be loaded into lightningd), or "
+				"Rebalancer mode: \"xrebalance\" (the circular "
+				"askrene rebalancer, tuned by clboss-xrebalance-*, "
+				"executing through the external xrebalance plugin, "
+				"which must be loaded into lightningd), or "
 				"\"off\" (disable rebalancing). "
 				" Set in the config for the startup default or "
 				"at runtime with "

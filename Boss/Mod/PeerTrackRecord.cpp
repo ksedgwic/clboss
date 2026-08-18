@@ -145,8 +145,7 @@ Ev::Io<void> PeerTrackRecord::on_option(Msg::Option const& o) {
 }
 
 /* Parse and apply one integer option, tolerating both the
- * number-at-startup and string-via-setconfig encodings; same
- * pattern as the AskreneUpdates option handlers.  */
+ * number-at-startup and string-via-setconfig encodings.  */
 Ev::Io<void> PeerTrackRecord::handle_int_option( Msg::Option const& o
 					       , std::int64_t& target
 					       , char const* name

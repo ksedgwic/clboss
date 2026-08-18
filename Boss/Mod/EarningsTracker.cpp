@@ -386,8 +386,8 @@ private:
 			return Ev::lift();
 		});
 	}
-	/* The sender (XMoveFunds or the part monitor) already
-	 * identified the (source_peer, dest_peer) for one successful
+	/* The part monitor already identified the
+	 * (source_peer, dest_peer) for one successful
 	 * sendpay part and packaged the per-part amount_moved /
 	 * fee_spent, so we run the symmetric DB update directly:
 	 * source peer gets in_expenditures / in_rebalanced (more
@@ -395,10 +395,9 @@ private:
 	 * out_rebalanced (more outbound).
 	 *
 	 * One bus message per successful part (an MPP-split
-	 * clboss-xmovefunds invocation can produce several), so
-	 * fees are recorded per-part rather than aggregated at the
-	 * top-level call -- finer-grained, matches the per-part
-	 * routing reality. */
+	 * transfer can produce several), so fees are recorded
+	 * per-part rather than aggregated at the top-level call --
+	 * finer-grained, matches the per-part routing reality. */
 	Ev::Io<void>
 	xrebalance_attribution(Boss::Msg::XRebalanceAttribution const& m) {
 		auto source = m.source;
