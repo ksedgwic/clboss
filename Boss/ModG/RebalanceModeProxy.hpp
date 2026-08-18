@@ -38,14 +38,6 @@ public:
 			return Ev::lift(m.mode);
 		});
 	}
-
-	/* Convenience: is Track A (classic) the active mode?  */
-	Ev::Io<bool>
-	is_classic() {
-		return get_mode().then([](RebalanceMode m) {
-			return Ev::lift(m == RebalanceMode::classic);
-		});
-	}
 };
 
 }}

@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING**: the built-in rebalancer (`JitRebalancer`,
+  `EarningsRebalancer`, `InitialRebalancer`, `FundsMover`) and the
+  manual `clboss-movefunds` command.  Rebalancing is now done by the
+  xrebalance engine, selected with the new `clboss-rebalance-mode`
+  option.  The `clboss-max-rebalance-fee-ppm` option is removed with
+  it; configs still setting it must drop it or `lightningd` will
+  refuse to start.
+  JIT (just-in-time) rebalancing is removed deliberately: holding an
+  incoming HTLC while a rebalance runs delays the whole payment path.
+  The demand it served is covered by demand-triggered rebalance
+  cycles, which react to observed forwards without holding HTLCs.
+
 ### Fixed
 
 - Channel size options that violate the channel-creation planner's

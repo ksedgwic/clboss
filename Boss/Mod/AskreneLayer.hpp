@@ -12,23 +12,12 @@ namespace Boss { namespace Mod { class Rpc; } }
 
 namespace Boss { namespace Mod { namespace AskreneLayer {
 
-/* Name of the persistent askrene layer that CLBOSS subsystems
+/* Name of the persistent askrene layer the xrebalance code paths
  * write failure-feedback and (optionally) success-observations
  * into.  Following the xpay convention -- the layer is named
- * after the plugin that owns it.  All CLBOSS writes go to this
- * layer; downstream getroutes calls that include it in their
- * layers array benefit from the accumulated knowledge.
- */
-extern std::string const clboss_layer_name;
-
-/* Name of the persistent askrene layer used by the xrebalance
- * family of code paths (currently just the manual
- * `clboss-xmovefunds` RPC; eventually shared with the periodic
- * xrebalance Layer 3 and JIT xrebalance Layer 4 once they land).
- *
- * Distinct from clboss_layer_name so the two implementations'
- * accumulated knowledge does not commingle while both run side
- * by side during the FundsMover -> xrebalance transition.
+ * after the subsystem that owns it; downstream getroutes calls
+ * that include it in their layers array benefit from the
+ * accumulated knowledge.
  */
 extern std::string const xrebalance_layer_name;
 
@@ -78,11 +67,11 @@ Ev::Io<void> inform_channel_unconstrained( Boss::Mod::Rpc& rpc
  * Note: askrene's layer_add_disabled_node appends without
  * deduping; repeated calls accumulate identical entries.
  * Callers that want once-per-restart semantics (e.g. the
- * FundsMover self-exclude initialization) should gate the
+ * clboss-self exclusion initialization) should gate the
  * call on is_node_disabled() below.  Callers that record a
- * fresh failure observation per call (e.g. the Attempter's
- * 0x2000 NODE-level feedback) should NOT dedup -- each call
- * is meaningful independent evidence.
+ * fresh failure observation per call (e.g. a route-failure
+ * handler's 0x2000 NODE-level feedback) should NOT dedup --
+ * each call is meaningful independent evidence.
  */
 Ev::Io<void> disable_node( Boss::Mod::Rpc& rpc
 			 , std::string const& layer
@@ -113,12 +102,12 @@ Ev::Io<bool> is_node_disabled( Boss::Mod::Rpc& rpc
  * include the layer see the override instead of the
  * (possibly-stale) gossip values.
  *
- * Intended use: FundsMover/Attempter on a sendpay 204 with a
+ * Intended use: the rebalancer's sendpay-204 handling, on a
  * failcode that carries a channel_update payload
  * (0x1007/0x100b/0x100c/0x100d/0x100e).  Parsing the embedded
  * channel_update yields the forwarder's CURRENT policy, which is
- * fed back here so the next within-Runner attempt uses the
- * actual fee/CLTV/min/max rather than what gossmap has cached.
+ * fed back here so the next attempt uses the actual
+ * fee/CLTV/min/max rather than what gossmap has cached.
  * Mirrors xpay's process_channel_update_from_onion_error in
  * cln/plugins/xpay/xpay.c.
  *

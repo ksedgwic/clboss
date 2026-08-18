@@ -25,21 +25,17 @@
 #include"Boss/Mod/CommandReceiver.hpp"
 #include"Boss/Mod/DemandTracker.hpp"
 #include"Boss/Mod/Dowser.hpp"
-#include"Boss/Mod/EarningsRebalancer.hpp"
 #include"Boss/Mod/EarningsTracker.hpp"
 #include"Boss/Mod/FeeModderByBalance.hpp"
 #include"Boss/Mod/FeeMonitor.hpp"
 #include"Boss/Mod/FeeModderByPriceTheory.hpp"
 #include"Boss/Mod/FeeModderBySize.hpp"
 #include"Boss/Mod/ForwardFeeMonitor.hpp"
-#include"Boss/Mod/FundsMover/Main.hpp"
 #include"Boss/Mod/HtlcAcceptor.hpp"
 #include"Boss/Mod/InitialConnect.hpp"
-#include"Boss/Mod/InitialRebalancer.hpp"
 #include"Boss/Mod/Initiator.hpp"
 #include"Boss/Mod/InternetConnectionMonitor.hpp"
 #include"Boss/Mod/InvoicePayer.hpp"
-#include"Boss/Mod/JitRebalancer.hpp"
 #include"Boss/Mod/JsonOutputter.hpp"
 #include"Boss/Mod/ListfundsAnalyzer.hpp"
 #include"Boss/Mod/ListfundsAnnouncer.hpp"
@@ -47,7 +43,6 @@
 #include"Boss/Mod/ListpeersAnalyzer.hpp"
 #include"Boss/Mod/ListpeersAnnouncer.hpp"
 #include"Boss/Mod/Manifester.hpp"
-#include"Boss/Mod/MoveFundsCommand.hpp"
 #include"Boss/Mod/NeedsConnectSolicitor.hpp"
 #include"Boss/Mod/NeedsOnchainFundsSwapper.hpp"
 #include"Boss/Mod/NewaddrHandler.hpp"
@@ -214,17 +209,10 @@ std::shared_ptr<void> all( std::ostream& cout
 
 	/* Channel balancing.  */
 	all->install<RebalanceModeManager>(bus);
-	all->install<FundsMover::Main>(bus);
 	all->install<XRebalancer>(bus, *waiter);
 	all->install<XRebalancePartMonitor>(bus);
 	all->install<DemandTracker>(bus);
-	all->install<MoveFundsCommand>(bus);
 	all->install<EarningsTracker>(bus);
-	all->install<JitRebalancer>(bus);
-#ifdef ENABLE_INITIAL_REBALANCER
-	all->install<InitialRebalancer>(bus);
-#endif /* ENABLE_INITIAL_REBALANCER */
-	all->install<EarningsRebalancer>(bus);
 	all->install<RebalanceUnmanager>(bus);
 
 	/* Unmanaged nodes.  */

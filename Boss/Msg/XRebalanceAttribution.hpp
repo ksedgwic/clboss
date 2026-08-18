@@ -9,18 +9,17 @@ namespace Boss { namespace Msg {
 /** struct Boss::Msg::XRebalanceAttribution
  *
  * @brief Per-part earnings attribution from a successful
- * `clboss-xmovefunds` sendpay part.
+ * rebalance sendpay part.
  *
- * Raised by Boss::Mod::XMoveFunds once per part that returns
- * `status: "complete"` from waitsendpay.  Boss::Mod::EarningsTracker
- * subscribes and applies the same symmetric DB update the
- * FundsMover path already runs on Msg::ResponseMoveFunds: source
- * peer gets `in_expenditures += fee_spent` / `in_rebalanced +=
- * amount_moved`, destination peer gets the matching `out_*`
- * increments.
+ * Raised once per successfully completed part -- by
+ * Boss::Mod::XMoveFunds for its own waitsendpay parts, and by
+ * Boss::Mod::XRebalancePartMonitor for the external xrebalance
+ * plugin's part notifications.  Boss::Mod::EarningsTracker
+ * subscribes and applies a symmetric DB update: source peer gets
+ * `in_expenditures += fee_spent` / `in_rebalanced += amount_moved`,
+ * destination peer gets the matching `out_*` increments.
  *
- * Distinct from Msg::ResponseMoveFunds because XMoveFunds has no
- * Runner pendings table -- a single `clboss-xmovefunds` invocation
+ * Attribution is per part because a single rebalance invocation
  * can use a SET of source / dest scids and have askrene's MCF
  * split the flow across multiple (source, dest) pairs.  Each
  * successful part identifies its actual (source_peer, dest_peer)
