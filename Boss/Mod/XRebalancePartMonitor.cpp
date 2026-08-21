@@ -45,19 +45,35 @@ void XRebalancePartMonitor::start() {
 				       ? s : s.substr(0, slash));
 		};
 		try {
-			/* Custom notifications arrive with the sender's
-			 * payload AS params (lightningd relays it verbatim,
-			 * origin as a sibling field) -- unlike built-in
-			 * topics, which nest the payload under a key named
-			 * after the topic.  */
+			/* lightningd relays the sender's payload verbatim
+			 * as params (origin as a sibling field).  Within
+			 * it the cln-plugin crate double-shapes: the
+			 * fields flat (deprecated, removal scheduled for
+			 * CLN 26.09) plus a copy nested under the topic
+			 * key.  Read the nested form first so a crate
+			 * upgrade that drops the flat copy cannot end
+			 * attribution.  */
 			auto payload = n.params;
+			if ( payload.has("xrebalance_part")
+			  && payload["xrebalance_part"].is_object()
+			   )
+				payload = payload["xrebalance_part"];
+			/* The plugin's Part::json always carries these
+			 * fields, so a miss is a payload-shape change,
+			 * not a routine part; a silent return here is
+			 * how attribution dies unnoticed.  */
 			if ( !payload.has("status")
 			  || !payload.has("first_hop")
 			  || !payload.has("return_hop")
 			  || !payload.has("delivered_msat")
 			  || !payload.has("fee_msat")
 			   )
-				return Ev::lift();
+				return Boss::log( bus, Error
+						, "XRebalancePartMonitor: "
+						  "xrebalance_part payload "
+						  "missing expected fields: %s"
+						, Util::stringify(n.params).c_str()
+						);
 			/* Only completed parts carry earnings; failed and
 			 * pending parts are the plugin's business.  */
 			if (std::string(payload["status"]) != "complete")

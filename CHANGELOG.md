@@ -49,6 +49,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- The `xrebalance_part` notification monitor now reads the nested
+  payload form, falling back to the deprecated flat form the
+  cln-plugin crate schedules for removal in CLN 26.09; without
+  this, a plugin rebuild against a newer crate would silently end
+  earnings attribution.  A payload missing expected fields is now
+  logged instead of silently ignored.
+
 - `clboss-xrebalance-per-hour=0` now pauses matched cycles as
   documented, instead of running one every 60-second poll.
   Demand-triggered cycles still run; use

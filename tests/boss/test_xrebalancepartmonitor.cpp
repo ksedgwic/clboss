@@ -42,10 +42,10 @@ auto const listpeers_result = R"JSON(
 /* The plugin's Part::json shape, as captured live off a probe
  * subscriber (2026-07-23, lab0-a): plain-number msat fields, real
  * SCIDDs (direction-suffixed) on first_hop / return_hop, label
- * appended by the notifier.  Custom notifications deliver this AS
- * params (lightningd relays the sender's payload verbatim; cln-plugin
- * 0.7.0 also nests a copy under the topic key, which consumers should
- * ignore).  */
+ * appended by the notifier.  This is the FLAT payload form, which
+ * the cln-plugin crate deprecates (removal scheduled for CLN
+ * 26.09); the monitor reads the nested form first and falls back
+ * to this one.  */
 auto const complete_part = R"JSON(
 {
   "part_index": 2,
@@ -82,6 +82,56 @@ auto const failed_part = R"JSON(
   "detail": null,
   "label": "ab12cd34"
 }
+)JSON";
+
+/* The same route in the modern nested-only shape: what remains
+ * after the crate drops the deprecated flat copy.  */
+auto const nested_complete_part = R"JSON(
+{
+  "xrebalance_part": {
+    "part_index": 3,
+    "payment_hash": "a25d1e329d9b094aeeec8c2191ca037d3f5b0662e21ae850debe8ea2f5a6a059",
+    "status": "complete",
+    "first_hop": "1000x1x1/1",
+    "return_hop": "1000x1x0/0",
+    "planned_msat": 20000000,
+    "delivered_msat": 20000000,
+    "sent_msat": 20003000,
+    "fee_msat": 3000,
+    "hops_short": null,
+    "failcode": null,
+    "erring_scidd": null,
+    "detail": null,
+    "label": "ab12cd34"
+  }
+}
+)JSON";
+
+/* Both shapes at once: what cln-plugin 0.7.0 actually sends.  The
+ * flat copy diverges here so the assertion proves the nested form
+ * takes precedence; a real sender emits identical copies.  */
+auto const double_shaped_part = R"JSON(
+{
+  "status": "complete",
+  "first_hop": "1000x1x1/1",
+  "return_hop": "1000x1x0/0",
+  "delivered_msat": 1,
+  "fee_msat": 1,
+  "xrebalance_part": {
+    "status": "complete",
+    "first_hop": "1000x1x1/1",
+    "return_hop": "1000x1x0/0",
+    "delivered_msat": 30000000,
+    "fee_msat": 4000
+  }
+}
+)JSON";
+
+/* A payload-shape change: right topic, expected fields gone.  Must
+ * not attribute (the monitor logs it instead of dropping it
+ * silently).  */
+auto const malformed_part = R"JSON(
+{ "surprise": true }
 )JSON";
 
 }
@@ -169,6 +219,45 @@ int main() {
 		assert(attribution->destination == Ln::NodeId("020000000000000000000000000000000000000000000000000000000000000000"));
 		assert(attribution->amount_moved == Ln::Amount::msat(10000000));
 		assert(attribution->fee_spent == Ln::Amount::msat(5958));
+
+		/* The nested-only shape attributes identically.  */
+		attribution = nullptr;
+		return bus.raise(Boss::Msg::Notification{
+			"xrebalance_part",
+			Jsmn::Object::parse_json(nested_complete_part)
+		});
+	}).then([&]() {
+		return Ev::yield(42);
+	}).then([&]() {
+		assert(attribution);
+		assert(attribution->source == Ln::NodeId("020000000000000000000000000000000000000000000000000000000000000001"));
+		assert(attribution->destination == Ln::NodeId("020000000000000000000000000000000000000000000000000000000000000000"));
+		assert(attribution->amount_moved == Ln::Amount::msat(20000000));
+		assert(attribution->fee_spent == Ln::Amount::msat(3000));
+
+		/* When both shapes are present, the nested one wins.  */
+		attribution = nullptr;
+		return bus.raise(Boss::Msg::Notification{
+			"xrebalance_part",
+			Jsmn::Object::parse_json(double_shaped_part)
+		});
+	}).then([&]() {
+		return Ev::yield(42);
+	}).then([&]() {
+		assert(attribution);
+		assert(attribution->amount_moved == Ln::Amount::msat(30000000));
+		assert(attribution->fee_spent == Ln::Amount::msat(4000));
+
+		/* A malformed payload must not attribute (or crash).  */
+		attribution = nullptr;
+		return bus.raise(Boss::Msg::Notification{
+			"xrebalance_part",
+			Jsmn::Object::parse_json(malformed_part)
+		});
+	}).then([&]() {
+		return Ev::yield(42);
+	}).then([&]() {
+		assert(!attribution);
 		return Ev::lift(0);
 	});
 
