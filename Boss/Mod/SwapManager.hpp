@@ -27,6 +27,9 @@ public:
 
 	explicit
 	SwapManager(S::Bus& bus);
+
+	/* Test seam: shrink the stalled-loop watchdog window.  */
+	void set_stall_timeout_secs(double secs);
 };
 
 }}
