@@ -49,6 +49,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- When the channel-candidate table exceeds its cap, the hourly
+  eviction now drops the most expendable candidate -- proven
+  underperformers first, then no-record candidates (preferring to
+  keep those advertising splice support), keepers last -- instead
+  of a uniformly random victim that could cost a proven earner
+  while underperformers stayed.
+
 - Channel size options that violate the channel-creation planner's
   sizing requirement (`max-channel >= 3 * min-channel + 20000`
   satoshis) no longer crash CLBOSS on the first creation run after

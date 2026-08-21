@@ -89,6 +89,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/ChannelFeeManager.hpp \
 	Boss/Mod/CommandReceiver.cpp \
 	Boss/Mod/CommandReceiver.hpp \
+	Boss/Mod/ChannelCandidateInvestigator/EvictionPolicy.cpp \
+	Boss/Mod/ChannelCandidateInvestigator/EvictionPolicy.hpp \
 	Boss/Mod/ChannelCandidateInvestigator/Gumshoe.cpp \
 	Boss/Mod/ChannelCandidateInvestigator/Gumshoe.hpp \
 	Boss/Mod/ChannelCandidateInvestigator/Janitor.cpp \
@@ -604,6 +606,7 @@ TESTS = \
 	tests/bitcoin/test_tx \
 	tests/boltz/test_claimtxhandler_scoped_update \
 	tests/boltz/test_match_lockscript \
+	tests/boss/channelcandidateinvestigator/test_evictionpolicy \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
 	tests/boss/channelcandidateinvestigator/test_secretary \
 	tests/boss/test_amountsettingshandler \
