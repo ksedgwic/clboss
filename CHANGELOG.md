@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- A swap whose newaddr or swap-provider conversation died
+  mid-flight could wedge SwapManager for the process lifetime:
+  the flag serializing each processing loop was only cleared when
+  the loop's queue drained, and the response that would have
+  advanced it sometimes never arrives.  The periodic tick now
+  clears a flag stuck longer than 30 minutes and restarts the
+  loop; the previous remedy was restarting Core Lightning.
+
 ## [0.16.3] - 2026-08-18: "Tougher Than the Race"
 
 ### Security
