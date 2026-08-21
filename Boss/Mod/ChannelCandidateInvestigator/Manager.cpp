@@ -1,8 +1,10 @@
+#include"Boss/Mod/ChannelCandidateInvestigator/EvictionPolicy.hpp"
 #include"Boss/Mod/ChannelCandidateInvestigator/Gumshoe.hpp"
 #include"Boss/Mod/ChannelCandidateInvestigator/Janitor.hpp"
 #include"Boss/Mod/ChannelCandidateInvestigator/Manager.hpp"
 #include"Boss/Mod/ChannelCandidateInvestigator/Secretary.hpp"
 #include"Boss/Mod/InternetConnectionMonitor.hpp"
+#include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/AmountSettings.hpp"
 #include"Boss/Msg/ChannelCreateResult.hpp"
 #include"Boss/Msg/Init.hpp"
@@ -21,11 +23,15 @@
 #include"Boss/log.hpp"
 #include"Boss/random_engine.hpp"
 #include"Ev/map.hpp"
+#include"Json/Out.hpp"
+#include"Jsmn/Object.hpp"
 #include"Ln/Amount.hpp"
+#include"Ln/FeatureBit.hpp"
 #include"S/Bus.hpp"
 #include"Sqlite3.hpp"
 #include<algorithm>
 #include<iterator>
+#include<map>
 #include<random>
 
 namespace {
@@ -74,6 +80,7 @@ void Manager::start() {
 
 	bus.subscribe<Msg::Init>([this](Msg::Init const& init) {
 		db = init.db;
+		rpc = &init.rpc;
 
 		/* Initialize the database.  */
 		return db.transact().then([this](Sqlite3::Tx tx) {
@@ -211,28 +218,13 @@ void Manager::start() {
 		auto cases = std::make_shared<std::vector<Ln::NodeId>>();
 		/* Human-readable text.  */
 		auto report = std::make_shared<std::string>();
+		/* All candidates, for the over-cap eviction below.  */
+		auto all_nodes = std::make_shared<std::vector<Ln::NodeId>>();
 
 		return db.transact().then([=, this](Sqlite3::Tx tx) {
 			auto act = Ev::lift();
-			/* First, if there are too many candidates,
-			 * delete one by random.
-			 */
-			auto all = secretary.get_all(tx);
-			if (all.size() > max_candidates) {
-				auto dist = std::uniform_int_distribution<std::size_t>(
-					0, all.size() - 1
-				);
-				auto n = all[dist(Boss::random_engine)].first;
-				secretary.remove_candidate(tx, n);
-				act += Boss::log( bus, Info
-						, "ChannelCandidateInvestigator: "
-						  "Randomly dropping %s from "
-						  "investigation, "
-						  "we have too many "
-						  "candidates."
-						, std::string(n).c_str()
-						);
-			}
+			for (auto const& e : secretary.get_all(tx))
+				all_nodes->push_back(e.first);
 
 			/* Determine number of good candidates.  */
 			*good_candidates =
@@ -253,6 +245,37 @@ void Manager::start() {
 					);
 
 			return act;
+		}).then([=, this]() {
+			/* If there are too many candidates, drop the
+			 * most expendable one.  The victim choice needs
+			 * the track-record (and possibly splice)
+			 * lookups, which are asynchronous, so it runs
+			 * outside the transaction above.  */
+			if (all_nodes->size() <= max_candidates)
+				return Ev::lift();
+			return pick_eviction_victim(*all_nodes
+				).then([=, this](std::pair< Ln::NodeId
+							  , char const*
+							  > victim) {
+				return db.transact(
+					).then([=, this](Sqlite3::Tx tx) {
+					secretary.remove_candidate(
+						tx, victim.first
+					);
+					tx.commit();
+					return Boss::log( bus, Info
+							, "ChannelCandidate"
+							  "Investigator: "
+							  "Dropping %s (%s) "
+							  "from investigation, "
+							  "we have too many "
+							  "candidates."
+							, std::string(victim.first)
+								.c_str()
+							, victim.second
+							);
+				});
+			});
 		}).then([=, this]() {
 			/* If we are online, continue.  */
 			if (imon.is_online())
@@ -402,6 +425,85 @@ Manager::get_channel_candidates() {
 		});
 
 		return Ev::lift(std::move(ncandidates));
+	});
+}
+
+Ev::Io<std::pair<Ln::NodeId, char const*>>
+Manager::pick_eviction_victim(std::vector<Ln::NodeId> nodes) {
+	auto sh_nodes = std::make_shared<std::vector<Ln::NodeId>>(
+		std::move(nodes)
+	);
+	return track_record.execute(Msg::RequestPeerTrackRecord{
+		nullptr, *sh_nodes
+	}).then([=, this](Msg::ResponsePeerTrackRecord resp) {
+		auto verdicts = std::make_shared<std::map< Ln::NodeId
+							 , Msg::TrackRecordVerdict
+							 >>();
+		auto norecord = std::vector<Ln::NodeId>();
+		auto have_underperformer = false;
+		for (auto const& n : *sh_nodes) {
+			auto it = resp.records.find(n);
+			auto v = it == resp.records.end()
+			       ? Msg::TrackRecordVerdict::NoRecord
+			       : it->second.verdict
+			       ;
+			(*verdicts)[n] = v;
+			if (v == Msg::TrackRecordVerdict::Underperformer)
+				have_underperformer = true;
+			else if (v == Msg::TrackRecordVerdict::NoRecord)
+				norecord.push_back(n);
+		}
+		/* Splice support only breaks ties between no-record
+		 * candidates; skip the lookups when an underperformer
+		 * already decides the pick, and before Init provides
+		 * the rpc.  */
+		if (have_underperformer || norecord.empty() || !rpc)
+			return Ev::lift(EvictionPolicy::pick(
+				*sh_nodes, *verdicts,
+				std::set<Ln::NodeId>()
+			));
+		return spliceable_among(std::move(norecord)
+			).then([=](std::set<Ln::NodeId> spliceable) {
+			return Ev::lift(EvictionPolicy::pick(
+				*sh_nodes, *verdicts, spliceable
+			));
+		});
+	});
+}
+
+/* Mirrors ChannelCreator::Manager::get_spliceable_nodes.  */
+Ev::Io<std::set<Ln::NodeId>>
+Manager::spliceable_among(std::vector<Ln::NodeId> nodes) {
+	auto lookup = [this](Ln::NodeId n) {
+		return rpc->command("listnodes"
+				   , Json::Out()
+					.start_object()
+						.field("id", std::string(n))
+					.end_object()
+				   ).then([n](Jsmn::Object res) {
+			auto spliceable = false;
+			try {
+				auto ns = res["nodes"];
+				if (ns.length() != 0 && ns[0].has("features")) {
+					auto f = std::string(ns[0]["features"]);
+					/* BOLT #9 `option_splice`.  */
+					spliceable = Ln::feature_bit(f, 62)
+						  || Ln::feature_bit(f, 63)
+						   ;
+				}
+			} catch (...) { /* Treat as not spliceable.  */ }
+			return Ev::lift(std::make_pair(n, spliceable));
+		}).catching<Boss::Mod::RpcError>([n](Boss::Mod::RpcError const&) {
+			return Ev::lift(std::make_pair(n, false));
+		});
+	};
+	return Ev::map( std::move(lookup), std::move(nodes)
+		      ).then([](std::vector<std::pair<Ln::NodeId, bool>> rv) {
+		auto out = std::set<Ln::NodeId>();
+		for (auto const& e : rv)
+			if (e.second)
+				out.insert(e.first);
+		return Ev::lift(std::move(out));
 	});
 }
 
