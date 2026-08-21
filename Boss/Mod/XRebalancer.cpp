@@ -142,9 +142,10 @@ private:
 			     >([this](Msg::Manifestation const& _) {
 			return manifest_option(opt_per_hour, default_per_hour,
 				"Average number of flow-rebalance (xrebalance) "
-				"cycles per hour (0 = paused).  Poisson-paced; "
-				"only active when the rebalancer mode is "
-				"\"xrebalance\".")
+				"cycles per hour (0 = pause matched cycles; "
+				"demand-triggered cycles still run).  "
+				"Poisson-paced; only active when the "
+				"rebalancer mode is \"xrebalance\".")
 			     + manifest_option(opt_floor, default_floor,
 				"Route-cost floor (ppm): stop growing the "
 				"matched-pool cycle once the marginal joint "
@@ -379,6 +380,13 @@ private:
 	}
 
 	Ev::Io<void> tick() {
+		/* At rate 0 next_delay_secs() degrades to a short poll
+		 * so a setconfig re-enable is noticed; the poll itself
+		 * must not run a cycle.  Demand cycles are deliberately
+		 * unaffected -- clboss-rebalance-mode=off is the full
+		 * disable.  */
+		if (per_hour <= 0.0)
+			return Ev::lift();
 		if (in_flight)
 			return Boss::log( bus, Debug
 					, "XRebalancer: tick skipped, cycle "
