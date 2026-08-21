@@ -22,6 +22,7 @@
 #include"Boss/random_engine.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/foreach.hpp"
+#include"Ev/now.hpp"
 #include"Ev/yield.hpp"
 #include"S/Bus.hpp"
 #include"Sqlite3.hpp"
@@ -40,7 +41,12 @@ private:
 	S::Bus& bus;
 	Sqlite3::Db db;
 	bool getting_address;
+	double getting_address_start;
 	bool getting_invoice;
+	double getting_invoice_start;
+	/* Stalled-loop watchdog window; see check_stall.  Settable
+	 * for tests.  */
+	double stall_timeout_secs;
 
 public:
 	Impl() =delete;
@@ -51,8 +57,15 @@ public:
 	Impl( S::Bus& bus_
 	    ) : bus(bus_)
 	      , getting_address(false)
+	      , getting_address_start(0.0)
 	      , getting_invoice(false)
+	      , getting_invoice_start(0.0)
+	      , stall_timeout_secs(1800.0)
 	      { start(); }
+
+	void set_stall_timeout_secs(double secs) {
+		stall_timeout_secs = secs;
+	}
 
 private:
 	/* /!\ db column 'state', do not change numbers!  */
@@ -212,7 +225,15 @@ private:
 	std::queue<Uuid> needs_invoice;
 
 	Ev::Io<void> on_periodic() {
-		return Ev::lift().then([this]() {
+		return check_stall( "address"
+				  , getting_address
+				  , getting_address_start
+				  ).then([this]() {
+			return check_stall( "invoice"
+					  , getting_invoice
+					  , getting_invoice_start
+					  );
+		}).then([this]() {
 			return load_queue( needs_address
 					 , NeedsOnchainAddress
 					 ).then([this]() {
@@ -259,11 +280,34 @@ private:
 		});
 	}
 
+	/* The getting_* flags serialize their loops, but a loop's
+	 * continuation can arrive via a bus response that may never
+	 * come (a newaddr or swap-provider chain dying mid-flight),
+	 * leaving the flag set and the loop dead for the process
+	 * lifetime -- every later tick would no-op silently.  Clear
+	 * a flag stuck longer than stall_timeout_secs so the same
+	 * tick restarts the loop and retries the queue front.  */
+	Ev::Io<void> check_stall( char const* what
+				, bool& flag
+				, double& start
+				) {
+		if (!flag || Ev::now() - start < stall_timeout_secs)
+			return Ev::lift();
+		flag = false;
+		return Boss::log( bus, Warn
+				, "SwapManager: %s loop stalled for "
+				  "%.0f minutes; restarting it."
+				, what
+				, (Ev::now() - start) / 60.0
+				);
+	}
+
 	/* Processing of items in needs-address.  */
 	Ev::Io<void> process_needs_address() {
 		if (getting_address)
 			return Ev::lift();
 		getting_address = true;
+		getting_address_start = Ev::now();
 		return loop_needs_address();
 	}
 	Ev::Io<void> loop_needs_address() {
@@ -316,7 +360,15 @@ private:
 		});
 	}
 	Ev::Io<void> on_response_newaddr(std::string n_address) {
-		assert(getting_address);
+		/* A response landing after check_stall reset the loop
+		 * has no claim on the queue front; drop it -- an
+		 * unused address is harmless, and the restarted loop
+		 * requests its own.  */
+		if (!getting_address || needs_address.empty())
+			return Boss::log( bus, Debug
+					, "SwapManager: dropping late "
+					  "newaddr response."
+					);
 		auto address = std::make_shared<std::string>(
 			std::move(n_address)
 		);
@@ -380,6 +432,7 @@ private:
 		if (getting_invoice)
 			return Ev::lift();
 		getting_invoice = true;
+		getting_invoice_start = Ev::now();
 		return loop_needs_invoice();
 	}
 
@@ -490,6 +543,14 @@ private:
 	}
 	/* On swap creation.  */
 	Ev::Io<void> on_swap_creation(Msg::SwapCreation const& s) {
+		/* Same staleness rule as newaddr responses: with no
+		 * live invoice round, this response is from a round
+		 * check_stall already abandoned.  */
+		if (!getting_invoice || needs_invoice.empty())
+			return Boss::log( bus, Debug
+					, "SwapManager: dropping late "
+					  "swap-creation response."
+					);
 		if (!s.success) {
 			/* Remove a quotation and try again.  */
 			quotations.pop_back();
@@ -1175,5 +1236,9 @@ SwapManager::~SwapManager() =default;
 SwapManager::SwapManager(S::Bus& bus
 			) : pimpl(Util::make_unique<Impl>(bus))
 			  { }
+
+void SwapManager::set_stall_timeout_secs(double secs) {
+	pimpl->set_stall_timeout_secs(secs);
+}
 
 }}
