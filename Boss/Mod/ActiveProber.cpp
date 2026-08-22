@@ -1,6 +1,7 @@
 #include"Boss/Mod/ActiveProber.hpp"
 #include"Boss/Mod/AskreneLayer.hpp"
 #include"Boss/Mod/ChannelCandidateInvestigator/Main.hpp"
+#include"Boss/Mod/GetroutesFirstHop.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/ProbeActively.hpp"
@@ -293,40 +294,21 @@ private:
 			return rpc.command("getroutes", std::move(pj));
 		}).then([this](Jsmn::Object res) {
 			try {
-				/* getroutes path[] hop fields node_id_out /
-				 * amount_out_msat / cltv_out shipped in CLN
-				 * v26.06 (short_channel_id_dir is older,
-				 * v24.11, and unconditional).  The
-				 * deprecated pre-v26.06 names carry
-				 * one-hop-shifted in-side values that must
-				 * never feed a sendpay route, so there is
-				 * deliberately NO fallback: the Initiator
-				 * version gate refuses stock older CLN at
-				 * startup, and this check keeps a bypassed
-				 * gate (clboss-skip-cln-version-check) loud
-				 * instead of subtly wrong.
-				 */
-				auto path0 = res["routes"][0]["path"][0];
-				if ( !path0.has("node_id_out")
-				  || !path0.has("amount_out_msat")
-				  || !path0.has("cltv_out")
-				   ) {
-					if (!to_try.empty())
-						to_try.pop();
-					return Boss::log( bus, Error
-							, "ActiveProber: getroutes "
-							  "hop lacks node_id_out/"
-							  "amount_out_msat/cltv_out; "
-							  "CLBOSS requires CLN "
-							  "v26.06+ (or a backport of "
-							  "those getroutes fields)."
-							).then([]() {
-						return Ev::lift(false);
-					});
-				}
-				id1 = Ln::NodeId(std::string(
-					path0["node_id_out"]
-				));
+				/* GetroutesFirstHop reads the v26.06
+				 * out-side hop fields (node_id_out /
+				 * amount_out_msat / cltv_out), deriving
+				 * them from the deprecated trio on a
+				 * stock v26.04 response
+				 * (short_channel_id_dir is older, v24.11,
+				 * and unconditional).  A route carrying
+				 * neither form throws into the handler
+				 * below.  */
+				auto route = res["routes"][0];
+				auto hop0 = GetroutesFirstHop(route);
+				id1 = std::move(hop0.node_id_out);
+				amount1 = hop0.amount_out;
+				delay1 = hop0.cltv_out;
+				auto path0 = route["path"][0];
 				/* short_channel_id_dir is "SCID/dir"; split
 				 * into the SCID and the direction.  If
 				 * the slash is missing the response is
@@ -344,12 +326,6 @@ private:
 				chan1 = Ln::Scid(sdir.substr(0, slash));
 				direction1 = std::uint32_t(std::stoul(
 					sdir.substr(slash + 1)
-				));
-				amount1 = Ln::Amount::object(
-					path0["amount_out_msat"]
-				);
-				delay1 = std::uint32_t(double(
-					path0["cltv_out"]
 				));
 			} catch (std::exception const& _) {
 				/* Broaden catch to std::exception so we also

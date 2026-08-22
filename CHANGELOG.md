@@ -80,19 +80,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-- **BREAKING**: CLBOSS now requires **Core Lightning v26.06 or later**.
-  The probing subsystems build routes from the
-  `getroutes` per-hop fields `node_id_out` / `amount_out_msat` /
-  `cltv_out`, which shipped in v26.06; the deprecated pre-v26.06
-  fields carry one-hop-shifted values that would misprice routes.
-  CLBOSS checks the
-  CLN version at startup and refuses to run on older nodes, before
+- **BREAKING**: CLBOSS now requires **Core Lightning v26.04 or later**.
+  The probing subsystems build routes from the `getroutes` per-hop
+  out-side fields (`node_id_out` / `amount_out_msat` / `cltv_out`):
+  on v26.06 and later these are read directly, and on v26.04 they
+  are derived from the deprecated per-hop fields, which carry the
+  same values one hop over.  CLBOSS checks the
+  CLN version at startup and refuses to run on older, untested
+  nodes, before
   creating or modifying any on-disk state (note: with
   `important-plugin`, a refused start stops lightningd itself).
-  Operators running an older CLN that carries a backport of the
-  v26.06 `getroutes` fields can bypass the startup check with
-  `--clboss-skip-cln-version-check`; every `getroutes` response is
-  still verified even with the check skipped.  Users on older CLN
+  Operators running an older CLN that carries backports of what
+  CLBOSS needs (askrene `getroutes`, `xpay`) can bypass the
+  startup check with
+  `--clboss-skip-cln-version-check`.  Users on older CLN
   releases should stay on CLBOSS 0.16.x, which uses the legacy
   `getroute`/`pay` APIs that older CLN still provides.
 

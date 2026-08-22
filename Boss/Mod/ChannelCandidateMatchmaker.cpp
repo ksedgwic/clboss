@@ -1,4 +1,5 @@
 #include"Boss/Mod/ChannelCandidateMatchmaker.hpp"
+#include"Boss/Mod/GetroutesFirstHop.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/AmountSettings.hpp"
 #include"Boss/Msg/Init.hpp"
@@ -128,32 +129,15 @@ private:
 				  ).then([this](Jsmn::Object res) {
 			auto patron = Ln::NodeId();
 			try {
-				/* getroutes' path[K].node_id_out shipped in
-				 * CLN v26.06.  No fallback to the
-				 * deprecated next_node_id: the Initiator
-				 * version gate refuses stock older CLN at
-				 * startup, and this check keeps a bypassed
-				 * gate (clboss-skip-cln-version-check)
-				 * loud instead of subtly wrong.
-				 */
-				auto path0 = res["routes"][0]["path"][0];
-				if (!path0.has("node_id_out"))
-					return Boss::log( bus, Error
-							, "ChannelCandidateMatchmaker: "
-							  "getroutes hop lacks "
-							  "node_id_out; CLBOSS "
-							  "requires CLN v26.06+ (or "
-							  "a backport of the "
-							  "getroutes fields)."
-							).then([]()
-								-> Ev::Io<void>{
-						throw RpcError( "getroutes"
-							      , Jsmn::Object()
-							      );
-					});
-				patron = Ln::NodeId(std::string(
-					path0["node_id_out"]
-				));
+				/* GetroutesFirstHop reads the v26.06
+				 * node_id_out, deriving it from the
+				 * deprecated next_node_id on a stock
+				 * v26.04 response; a route carrying
+				 * neither form throws into the handler
+				 * below.  */
+				patron = GetroutesFirstHop(
+					res["routes"][0]
+				).node_id_out;
 			} catch (std::exception const&) {
 				/* Jsmn::TypeError from the field access OR
 				 * std::range_error (via BacktraceException)

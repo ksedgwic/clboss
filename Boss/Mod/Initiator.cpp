@@ -114,23 +114,20 @@ private:
 		});
 	}
 
-	/* The getroutes hop fields CLBOSS builds sendpay routes from
-	 * (node_id_out / amount_out_msat / cltv_out) shipped in CLN
-	 * v26.06.  Older stock CLN emits only the deprecated names,
-	 * whose values are one-hop-shifted (in-side): routes built
-	 * from them misprice every middle hop, and the resulting
-	 * failures hard-exclude healthy channels in the persistent
-	 * failure-learning layer -- strictly worse than not running
-	 * at all.  Refuse to start instead.
+	/* CLBOSS supports CLN v26.04 and newer.  The getroutes parse
+	 * sites (GetroutesFirstHop) read the v26.06 out-side hop
+	 * fields (node_id_out / amount_out_msat / cltv_out) and on a
+	 * stock v26.04 response derive them from the deprecated
+	 * trio; CLN older than v26.04 is untested and refused at
+	 * startup, before any on-disk state is created or modified.
 	 *
 	 * clboss-skip-cln-version-check bypasses the gate for
-	 * operators whose older CLN carries a backport of the v26.06
-	 * getroutes fields (the version string alone cannot show
-	 * that); the getroutes parse sites still verify the fields on
-	 * every response, so a mistaken bypass fails loudly per
-	 * attempt instead of building shifted routes.  An unparseable
-	 * version string is treated the same fail-open way -- custom
-	 * builds deserve a warning, not a lockout.
+	 * operators whose older CLN carries backports of what CLBOSS
+	 * needs (askrene getroutes, xpay -- the version string alone
+	 * cannot show that); a mistaken bypass fails per request at
+	 * the RPC and parse sites instead of corrupting state.  An
+	 * unparseable version string is treated the same fail-open
+	 * way -- custom builds deserve a warning, not a lockout.
 	 */
 	Ev::Io<void> check_cln_version(Jsmn::Object info) {
 		auto version = std::string();
@@ -140,7 +137,7 @@ private:
 			return Boss::log( bus, Info
 					, "Initiator: clboss-skip-cln-"
 					  "version-check set; not enforcing "
-					  "the CLN v26.06 minimum against "
+					  "the CLN v26.04 minimum against "
 					  "\"%s\"."
 					, version.c_str()
 					);
@@ -150,28 +147,23 @@ private:
 			return Boss::log( bus, Warn
 					, "Initiator: unrecognized CLN "
 					  "version \"%s\"; proceeding -- the "
-					  "getroutes parse verifies the "
-					  "required v26.06 fields on every "
-					  "response."
+					  "getroutes parse accepts both the "
+					  "v26.06 and v26.04 hop-field forms "
+					  "and fails per request otherwise."
 					, version.c_str()
 					);
-		if (major > 26 || (major == 26 && minor >= 6))
+		if (major > 26 || (major == 26 && minor >= 4))
 			return Ev::lift();
 		return refuse_to_start( std::string("Initiator: CLN ")
 				      + version
-				      + " is older than v26.06: its getroutes "
-					"lacks the node_id_out/"
-					"amount_out_msat/cltv_out fields "
-					"CLBOSS builds routes from, and the "
-					"deprecated fields carry one-hop-"
-					"shifted values that would misroute "
-					"rebalances and poison the failure-"
-					"learning layer.  Refusing to start; "
-					"no state was created or modified.  "
-					"Upgrade CLN to v26.06 or newer, or "
-					"-- only if your CLN carries a "
-					"backport of the v26.06 getroutes "
-					"fields -- start with "
+				      + " is older than v26.04, the oldest "
+					"release CLBOSS supports (getroutes "
+					"with the v26.04 hop fields, xpay).  "
+					"Refusing to start; no state was "
+					"created or modified.  Upgrade CLN "
+					"to v26.04 or newer, or -- only if "
+					"your CLN carries backports of those "
+					"facilities -- start with "
 					"clboss-skip-cln-version-check."
 				      );
 	}
@@ -504,14 +496,12 @@ public:
 				"clboss-skip-cln-version-check",
 				Msg::OptionType_Flag,
 				Json::Out::direct(false),
-				"Skip the CLN >= v26.06 startup check.  ONLY "
-				"for CLN builds older than v26.06 that carry "
-				"a backport of the v26.06 getroutes fields "
-				"(node_id_out/amount_out_msat/cltv_out).  On "
-				"a stock older CLN, CLBOSS would build "
-				"mispriced routes and poison its failure-"
-				"learning layer; every getroutes response is "
-				"verified even with this set.",
+				"Skip the CLN >= v26.04 startup check.  ONLY "
+				"for CLN builds older than v26.04 that carry "
+				"backports of what CLBOSS needs (askrene "
+				"getroutes, xpay).  Malformed getroutes "
+				"responses still fail per request even with "
+				"this set.",
 				false
 			});
 		});
