@@ -116,18 +116,30 @@ private:
 
 	/* CLBOSS supports CLN v26.04 and newer.  The getroutes parse
 	 * sites (GetroutesFirstHop) read the v26.06 out-side hop
-	 * fields (node_id_out / amount_out_msat / cltv_out) and on a
-	 * stock v26.04 response derive them from the deprecated
-	 * trio; CLN older than v26.04 is untested and refused at
-	 * startup, before any on-disk state is created or modified.
+	 * fields (node_id_out / amount_out_msat / cltv_out) and
+	 * otherwise derive them from the deprecated trio.
 	 *
-	 * clboss-skip-cln-version-check bypasses the gate for
+	 * Below v26.04 the startup check has two tiers:
+	 *
+	 * - v25.09 up to v26.04: expected to work (the parse
+	 *   handles both hop-field forms) but untested.  Warn and
+	 *   proceed.
+	 *
+	 * - Older than v25.09: refuse to start, before any on-disk
+	 *   state is created or modified.  getroutes gained
+	 *   maxparts in v25.09 and CLBOSS passes it on every call,
+	 *   so every call would fail -- and the getroutes callers
+	 *   treat RPC errors as normal "no route" answers (the
+	 *   askrene idiom), so probing, dowsing, and candidate
+	 *   matchmaking would go quietly dead instead of failing
+	 *   loudly.
+	 *
+	 * clboss-skip-cln-version-check bypasses the refusal for
 	 * operators whose older CLN carries backports of what CLBOSS
-	 * needs (askrene getroutes, xpay -- the version string alone
-	 * cannot show that); a mistaken bypass fails per request at
-	 * the RPC and parse sites instead of corrupting state.  An
-	 * unparseable version string is treated the same fail-open
-	 * way -- custom builds deserve a warning, not a lockout.
+	 * needs (askrene getroutes with maxparts, xpay -- the
+	 * version string alone cannot show that).  An unparseable
+	 * version string is treated the same fail-open way -- custom
+	 * builds deserve a warning, not a lockout.
 	 */
 	Ev::Io<void> check_cln_version(Jsmn::Object info) {
 		auto version = std::string();
@@ -137,7 +149,7 @@ private:
 			return Boss::log( bus, Info
 					, "Initiator: clboss-skip-cln-"
 					  "version-check set; not enforcing "
-					  "the CLN v26.04 minimum against "
+					  "the CLN v25.09 minimum against "
 					  "\"%s\"."
 					, version.c_str()
 					);
@@ -152,18 +164,33 @@ private:
 					  "and fails per request otherwise."
 					, version.c_str()
 					);
-		if (major > 26 || (major == 26 && minor >= 4))
+		auto ym = major * 100 + minor;
+		if (ym >= 2604)
 			return Ev::lift();
+		if (ym >= 2509)
+			return Boss::log( bus, Warn
+					, "Initiator: CLN %s is older than "
+					  "v26.04, the oldest release CLBOSS "
+					  "is tested against; proceeding.  "
+					  "The getroutes parse accepts both "
+					  "the v26.06 and v26.04 hop-field "
+					  "forms."
+					, version.c_str()
+					);
 		return refuse_to_start( std::string("Initiator: CLN ")
 				      + version
-				      + " is older than v26.04, the oldest "
-					"release CLBOSS supports (getroutes "
-					"with the v26.04 hop fields, xpay).  "
-					"Refusing to start; no state was "
-					"created or modified.  Upgrade CLN "
-					"to v26.04 or newer, or -- only if "
-					"your CLN carries backports of those "
-					"facilities -- start with "
+				      + " is older than v25.09, which CLBOSS "
+					"requires: every getroutes call "
+					"CLBOSS makes passes maxparts, added "
+					"in v25.09, so probing, dowsing, and "
+					"candidate matchmaking would all "
+					"fail.  Refusing to start; no state "
+					"was created or modified.  Upgrade "
+					"CLN (v26.04 or newer is the tested "
+					"floor), or -- only if your CLN "
+					"carries backports of what CLBOSS "
+					"needs (askrene getroutes with "
+					"maxparts, xpay) -- start with "
 					"clboss-skip-cln-version-check."
 				      );
 	}
@@ -496,12 +523,11 @@ public:
 				"clboss-skip-cln-version-check",
 				Msg::OptionType_Flag,
 				Json::Out::direct(false),
-				"Skip the CLN >= v26.04 startup check.  ONLY "
-				"for CLN builds older than v26.04 that carry "
+				"Skip the CLN >= v25.09 startup check.  ONLY "
+				"for CLN builds older than v25.09 that carry "
 				"backports of what CLBOSS needs (askrene "
-				"getroutes, xpay).  Malformed getroutes "
-				"responses still fail per request even with "
-				"this set.",
+				"getroutes with maxparts, xpay).  v26.04 or "
+				"newer is the tested floor.",
 				false
 			});
 		});
