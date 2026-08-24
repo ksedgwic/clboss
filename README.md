@@ -172,6 +172,33 @@ You can then add a `plugin=/path/to/clboss` or
 `important-plugin=/path/to/clboss` setting to your Core Lightning
 configuration file.
 
+### The xrebalance plugin
+
+Rebalancing runs through the external `xrebalance` plugin
+(<https://github.com/ksedgwic/xrebalance>), a separate Core Lightning
+plugin written in Rust.  CLBOSS needs **v0.4.5 or later**.  Without
+it CLBOSS starts and runs everything else; each rebalance cycle logs
+a hint that the plugin is missing and does nothing.
+
+Build it with a [rustup](https://rustup.rs) toolchain:
+
+    git clone https://github.com/ksedgwic/xrebalance.git
+    cd xrebalance
+    cargo build --release      # binary: target/release/xrebalance
+    ./install-versioned.sh     # versioned copy + symlink in /usr/local/bin
+
+Then load it alongside CLBOSS in the Core Lightning configuration,
+in either order:
+
+    plugin=/usr/local/bin/xrebalance
+    plugin=/usr/local/bin/clboss
+
+The plugin can also be started while `lightningd` runs
+(`lightning-cli plugin start /usr/local/bin/xrebalance`); CLBOSS
+picks it up at the next cycle.  The plugin's own `xrebalance-*`
+options are documented in its README; CLBOSS's rebalancing options
+are the `clboss-xrebalance-*` entries under Operating below.
+
 ### FreeBSD
 
 The following packages as of 12.2-RELEASE are necessary when
@@ -594,8 +621,9 @@ Selects how CLBOSS rebalances channel liquidity:
   `lightningd`.  Without the plugin, CLBOSS idles with a log hint.
 * `off`: disable autonomous rebalancing entirely.
 
-The `xrebalance` plugin is a separate CLN plugin; releases and install
-instructions are at <https://github.com/ksedgwic/xrebalance>.
+The `xrebalance` plugin is a separate CLN plugin; see "The xrebalance
+plugin" under Installing for the version CLBOSS needs and how to
+build and load it.
 
 Rebalance cycles run on a Poisson clock (`clboss-xrebalance-per-hour`
 below) and are additionally triggered on demand, when an observed
