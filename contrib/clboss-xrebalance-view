@@ -8,12 +8,9 @@
 #   - what matched-pool transfer size the algorithm would auto-pick
 #   - which channels would actually participate in that cycle (bold)
 #   - what joint fee budget would apply
-#   - the exact clboss-xmovefunds command line to stimulate that cycle
-#     (network / --lightning-dir propagated so it targets the same node)
-#
-# With --simulate-jit SCID:SIZE, simulates a JIT trigger: shows what the
-# algorithm would do for an HTLC of SIZE sat that needs to forward through
-# channel SCID.
+#   - the xrebalance request (the plugin command) for that cycle, with
+#     the per-channel caps the driver would send (network /
+#     --lightning-dir propagated so it targets the same node)
 #
 # Default earnings window = 90 days. Override with --days N.
 #
@@ -42,10 +39,17 @@ from clboss.alias_cache import lookup_alias
 
 DEFAULT_WINDOW_DAYS = 90
 
+# Floor ladder constants; XRebalancer::derive_ladder carries the same
+# three.  Dimensionless: the budget ratio between rungs, the net ppm
+# below which a marginal side is not worth rebalancing, and the
+# minimum budget ratio between adjacent kept rungs.
+LADDER_RATIO = 1.6
+NOISE_PPM = 10.0
+MIN_GAP = 1.25
+
 # ANSI color escape codes.  Applied per row when tier criteria match.
 ANSI_FILL = "\033[32m"    # green: drained channel, would-fill tier candidate
 ANSI_DRAIN = "\033[33m"   # yellow: full channel, would-drain tier candidate
-ANSI_JIT = "\033[36m"     # cyan: trigger channel in --simulate-jit scenario
 ANSI_BOLD = "\033[1m"     # bold: channel would participate in a sized cycle
 ANSI_RESET = "\033[0m"
 
@@ -105,8 +109,8 @@ def run_lightning_cli_command(lightning_dir, network_option, command, *args):
 
 def read_live_config(lightning_dir, network_option):
     """Read the live clboss-xrebalance-* tuning from listconfigs, so a no-arg
-    run mirrors what the running driver actually does -- the same idiom the
-    survey and survival scripts use.  Returns a dict of the raw values found
+    run mirrors what the running driver actually does.  Returns a dict of
+    the raw values found
     (keyed by short name); missing keys or an unreachable node yield {} and
     the caller falls back to the standalone defaults.  The view always talks
     to a live node (it needs listpeerchannels), so this normally succeeds."""
@@ -189,6 +193,73 @@ def effective_net_ppm(net_msat, fwd_msat, peer_cap_msat, grant, gain):
     return (net_msat + g_vol * grant / 1e6) * 1_000_000 / denom * gain
 
 
+def derive_ladder(joint_curve):
+    """The floor ladder the driver sweeps under route-cost-floor=auto,
+    derived from this node's joint(N) curve (rows of (N_sat, fill_ppm,
+    drain_ppm, joint_ppm), joint non-increasing).  Rungs are floors
+    log-spaced on the joint (= budget) axis -- routing success is
+    roughly log-sensitive to budget -- from the ceiling (top row) down
+    to the useful floor: the lowest row where BOTH marginal sides still
+    net at least NOISE_PPM; below that a cycle only fills or drains
+    channels whose earnings do not cover a rebalance.  Each target is
+    snapped to the row a floor of that value would select (the largest
+    N whose joint is still >= target), deduped, and rungs closer than
+    MIN_GAP in budget to the previous one are dropped.  Returns
+    (ladder, useful_idx): the rung rows top-down, and the curve index
+    of the useful floor (the bottom rung, always present)."""
+    if not joint_curve:
+        return [], None
+    ceiling_joint = joint_curve[0][3]
+    useful_idx = 0
+    for i, (_cn, cf, cd, _cj) in enumerate(joint_curve):
+        if cf >= NOISE_PPM and cd >= NOISE_PPM:
+            useful_idx = i
+        else:
+            break
+    useful_joint = joint_curve[useful_idx][3]
+    targets = []
+    t = ceiling_joint
+    while t > useful_joint:
+        targets.append(t)
+        t /= LADDER_RATIO
+    targets.append(useful_joint)
+    ladder = []
+    seen_n = set()
+    last_joint = None
+    for tgt in targets:
+        pick = joint_curve[0]
+        for row in joint_curve[:useful_idx + 1]:
+            if row[3] >= tgt:
+                pick = row
+            else:
+                break
+        if pick[0] in seen_n:
+            continue
+        if last_joint is not None and pick[3] > last_joint / MIN_GAP:
+            continue
+        seen_n.add(pick[0])
+        ladder.append(pick)
+        last_joint = pick[3]
+    floor_row = joint_curve[useful_idx]
+    if floor_row[0] not in seen_n:
+        ladder.append(floor_row)
+    return ladder, useful_idx
+
+
+def peers_to_reach(pool, deficit_key, n):
+    """How many peers a best-NetPpm-first walk of pool admits before
+    their accumulated deficit reaches n -- the walk the bold set and
+    the driver's request lists use."""
+    acc = 0
+    count = 0
+    for r in pool:
+        if acc >= n:
+            break
+        acc += r[deficit_key]
+        count += 1
+    return count
+
+
 def fmt_ppm(value):
     if value is None:
         return "-"
@@ -203,40 +274,79 @@ def fmt_pct(value):
     return f"{value:.1f}"
 
 
-def scid_arg(name, scids):
-    """Render a source_scid / dest_scid argument for the emitted
-    clboss-xmovefunds command.  A single scid goes as a bare string;
-    several go as a JSON array, single-quoted so the shell hands the
-    brackets/quotes to lightning-cli verbatim (which then parses the
-    value as JSON)."""
-    if len(scids) == 1:
-        return f"{name}={scids[0]}"
-    arr = "[" + ",".join(f'"{s}"' for s in scids) + "]"
-    return f"{name}='{arr}'"
+# Per-channel caps below this are dropped, and the channel with them:
+# under askrene's ~1000-sat single-path threshold a cap smaller than
+# the amount excludes the channel from the solve anyway.  Same
+# constant as XRebalancer.
+MIN_CAP_SAT = 1000
 
 
-def build_xmovefunds_command(network_option, lightning_dir,
-                             source_scids, dest_scids,
-                             amount_sat, maxfee_ppm, execute=True,
-                             maxparts=None):
-    """Construct the full lightning-cli clboss-xmovefunds command line that
-    would stimulate the indicated rebalance.  network_option and
-    lightning_dir are propagated verbatim from how the view itself was
-    invoked, so the emitted command targets the SAME node instance (this
-    matters on lab0, where three signet instances differ only by
-    --lightning-dir)."""
-    parts = ["lightning-cli", network_option]
+def distribute_caps(chan_rows, band_pct, fill_side, deficit_sat):
+    """Spread a peer's band deficit over its channels as per-channel
+    caps, the way XRebalancer::distribute_caps builds the request
+    lists: cap_i = deficit * h_i / sum(h), where h_i is the channel's
+    own headroom past the band edge (fill: edge - local; drain: local
+    - edge; 0 when the channel is already past it).  The caps sum to
+    at most the peer's deficit, so the peer cannot be pushed past its
+    band edge in one cycle however the flow concentrates, while the
+    weighting points the flow at the peer's skewed channels.  Returns
+    [(scid, cap_sat)] for the channels that keep a cap."""
+    headroom = []
+    for r in chan_rows:
+        edge = int(r["cap_sat"] * band_pct / 100.0)
+        h = (edge - r["local_sat"]) if fill_side else (r["local_sat"] - edge)
+        headroom.append(max(0, h))
+    total = sum(headroom)
+    if total <= 0 or deficit_sat <= 0:
+        return []
+    out = []
+    for r, h in zip(chan_rows, headroom):
+        if h <= 0:
+            continue
+        cap = int(deficit_sat * h / total)
+        if cap < MIN_CAP_SAT:
+            continue
+        out.append((r["scid"], cap))
+    return out
+
+
+def cap_list(caps):
+    """Render [(scid, cap_sat)] as an xrebalance sources/destinations
+    array in the plugin's "scid:Nsat" spelling, single-quoted so the
+    shell hands the JSON to lightning-cli verbatim."""
+    arr = "[" + ",".join(f'"{scid}:{cap}sat"' for scid, cap in caps) + "]"
+    return f"'{arr}'"
+
+
+def build_xrebalance_command(network_option, lightning_dir,
+                             source_caps, dest_caps,
+                             amount_sat, maxfee_ppm, maxparts=None,
+                             dryrun=True):
+    """The lightning-cli xrebalance command that requests the shown
+    cycle -- the same request XRebalancer sends the plugin: capped
+    sources (drain channels, funds leave) and destinations (fill
+    channels, funds land), the matched volume as the amount ceiling,
+    the joint budget as the fee rate.  network_option and lightning_dir
+    are propagated from how the view itself was invoked, so the command
+    targets the same node instance.  dryrun=true plans without moving
+    funds.  Rendered over four shell-continued lines -- the command,
+    the sources, the destinations, the scalar arguments -- so each
+    list can be read and edited on its own."""
+    head = ["lightning-cli", network_option]
     if lightning_dir:
-        parts.append(f"--lightning-dir={lightning_dir}")
-    parts.append("clboss-xmovefunds")
-    parts.append(scid_arg("source_scid", source_scids))
-    parts.append(scid_arg("dest_scid", dest_scids))
-    parts.append(f"amount_msat={amount_sat * 1000}")
-    parts.append(f"maxfee_ppm={maxfee_ppm}")
+        head.append(f"--lightning-dir={lightning_dir}")
+    head += ["-k", "xrebalance"]
+    tail = [f"amount_msat={amount_sat * 1000}", f"maxfee_ppm={maxfee_ppm}"]
     if maxparts is not None:
-        parts.append(f"maxparts={maxparts}")
-    parts.append(f"execute={'true' if execute else 'false'}")
-    return " ".join(parts)
+        tail.append(f"maxparts={maxparts}")
+    if dryrun:
+        tail.append("dryrun=true")
+    return " \\\n    ".join([
+        " ".join(head),
+        f"sources={cap_list(source_caps)}",
+        f"destinations={cap_list(dest_caps)}",
+        " ".join(tail),
+    ])
 
 
 def pad_string(s, width):
@@ -284,7 +394,8 @@ def compute_row(channel, peer, window_days, peer_cap_msat, grant, gain):
         "alias": peer.get("alias") or "",
         "scid": channel.get("scid"),
         "opener": "L" if channel.get("opener") == "local" else "R",
-        # '.' connected, 'X' offline -- offline peers can't be rebalanced through
+        # '.' connected, 'X' offline; 'U' (balance-unmanaged) is stamped
+        # after the rows exist.  Only '.' can join a pool.
         "online": "." if channel.get("peer_connected") else "X",
         "cap_sat": cap_sat,
         "pct_local": pct_local,
@@ -371,16 +482,6 @@ def main():
              "for --csv and when NO_COLOR is in the environment)."
     )
     parser.add_argument(
-        "--simulate-jit", metavar="SCID:SIZE", default=None,
-        help="Simulate a JIT trigger: an HTLC of SIZE sat needs to forward "
-             "through channel SCID and is stuck on outbound capacity.  Shows "
-             "what xrebalance would decide (PROCEED/PARTIAL/REFUSE), which "
-             "drain candidates would be picked, and the joint budget for "
-             "this specific scenario.  Fill target = max(SIZE, fill-loc%%*cap) "
-             "to satisfy the HTLC AND land at the fill band edge.  "
-             "Mutually exclusive with --transfer-size."
-    )
-    parser.add_argument(
         "--transfer-size", type=int, default=None, metavar="SAT",
         help="Bold the highest-NetPpm channels in each extreme band whose "
              "accumulated TgtFill/TgtDrain deficit reaches SAT.  If omitted "
@@ -431,8 +532,8 @@ def main():
             f'"{lightning_dir}" is not a valid directory'
 
     # Default the rebalance tuning from the live clboss config (listconfigs),
-    # so a no-arg run mirrors what the driver does -- same idiom as the survey
-    # and survival scripts.  An explicit flag still wins; each value's source
+    # so a no-arg run mirrors what the driver does.  An explicit flag still
+    # wins; each value's source
     # (arg/live/default) is reported in the footer.  This is also what makes
     # the matched-pool "levels" analysis run by default: the bands are now
     # always populated.
@@ -475,9 +576,8 @@ def main():
 
     # --route-cost-floor drives only the single bold/emit pick; the full
     # joint(N) staircase is shown regardless.  A live value of "auto" means
-    # the driver sweeps the ladder per cycle (NOISE_PPM-bounded), so we emit
-    # the ceiling (top pair) below -- not the most-inclusive floor cut, which
-    # would admit sub-NOISE_PPM sides the ladder excludes.
+    # the driver picks a random ladder rung per cycle, so the bold set
+    # below is the widest rung (the useful floor), not a fixed-floor cut.
     args.floor_auto = False
     if args.route_cost_floor is not None:
         settings.append(("route-cost-floor",
@@ -491,8 +591,8 @@ def main():
         args.floor_auto = True
         args.route_cost_floor = 50.0
         settings.append(("route-cost-floor",
-                         f"auto (live; driver sweeps the ladder -- "
-                         f"emitting the ceiling cycle)", "live"))
+                         "auto (live; a random ladder rung each cycle)",
+                         "live"))
     else:
         args.route_cost_floor = 50.0
         settings.append(("route-cost-floor", "50", "default"))
@@ -521,8 +621,9 @@ def main():
     if not (args.gain > 0.0):
         sys.exit("--gain must be > 0")
 
-    # maxparts: forwarded into the emitted clboss-xmovefunds command so the
-    # manual command carries the driver's MPP cap (does not affect analysis).
+    # maxparts: forwarded into the emitted xrebalance command so the
+    # manual request carries the driver's split cap (does not affect
+    # analysis).
     maxparts = None
     if _num(live.get("maxparts")) is not None:
         maxparts = int(_num(live["maxparts"]))
@@ -593,6 +694,16 @@ def main():
     peer_metrics = (
         status_resp.get("peer_metrics", {}) if status_resp else {}
     )
+    # Peers with "balance" management off (clboss-unmanage <nodeid>
+    # balance): the driver drops them from both pools.  clboss-status
+    # lists each unmanaged node with its tags as "tag, tag".
+    unmanaged_balance = set()
+    for node, tags in (status_resp.get("unmanaged", {})
+                       if status_resp else {}).items():
+        if node == "comment":   # the section carries a usage note
+            continue
+        if "balance" in [t.strip() for t in str(tags).split(",")]:
+            unmanaged_balance.add(node)
 
     for peer_id, peer in peers.items():
         rec = recent.get(peer_id, {})
@@ -621,6 +732,11 @@ def main():
         rows.append(compute_row(ch, peer, args.days,
                                 peer_cap_msat[ch["peer_id"]],
                                 args.grant, args.gain))
+    # A balance-unmanaged peer reads 'U' in the On column and, like an
+    # offline one, never joins a pool; it keeps its band tint.
+    for r in rows:
+        if r["peer_id"] in unmanaged_balance:
+            r["online"] = "U"
 
     # Peer-aggregation pass (mirrors the driver): candidacy, deficits,
     # and progress live at peer granularity, because non-strict
@@ -630,10 +746,12 @@ def main():
     # carries the peer's aggregate Loc% (peer_pct_local, used for tier
     # membership) and aggregate deficits (TgtFill/TgtDrain columns).
     peer_scids = {}
+    peer_rows = {}
     peer_agg = {}
     for r in rows:
         pid = r["peer_id"]
         peer_scids.setdefault(pid, []).append(r["scid"])
+        peer_rows.setdefault(pid, []).append(r)
         agg = peer_agg.setdefault(pid, {"cap": 0, "local": 0})
         agg["cap"] += r["cap_sat"]
         agg["local"] += r["local_sat"]
@@ -794,7 +912,7 @@ def main():
 
     # Compute the bold set: highest-NetPpm channels in each band whose
     # accumulated rebalance *deficit* reaches --transfer-size.  Using
-    # the deficit (TgtFill / TgtDrain toward the 25%/75% targets) rather
+    # the deficit (TgtFill / TgtDrain toward the band edges) rather
     # than the full RemoteBal/LocalBal accounts for the fact that we
     # only want to push each channel toward its target, not all the way
     # across its capacity.  Independent of the display sort and of the
@@ -805,23 +923,26 @@ def main():
     bold_scids = set()
     # Derived thresholds for the size-N matched-pool algorithm.
     fill_threshold_ppm = None
-    fill_accumulated = 0
+    fill_picked = 0      # peers walked on the fill side
     drain_threshold_ppm = None
-    drain_accumulated = 0
+    drain_picked = 0     # peers walked on the drain side
     auto_derived_size = False
 
-    # Pre-compute fill and drain pools (used by auto-sizing, the bold-set
-    # walk, and JIT simulation below).
+    # Pre-compute fill and drain pools (used by auto-sizing and the
+    # bold-set walk below).
     # Offline peers are excluded from both pools: a rebalance can neither
     # push out through a disconnected drain peer nor land its closing hop
     # through a disconnected fill peer, so an offline channel can never
     # participate.  It still qualifies (colors / band totals) -- color is
     # band membership, the pool is participation -- it just never bolds or
-    # appears in the emitted command.
+    # appears in the emitted command.  Balance-unmanaged peers ('U') are
+    # excluded the same way: the operator withheld them from the driver.
     # Pools hold ONE representative row per peer (mirrors the driver's
     # per-peer aggregation); the deficit fields already carry the peer
-    # aggregates, and peer_scids expands a pick to all the peer's
-    # channels for bolding and the emitted command.
+    # aggregates, and the row's req_caps lists the peer's channels with
+    # their share of that deficit -- the channels a pick bolds and the
+    # request names.  A peer whose channels all cap below MIN_CAP_SAT
+    # is not in the pool, as in the driver.
     seen_fill_peers = set()
     fill_pool = []
     for r in rows:
@@ -832,7 +953,11 @@ def main():
                 and r["out_net_ppm"] > 0
                 and r["tgt_fill_sat"] > 0):
             seen_fill_peers.add(r["peer_id"])
-            fill_pool.append(r)
+            caps = distribute_caps(peer_rows[r["peer_id"]], fill_band,
+                                   True, r["tgt_fill_sat"])
+            if caps:
+                r["req_caps"] = caps
+                fill_pool.append(r)
     fill_pool.sort(key=lambda r: -r["out_net_ppm"])
     # With overlapping bands a peer could qualify for both pools; fill
     # wins so it cannot be picked against itself (mirrors the driver).
@@ -847,107 +972,12 @@ def main():
                 and r["in_net_ppm"] > 0
                 and r["tgt_drain_sat"] > 0):
             seen_drain_peers.add(r["peer_id"])
-            drain_pool.append(r)
+            caps = distribute_caps(peer_rows[r["peer_id"]], drain_band,
+                                   False, r["tgt_drain_sat"])
+            if caps:
+                r["req_caps"] = caps
+                drain_pool.append(r)
     drain_pool.sort(key=lambda r: -r["in_net_ppm"])
-
-    # ---- JIT simulation --------------------------------------------------
-    # Parse --simulate-jit, find the trigger channel, decide what xrebalance
-    # would do.  Result is rendered via the same bold/color machinery as
-    # the regular cycle view, but with the JIT-specific decision logic.
-    jit_trigger_scid = None
-    jit_trigger_row = None
-    jit_size_requested = 0
-    jit_fill_target = 0
-    jit_drain_threshold_ppm = None
-    jit_drain_accumulated = 0
-    jit_drain_picks = set()
-    jit_decision = None
-    jit_decision_reason = None
-    if args.simulate_jit is not None:
-        if args.transfer_size is not None:
-            sys.exit(
-                "--simulate-jit and --transfer-size are mutually exclusive"
-            )
-        if ":" not in args.simulate_jit:
-            sys.exit("--simulate-jit must be SCID:SIZE (e.g. 947543x409x2:2000000)")
-        jit_trigger_scid, size_str = args.simulate_jit.split(":", 1)
-        jit_trigger_scid = jit_trigger_scid.strip()
-        try:
-            jit_size_requested = int(size_str)
-        except ValueError:
-            sys.exit(
-                f"--simulate-jit SIZE must be an integer (sat); got {size_str!r}"
-            )
-        if jit_size_requested < 0:
-            sys.exit("--simulate-jit SIZE must be non-negative")
-        for r in rows:
-            if r["scid"] == jit_trigger_scid:
-                jit_trigger_row = r
-                break
-        if jit_trigger_row is None:
-            sys.exit(
-                f"--simulate-jit: channel {jit_trigger_scid!r} not found"
-            )
-
-        cap = jit_trigger_row["cap_sat"]
-        cur_local = jit_trigger_row["local_sat"]
-        # Fill target: bring local up to max(HTLC, 25%*cap).  If channel
-        # already has enough, fill_target is 0 (no rebalance needed).
-        desired_local = max(jit_size_requested,
-                            int(cap * args.fill_loc / 100.0))
-        jit_fill_target = max(0, desired_local - cur_local)
-
-        out_ppm = jit_trigger_row["out_net_ppm"]
-        if jit_size_requested > cap:
-            jit_decision = "REFUSE"
-            jit_decision_reason = (
-                f"HTLC size {jit_size_requested:_} sat exceeds channel "
-                f"capacity {cap:_} sat"
-            )
-        elif jit_fill_target == 0:
-            jit_decision = "NO_FILL_NEEDED"
-            jit_decision_reason = (
-                f"channel already has {cur_local:_} sat local "
-                f"(>= max(HTLC, 25%*cap) = {desired_local:_})"
-            )
-        elif out_ppm is None or out_ppm <= 0:
-            jit_decision = "REFUSE"
-            jit_decision_reason = (
-                f"trigger OutNetPpm = "
-                f"{out_ppm if out_ppm is not None else 'N/A'} "
-                f"(no economic basis under tier policy)"
-            )
-        else:
-            # Accumulate drain candidates by InNetPpm descending until
-            # fill_target reached.  Drain pool already sorted above.
-            for r in drain_pool:
-                if jit_drain_accumulated >= jit_fill_target:
-                    break
-                jit_drain_picks.add(r["scid"])
-                jit_drain_accumulated += r["tgt_drain_sat"]
-                jit_drain_threshold_ppm = r["in_net_ppm"]
-            if jit_drain_accumulated < jit_fill_target:
-                jit_decision = "PARTIAL"
-                jit_decision_reason = (
-                    f"drain pool exhausted at {jit_drain_accumulated:_} "
-                    f"sat (fill target {jit_fill_target:_})"
-                )
-            else:
-                joint = out_ppm + jit_drain_threshold_ppm
-                if joint < args.route_cost_floor:
-                    jit_decision = "REFUSE"
-                    jit_decision_reason = (
-                        f"joint budget {joint:.1f} ppm below route-cost "
-                        f"floor {args.route_cost_floor:.1f} ppm"
-                    )
-                else:
-                    jit_decision = "PROCEED"
-                    jit_decision_reason = (
-                        f"fill target {jit_fill_target:_} sat reachable from "
-                        f"{len(jit_drain_picks)} drain candidates at joint "
-                        f"budget {joint:.1f} ppm (>= floor "
-                        f"{args.route_cost_floor:.1f})"
-                    )
 
     # Auto-derive transfer size when not explicitly set and the user is
     # exploring tier criteria.  Algorithm: joint(N) = fill_threshold(N)
@@ -957,7 +987,7 @@ def main():
     # the largest N where joint(N) is still >= floor.
     # State for auto-derive reporting in the footer.  When auto-derive is
     # attempted but no viable N is found, capture why so the user sees a
-    # DECISION line (parallel to the JIT one) rather than silent failure.
+    # DECISION line rather than silent failure.
     auto_derive_attempted = False
     auto_derive_decision = None
     auto_derive_reason = None
@@ -967,6 +997,11 @@ def main():
     # footer can always render it (it is the economic backbone of the floor
     # decision).  Each entry: (N_sat, fill_ppm, drain_ppm, joint_ppm).
     joint_curve = []
+    # The floor ladder derived from that curve (what the driver sweeps
+    # under route-cost-floor=auto); useful_idx is the curve row of its
+    # bottom rung.
+    ladder = []
+    useful_idx = None
     if args.transfer_size is None and (args.fill_loc is not None
                                        or args.drain_loc is not None):
         auto_derive_attempted = True
@@ -1035,12 +1070,14 @@ def main():
                 # below-floor tail of the curve for display.  joint is
                 # non-increasing and best_n only advances while
                 # joint >= floor, so it still lands on the largest viable N.
-            if getattr(args, "floor_auto", False) and best_joint_at is not None:
-                # Live route-cost-floor=auto: the driver sweeps the ladder
-                # (NOISE_PPM-bounded), so emit the ceiling (highest-joint top
-                # pair) rather than the most-inclusive floor cut, which would
-                # admit sub-NOISE_PPM sides the ladder excludes.
-                args.transfer_size = best_joint_at
+            ladder, useful_idx = derive_ladder(joint_curve)
+            if args.floor_auto and ladder:
+                # Live route-cost-floor=auto: the driver picks a random
+                # ladder rung each cycle, so no single cut is "the"
+                # cycle.  Bold the widest one it can select -- the
+                # bottom rung (useful floor) -- so the bold set shows
+                # every channel the sweep can reach.
+                args.transfer_size = ladder[-1][0]
                 auto_derived_size = True
                 auto_derive_decision = "PROCEED"
             elif best_n is not None:
@@ -1063,6 +1100,12 @@ def main():
                         "fill and drain pools have no overlapping volume"
                     )
 
+    # The request lists for the bold cycle, in pool order (most
+    # attractive endpoints first): the capped channels of every peer
+    # the walk admits.  A picked peer's channel with no headroom past
+    # the band edge gets no cap, so it is neither bold nor requested.
+    dest_caps = []      # fill side: where funds land
+    source_caps = []    # drain side: where funds leave
     if args.transfer_size is not None:
         # Fill side: walk low band by OutNetPpm descending (fill_pool
         # already sorted above).
@@ -1070,19 +1113,21 @@ def main():
         for r in fill_pool:
             if acc >= args.transfer_size:
                 break
-            bold_scids.update(peer_scids[r["peer_id"]])
+            dest_caps.extend(r["req_caps"])
+            bold_scids.update(scid for scid, _cap in r["req_caps"])
             acc += r["tgt_fill_sat"]
             fill_threshold_ppm = r["out_net_ppm"]
-        fill_accumulated = acc
+            fill_picked += 1
         # Drain side: walk high band by InNetPpm descending.
         acc = 0
         for r in drain_pool:
             if acc >= args.transfer_size:
                 break
-            bold_scids.update(peer_scids[r["peer_id"]])
+            source_caps.extend(r["req_caps"])
+            bold_scids.update(scid for scid, _cap in r["req_caps"])
             acc += r["tgt_drain_sat"]
             drain_threshold_ppm = r["in_net_ppm"]
-        drain_accumulated = acc
+            drain_picked += 1
 
     # All numeric columns are pre-formatted strings, so we use
     # colalign rather than numalign (which is ignored when
@@ -1141,28 +1186,8 @@ def main():
             line_idx = i + 1
             if line_idx >= len(lines):
                 break
-            if jit_trigger_scid is not None:
-                # JIT mode: trigger gets the JIT color regardless of band;
-                # other rows in the drain band still show as drain candidates
-                # (so the user sees the pool from which picks were drawn).
-                # Fill highlighting is suppressed -- only the one trigger
-                # matters on the fill side under a JIT scenario.
-                if r["scid"] == jit_trigger_scid:
-                    color = ANSI_JIT
-                elif (args.drain_loc is not None
-                      and r["pct_local"] >= args.drain_loc):
-                    ppm = r["in_net_ppm"]
-                    if (args.drain_ppm is None
-                            or (ppm is not None and ppm >= args.drain_ppm)):
-                        color = ANSI_DRAIN
-                    else:
-                        color = ""
-                else:
-                    color = ""
-                bold = ANSI_BOLD if r["scid"] in jit_drain_picks else ""
-            else:
-                color = row_color(r, args) or ""
-                bold = ANSI_BOLD if r["scid"] in bold_scids else ""
+            color = row_color(r, args) or ""
+            bold = ANSI_BOLD if r["scid"] in bold_scids else ""
             prefix = bold + color
             if prefix:
                 lines[line_idx] = prefix + lines[line_idx] + ANSI_RESET
@@ -1188,6 +1213,13 @@ def main():
     print(f"# InPpm/OutPpm = earnings * 1e6 / forwarded msat on that side")
     print(f"# InNetPpm/OutNetPpm = (earnings - expenses) * 1e6 / forwarded msat")
     print(f"# Loc% = current local balance / capacity")
+    print("# On: . = connected, X = offline, U = balance-unmanaged "
+          "(clboss-unmanage); only . rows can join a pool")
+    n_unmanaged = len({r["peer_id"] for r in rows if r["online"] == "U"})
+    if n_unmanaged:
+        print(f"# unmanaged (balance): {n_unmanaged} "
+              f"peer{'s' if n_unmanaged != 1 else ''} excluded from both "
+              f"pools")
 
     has_fill = args.fill_loc is not None
     has_drain = args.drain_loc is not None
@@ -1211,40 +1243,6 @@ def main():
             )
         print(f"# tier highlight: {'; '.join(parts)}")
 
-        # Eligible-capacity denominators: the capacity of all channels
-        # in the relevant extreme band, ignoring the ppm filter.  This
-        # is the basis for a "tune ppm threshold so X% of eligible
-        # capacity is in tier" calibration -- using total node capacity
-        # as the denominator over-counts capacity that lives in the
-        # middle band and can never enter any tier (e.g. a perfectly
-        # balanced channel like haggis on lab0-a).
-        for spec, label, predicate in [
-            (has_fill, "fill",
-             lambda r: r["peer_pct_local"] <= args.fill_loc),
-            (has_drain, "drain",
-             lambda r: r["peer_pct_local"] >= args.drain_loc),
-        ]:
-            if not spec:
-                continue
-            eligible_cap = sum(r["cap_sat"] for r in rows if predicate(r))
-            in_tier_cap = 0
-            for s in summary_specs:
-                if s[0].startswith(label.upper()):
-                    in_tier_cap = sum(r["cap_sat"] for r in s[2])
-                    break
-            if eligible_cap > 0:
-                pct_in_tier = 100.0 * in_tier_cap / eligible_cap
-                print(
-                    f"# {label}-eligible capacity (Loc% by band only): "
-                    f"{eligible_cap:_} sat; "
-                    f"{in_tier_cap:_} sat in tier "
-                    f"({pct_in_tier:.1f}%)"
-                )
-            else:
-                print(
-                    f"# {label}-eligible capacity (Loc% by band only): "
-                    f"0 sat (no channels match the Loc% gate)"
-                )
 
     print(f"# TgtFill  = max(0, {args.fill_loc:g}%*cap - LocalBal) -- "
           f"fill deficit toward the fill-loc band edge")
@@ -1253,162 +1251,90 @@ def main():
     print("# tiers, deficits, and pools are PEER aggregates (summed "
           "across a peer's channels); multi-channel peers repeat the "
           "aggregate on each row")
-    # Always surface the full joint(N) staircase when a matched-pool walk
-    # ran.  The floor just selects the largest N whose joint >= floor, so the
-    # curve gives the usable floor range directly: the top row's joint is the
-    # ceiling (a floor above it empties the pool), the bottom row's joint is
-    # the full-pool floor (a floor below it admits nothing more), and the
-    # shelves in between are the natural sweep-floor bands.
-    if joint_curve:
+    # The floor ladder: the rungs the driver sweeps under
+    # route-cost-floor=auto (one random rung per cycle); derive_ladder
+    # explains the spacing.  Each rung is one possible cycle -- its
+    # floor, matched volume N, the marginal fill/drain NetPpm that set
+    # the joint budget, and how many peers each side admits to reach N.
+    # The full joint(N) staircase (one row per admitted peer) is what
+    # the rungs are snapped to; it is not printed.  With a fixed floor
+    # the ladder is informational and the fixed cut is listed among the
+    # rungs so it reads the same way.
+    if ladder:
+        rungs = list(ladder)
+        fixed_cut = None
+        if auto_derived_size and not args.floor_auto:
+            for pt in joint_curve:
+                if pt[0] == args.transfer_size:
+                    fixed_cut = pt
+            if fixed_cut is not None and fixed_cut not in rungs:
+                rungs.append(fixed_cut)
+                rungs.sort(key=lambda pt: -pt[3])
         print("#")
-        print("# joint(N) curve -- floor picks the largest N with joint >= floor:")
-        print(f"#   {'N sat':>14}  {'fill_ppm':>9}  {'drain_ppm':>9}  {'joint_ppm':>9}")
-        for cn, cf, cd, cj in joint_curve:
-            mark = ""
-            if cn == best_joint_at:
-                mark += "  <- max joint = ceiling"
-            if auto_derived_size and cn == args.transfer_size:
-                if getattr(args, "floor_auto", False):
-                    mark += "  <- auto: N selected (driver sweeps the ladder)"
-                else:
-                    mark += (f"  <- floor {args.route_cost_floor:.0f} "
-                             f"cuts here (N selected)")
-            print(f"#   {cn:>14,}  {cf:>9.1f}  {cd:>9.1f}  {cj:>9.1f}{mark}")
-        print(f"#   (bottom row = full pool; floors below "
-              f"{joint_curve[-1][3]:.1f} ppm admit nothing more)")
-
-        # ---- node-agnostic floor ladder --------------------------------
-        # Suggested route-cost-floor values for a multi-floor sweep, derived
-        # entirely from THIS node's curve so the same routine yields sensible
-        # floors on any node.  Floors are spaced geometrically on the joint
-        # (= budget) axis -- routing success is roughly log-sensitive to
-        # budget, so log-uniform sampling is the scale-free choice, and the
-        # rung COUNT auto-scales with the node's budget span.  The range runs
-        # from the ceiling (top row) down to the "useful floor": the lowest
-        # row where BOTH marginal sides still earn at least NOISE_PPM net --
-        # below that you are only filling/draining channels whose net ppm is
-        # too small to be worth a rebalance.  Only two constants, both
-        # dimensionless (a ratio and a net-ppm noise floor).
-        LADDER_RATIO = 1.6       # each rung ~1.6x the budget of the one below
-        NOISE_PPM = 10.0         # marginal side below this net ppm = not worth it
-        ceiling_joint = joint_curve[0][3]
-        useful_idx = 0
-        for i, (cn, cf, cd, cj) in enumerate(joint_curve):
-            if cf >= NOISE_PPM and cd >= NOISE_PPM:
-                useful_idx = i
-            else:
-                break
-        useful_joint = joint_curve[useful_idx][3]
-        # Geometric budget targets, ceiling down to the useful floor.
-        targets = []
-        t = ceiling_joint
-        while t > useful_joint:
-            targets.append(t)
-            t /= LADDER_RATIO
-        targets.append(useful_joint)
-        # Snap each target to the row a floor=target would select (the
-        # largest N whose joint is still >= target), dedupe by N, and drop
-        # rungs that land too close in budget to the last kept one (a flat
-        # shelf can snap several targets onto nearly the same joint).
-        MIN_GAP = 1.25           # adjacent rungs at least this far apart
-        ladder = []
-        seen_n = set()
-        last_joint = None
-        for tgt in targets:
-            pick = joint_curve[0]
-            for row in joint_curve[:useful_idx + 1]:
-                if row[3] >= tgt:
-                    pick = row
-                else:
-                    break
-            if pick[0] in seen_n:
-                continue
-            if last_joint is not None and pick[3] > last_joint / MIN_GAP:
-                continue
-            seen_n.add(pick[0])
-            ladder.append(pick)
-            last_joint = pick[3]
-        # Always represent the useful floor as the bottom rung.
-        floor_row = joint_curve[useful_idx]
-        if floor_row[0] not in seen_n:
-            ladder.append(floor_row)
-        print("#")
-        print(f"# suggested floor ladder ({len(ladder)} rungs, log-spaced "
-              f"budget x{LADDER_RATIO:g}) -- set route-cost-floor to each "
-              f"in turn:")
-        for cn, cf, cd, cj in ladder:
-            tag = ""
+        if args.floor_auto:
+            print(f"# floor ladder ({len(ladder)} rungs, log-spaced budget "
+                  f"x{LADDER_RATIO:g}) -- route-cost-floor=auto picks a "
+                  f"random rung each cycle:")
+        else:
+            print(f"# floor ladder ({len(ladder)} rungs, log-spaced budget "
+                  f"x{LADDER_RATIO:g}; route-cost-floor=auto would sweep "
+                  f"these) -- fixed floor {args.route_cost_floor:.0f} cuts "
+                  f"at the marked row:")
+        print(f"#   {'floor':>5}  {'N sat':>13}   {'fill_ppm':>8} + "
+              f"{'drain_ppm':>9} = {'joint':>6}   {'fills':>5}  {'drains':>6}")
+        for cn, cf, cd, cj in rungs:
+            tags = []
             if cn == joint_curve[0][0]:
-                tag = "  (ceiling: top pair)"
-            elif cn == joint_curve[useful_idx][0]:
-                tag = "  (useful floor; junk below)"
+                tags.append("ceiling")
+            if cn == joint_curve[useful_idx][0]:
+                tags.append("useful floor: widest cycle")
+            if fixed_cut is not None and cn == fixed_cut[0]:
+                tags.append(f"floor {args.route_cost_floor:.0f} cuts here")
+            if auto_derived_size and cn == args.transfer_size:
+                tags.append("bold")
+            tag = f"   ({', '.join(tags)})" if tags else ""
             # int() truncates down so floor=value still admits this row.
-            print(f"#   floor {int(cj):>7}  ->  N={cn:>13,}  "
-                  f"joint {cj:>7.1f}{tag}")
+            print(f"#   {int(cj):>5}  {cn:>13,}   {cf:>8.1f} + {cd:>9.1f} = "
+                  f"{cj:>6.1f}   "
+                  f"{peers_to_reach(fill_pool, 'tgt_fill_sat', cn):>5}  "
+                  f"{peers_to_reach(drain_pool, 'tgt_drain_sat', cn):>6}"
+                  f"{tag}")
 
     if args.transfer_size is not None:
-        derivation = (
-            f"auto-derived at route-cost floor {args.route_cost_floor:.1f} ppm"
-            if auto_derived_size else "manually set"
-        )
+        if auto_derived_size and args.floor_auto:
+            which = (f"the widest cycle the driver can select (ladder "
+                     f"bottom rung, floor {int(ladder[-1][3])} -> "
+                     f"N={args.transfer_size:_} sat)")
+        elif auto_derived_size:
+            which = (f"the cycle floor {args.route_cost_floor:.0f} selects "
+                     f"(N={args.transfer_size:_} sat)")
+        else:
+            which = f"a cycle of N={args.transfer_size:_} sat (--transfer-size)"
         print(
-            f"# bold = top-NetPpm channels in each extreme band whose "
-            f"TgtFill/TgtDrain deficit accumulates to {args.transfer_size:_} "
-            f"sat ({derivation}; capped by deficit-to-target rather than "
-            f"full RemoteBal/LocalBal)"
+            f"# bold = channels in {which}: {fill_picked} fill peers and "
+            f"{drain_picked} drain peers, each side walked best-NetPpm "
+            f"first until its TgtFill/TgtDrain deficits reach N"
         )
 
-        def _ppm_report(label, threshold, accumulated, target):
-            if threshold is None:
-                return f"{label}: no candidates with positive NetPpm"
-            if accumulated >= target:
-                return (
-                    f"{label} NetPpm >= {threshold:.1f} "
-                    f"(target {target:_} sat reached at {accumulated:_})"
-                )
-            return (
-                f"{label} NetPpm >= {threshold:.1f} "
-                f"(pool exhausted at {accumulated:_} sat, "
-                f"target {target:_} not reached)"
-            )
-
-        print(
-            f"# derived fill threshold: "
-            f"{_ppm_report('fill OutNet', fill_threshold_ppm, fill_accumulated, args.transfer_size)}"
-        )
-        print(
-            f"# derived drain threshold: "
-            f"{_ppm_report('drain InNet', drain_threshold_ppm, drain_accumulated, args.transfer_size)}"
-        )
         if fill_threshold_ppm is not None and drain_threshold_ppm is not None:
             joint = fill_threshold_ppm + drain_threshold_ppm
-            print(
-                f"# joint max_fee budget = fill + drain = "
-                f"{fill_threshold_ppm:.1f} + {drain_threshold_ppm:.1f} = "
-                f"{joint:.1f} ppm"
-            )
-            # Emit the clboss-xmovefunds command that stimulates this cycle.
-            # source = drained channels (high Loc%, us->peer leg);
-            # dest = filled channels (low Loc%, peer->us leg).  Preserve the
-            # pools' NetPpm-descending order so the most attractive endpoints
-            # lead.  Only the bold (= would-participate) channels are listed.
-            source_picks = [s for r in drain_pool
-                            if r["scid"] in bold_scids
-                            for s in peer_scids[r["peer_id"]]]
-            dest_picks = [s for r in fill_pool
-                          if r["scid"] in bold_scids
-                          for s in peer_scids[r["peer_id"]]]
-            if source_picks and dest_picks:
-                requested_sat = max(1, round(args.transfer_size))
-                cmd = build_xmovefunds_command(
+            # Emit the xrebalance request for this cycle -- what
+            # XRebalancer sends the plugin: sources = the bold drain
+            # channels (funds leave), destinations = the bold fill
+            # channels (funds land), each capped at its share of its
+            # peer's deficit; amount = the matched volume N; maxfee =
+            # the joint budget, rounded as the driver rounds it.
+            if source_caps and dest_caps:
+                cmd = build_xrebalance_command(
                     network_option, lightning_dir,
-                    source_picks, dest_picks,
-                    requested_sat, int(joint),
+                    source_caps, dest_caps,
+                    max(1, round(args.transfer_size)), int(round(joint)),
                     maxparts=maxparts,
                 )
-                print("# clboss-xmovefunds command for the cycle above "
-                      "(execute=true sends; change to execute=false for a "
-                      "dry-run plan):")
+                print("# xrebalance request for the bold cycle (each "
+                      "cap = that channel's share of its peer's deficit; "
+                      "dryrun=true plans without moving funds -- drop it "
+                      "to execute):")
                 print(cmd)
 
     # Auto-derive decision footer for the negative cases (the PROCEED case
@@ -1420,64 +1346,6 @@ def main():
             f"# auto-derive DECISION: {auto_derive_decision} "
             f"-- {auto_derive_reason}"
         )
-
-    if jit_trigger_scid is not None:
-        alias = jit_trigger_row["alias"] or jit_trigger_row["peer_id"]
-        cap = jit_trigger_row["cap_sat"]
-        cur_local = jit_trigger_row["local_sat"]
-        out_ppm = jit_trigger_row["out_net_ppm"]
-        print()
-        print(
-            f"# JIT simulation: cyan = trigger channel; "
-            f"bold yellow = picked drain candidates for this scenario"
-        )
-        print(
-            f"# trigger: {alias} ({jit_trigger_scid}) "
-            f"cap={cap:_} local={cur_local:_} OutNetPpm="
-            f"{out_ppm if out_ppm is not None else 'N/A'}"
-        )
-        print(
-            f"# HTLC size requested: {jit_size_requested:_} sat; "
-            f"fill target (= max(HTLC, {args.fill_loc:g}%*cap) - local): "
-            f"{jit_fill_target:_} sat"
-        )
-        if jit_drain_threshold_ppm is not None:
-            joint = (
-                (out_ppm or 0.0) + jit_drain_threshold_ppm
-            )
-            print(
-                f"# drain pool: {len(jit_drain_picks)} channels picked, "
-                f"{jit_drain_accumulated:_} sat accumulated, threshold "
-                f"InNetPpm >= {jit_drain_threshold_ppm:.1f}"
-            )
-            if out_ppm is not None and out_ppm > 0:
-                print(
-                    f"# joint budget = {out_ppm:.1f} (trigger OutNetPpm) + "
-                    f"{jit_drain_threshold_ppm:.1f} (drain threshold) = "
-                    f"{joint:.1f} ppm"
-                )
-        if jit_decision_reason:
-            print(f"# DECISION: {jit_decision} -- {jit_decision_reason}")
-        else:
-            print(f"# DECISION: {jit_decision}")
-        # Emit the stimulating command only when the scenario would proceed.
-        # JIT mirror of the matched-pool case: the trigger channel is the
-        # fill target (dest, peer->us leg); the picked drain candidates are
-        # the sources (us->peer leg).
-        if jit_decision == "PROCEED":
-            source_picks = [r["scid"] for r in drain_pool
-                            if r["scid"] in jit_drain_picks]
-            joint = (out_ppm or 0.0) + jit_drain_threshold_ppm
-            cmd = build_xmovefunds_command(
-                network_option, lightning_dir,
-                source_picks, [jit_trigger_scid],
-                jit_fill_target, int(joint),
-                maxparts=maxparts,
-            )
-            print("# clboss-xmovefunds command for this JIT scenario "
-                  "(execute=true sends; change to execute=false for a "
-                  "dry-run plan):")
-            print(cmd)
 
 
 if __name__ == "__main__":

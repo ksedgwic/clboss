@@ -58,6 +58,8 @@ cd contrib/
 
 ./recently-closed
 
+./clboss-xrebalance-view
+
 ./cln-plugin-bounce <plugin-name>...
 
 The `clboss-routing-stats` and `clboss-forwarding-stats` scripts now accept `--days` to limit
@@ -77,6 +79,14 @@ how many days of earnings history are considered when ranking channels.
   accepts the `--days` option.
 - **`recently-closed`** lists channels that closed within the last N days, also
   controlled via `--days`.
+- **`clboss-xrebalance-view`** shows what the xrebalance planner would do
+  with the node's current state: every channel with its balance band and
+  windowed net earnings rates, the fill and drain candidates tinted, the
+  floor ladder with each rung's volume and budget, the channels of the
+  widest cycle in bold, and the `xrebalance` request the driver would send
+  for it (`dryrun=true` by default).  Tuning defaults come from the live
+  `clboss-xrebalance-*` options; `--fill-loc`, `--drain-loc`,
+  `--route-cost-floor`, `--grant`, and `--gain` preview other settings.
 - **`cln-plugin-bounce`** stops and restarts running plugins without
   restarting `lightningd`.  `plugin stop` needs a plugin's exact
   registered name, which for versioned installs includes the version
