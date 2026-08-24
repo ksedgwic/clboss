@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Upgrading from 0.16.x
+
+- Core Lightning **v26.04 or later** (v25.09 is the hard floor; see
+  Changed below).
+- Install the [`xrebalance`](https://github.com/ksedgwic/xrebalance)
+  plugin, **v0.4.5 or later**, and load it alongside CLBOSS -- see
+  "The xrebalance plugin" under Installing in the README.  Without it
+  CLBOSS runs everything except rebalancing.
+- Remove `clboss-max-rebalance-fee-ppm` from your configuration;
+  `lightningd` refuses to start on an unknown option.
+- Nothing else to set: the new options need no settings to start,
+  and their defaults are the values run on live nodes.
+
 ### Added
 
 - A new rebalancer, **xrebalance**: circular rebalances planned from
@@ -33,13 +46,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   entry says whether it is dynamic.  Invalid setconfig values are
   rejected with a proper error instead of being silently ignored.
 
+- `contrib/clboss-xrebalance-view` shows the rebalancer's view of the
+  node: each channel's band and its peer's net earnings rates, the
+  fill and drain pools, the derived floor ladder, and the `xrebalance`
+  request the widest cycle would send, as a dry-run command line.
+  `contrib/cln-plugin-bounce` restarts named dynamic plugins in
+  dependency order and picks up config-file edits.
+  `contrib/clboss-forwarding-stats --ids` prints full node ids in
+  place of aliases.
+
+### Changed
+
+- **BREAKING**: CLBOSS now requires **Core Lightning v25.09 or
+  later**, and **v26.04 or later** is the tested floor.  The probing
+  subsystems build routes from the `getroutes` per-hop out-side
+  fields (`node_id_out` / `amount_out_msat` / `cltv_out`): on v26.06
+  and later these are read directly, and on older versions they are
+  derived from the deprecated per-hop fields, which carry the same
+  values one hop over.  At startup, CLN older than v25.09 is refused
+  before any on-disk state is created or modified, because
+  `getroutes` gained `maxparts` in v25.09 and CLBOSS passes it on
+  every call (note: with `important-plugin`, a refused start stops
+  lightningd itself); versions from v25.09 up to v26.04 start with a
+  warning that the version is untested.  Operators running an older
+  CLN that carries backports of what CLBOSS needs (askrene
+  `getroutes` with `maxparts`, `xpay`) can bypass the refusal with
+  `--clboss-skip-cln-version-check`.  Users on older CLN releases
+  should stay on CLBOSS 0.16.x, which uses the legacy
+  `getroute`/`pay` APIs that older CLN still provides.
+
+- Channel-candidate capacity probing (the Dowser) is one `askrene`
+  `getroutes` flow estimate, replacing the loop of `getroute` and
+  `listchannels` calls.  The estimate is capped at
+  `clboss-max-channel`, the largest channel CLBOSS would open; sizing
+  between `clboss-min-channel` and `clboss-max-channel` is otherwise
+  unchanged.
+
+- Swap-out invoices are paid with `xpay` instead of the deprecated
+  `pay`.  The fee cap stays at 0.5% of the amount, passed as an
+  absolute `maxfee`.
+
+- Probes exclude our own node through a persistent `askrene` layer
+  named `clboss-self`, which holds only our node id; it shows in
+  `askrene-listlayers` and needs no maintenance.
+
 ### Removed
 
 - **BREAKING**: the built-in rebalancer (`JitRebalancer`,
-  `EarningsRebalancer`, `InitialRebalancer`, `FundsMover`) and the
-  manual `clboss-movefunds` command.  Rebalancing is now done by the
-  xrebalance engine, selected with the new `clboss-rebalance-mode`
-  option.  The `clboss-max-rebalance-fee-ppm` option is removed with
+  `EarningsRebalancer`, `InitialRebalancer`, `FundsMover`), the
+  manual `clboss-movefunds` command, and the
+  `clboss-earnings-rebalancer` debug trigger.  Rebalancing is now
+  done by the xrebalance engine, selected with the new
+  `clboss-rebalance-mode` option.  The `clboss-max-rebalance-fee-ppm` option is removed with
   it; configs still setting it must drop it or `lightningd` will
   refuse to start.
   JIT (just-in-time) rebalancing is removed deliberately: holding an
@@ -66,25 +124,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   drop below twice the minimum channel size between the decider's
   trigger and planning (#137).
 
-### Changed
-
-- **BREAKING**: CLBOSS now requires **Core Lightning v25.09 or
-  later**, and **v26.04 or later** is the tested floor.  The probing
-  subsystems build routes from the `getroutes` per-hop out-side
-  fields (`node_id_out` / `amount_out_msat` / `cltv_out`): on v26.06
-  and later these are read directly, and on older versions they are
-  derived from the deprecated per-hop fields, which carry the same
-  values one hop over.  At startup, CLN older than v25.09 is refused
-  before any on-disk state is created or modified, because
-  `getroutes` gained `maxparts` in v25.09 and CLBOSS passes it on
-  every call (note: with `important-plugin`, a refused start stops
-  lightningd itself); versions from v25.09 up to v26.04 start with a
-  warning that the version is untested.  Operators running an older
-  CLN that carries backports of what CLBOSS needs (askrene
-  `getroutes` with `maxparts`, `xpay`) can bypass the refusal with
-  `--clboss-skip-cln-version-check`.  Users on older CLN releases
-  should stay on CLBOSS 0.16.x, which uses the legacy
-  `getroute`/`pay` APIs that older CLN still provides.
+- `contrib/recently-closed` accepts `--lightning-dir` and the network
+  flags like the other contrib scripts; its broken import and
+  `lookup_alias` call are fixed (it could not run before).
 
 ## [0.16.3] - 2026-08-18: "Tougher Than the Race"
 
