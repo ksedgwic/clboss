@@ -767,9 +767,9 @@ def main():
         r["tgt_drain_sat"] = agg["tgt_drain"]
 
     # Band thresholds for "tier" sort: follow --fill-loc/--drain-loc when set,
-    # else default to 10/90 so the tier sort always works.
-    fill_band = args.fill_loc if args.fill_loc is not None else 10.0
-    drain_band = args.drain_loc if args.drain_loc is not None else 90.0
+    # else the clboss defaults (25/75) so the tier sort always works.
+    fill_band = args.fill_loc if args.fill_loc is not None else 25.0
+    drain_band = args.drain_loc if args.drain_loc is not None else 75.0
     _NEG_INF = float("-inf")
     _POS_INF = float("inf")
 

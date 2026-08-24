@@ -623,18 +623,18 @@ All of the following are *dynamic* (`setconfig`) options:
 * `clboss-xrebalance-route-cost-floor` — the ppm floor at which the
   matched pool stops growing; also sets the cycle's amount and fee
   budget.  `auto` derives a ladder of floors and sweeps a random rung
-  each cycle.  Default `50`.
+  each cycle.  Default `auto`.
 * `clboss-xrebalance-earnings-window-days` — trailing window over
   which per-peer net earnings rates are measured.  Default `90`.
 * `clboss-xrebalance-fill-loc` / `clboss-xrebalance-drain-loc` — the
   band edges, in percent of local liquidity: channels at or below
   `fill-loc` are fill candidates, at or above `drain-loc` are drain
   candidates, and each transfer aims the channel back at its band
-  edge.  Defaults `10` and `90`.
+  edge.  Defaults `25` and `75`.
 * `clboss-xrebalance-maxparts` — how many parts (paths) the
   min-cost-flow solve may split a transfer into.  Lower means fewer,
   fatter parts; higher means finer splitting and more learning but
-  more refusals.  Default `10`.
+  more refusals.  Default `80`.
 * `clboss-xrebalance-grant` — assumed prior earnings rate (ppm),
   credited to every channeled peer as if already earned on one
   capacity-turn of volume; admits peers with no track record at that

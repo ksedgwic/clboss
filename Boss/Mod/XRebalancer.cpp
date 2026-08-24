@@ -49,16 +49,20 @@ auto const opt_grant = std::string("clboss-xrebalance-grant");
 auto const opt_gain = std::string("clboss-xrebalance-gain");
 
 auto constexpr default_per_hour = double(12.0);
-auto constexpr default_floor = double(50.0);
 auto constexpr default_window_days = double(90.0);
-/* Tier bands (Loc%); match clboss-xrebalance-view defaults.  */
-auto constexpr default_fill_band = double(10.0);
-auto constexpr default_drain_band = double(90.0);
+/* Route-cost floor.  Default "auto": each cycle cuts the derived
+ * floor ladder at a random rung.  floor_ppm starts at fallback_floor
+ * and is replaced by an operator's numeric setting; it is the cut
+ * whenever auto is off or no ladder could be derived.  */
+auto constexpr default_floor_auto = true;
+auto constexpr fallback_floor = double(50.0);
+/* Tier bands (Loc%).  The band both admits a channel and defines
+ * where its rebalancing stops: the fill/drain deficits aim toward
+ * the band edges themselves.  */
+auto constexpr default_fill_band = double(25.0);
+auto constexpr default_drain_band = double(75.0);
 /* MCF split cap passed to the executor (askrene getroutes maxparts).  */
-auto constexpr default_maxparts = double(10.0);
-/* The fill/drain deficits aim toward the band edges themselves
- * (fill_band / drain_band): the band both admits a channel and
- * defines where its rebalancing stops.  */
+auto constexpr default_maxparts = double(80.0);
 
 /* Strictness benders, both neutral by default.  grant credits every
  * channeled peer an assumed prior of grant ppm on one capacity-turn
@@ -121,14 +125,14 @@ private:
 
 	void start() {
 		per_hour = default_per_hour;
-		floor_ppm = default_floor;
+		floor_auto = default_floor_auto;
+		floor_ppm = fallback_floor;
 		window_days = default_window_days;
 		fill_band = default_fill_band;
 		drain_band = default_drain_band;
 		maxparts = std::uint32_t(default_maxparts);
 		grant_ppm = default_grant;
 		gain = default_gain;
-		floor_auto = false;
 		started = false;
 		in_flight = false;
 
@@ -146,13 +150,13 @@ private:
 				"demand-triggered cycles still run).  "
 				"Poisson-paced; only active when the "
 				"rebalancer mode is \"xrebalance\".")
-			     + manifest_option(opt_floor, default_floor,
+			     + manifest_option(opt_floor, "auto",
 				"Route-cost floor (ppm): stop growing the "
 				"matched-pool cycle once the marginal joint "
 				"NetPpm drops below this.  Sets the derived "
-				"amount and the maxfee budget.  Or \"auto\": "
-				"each cycle picks a random rung of the derived "
-				"floor ladder (sweep).")
+				"amount and the maxfee budget.  \"auto\" (the "
+				"default): each cycle picks a random rung of "
+				"the derived floor ladder (sweep).")
 			     + manifest_option(opt_window_days, default_window_days,
 				"Trailing window (days) over which per-channel "
 				"NetPpm is measured for cycle selection.")
@@ -221,6 +225,16 @@ private:
 		return bus.raise(Msg::ManifestOption{
 			name, Msg::OptionType_String,
 			Json::Out::direct(dflt), std::move(desc),
+			true /* dynamic */
+		});
+	}
+	Ev::Io<void> manifest_option( std::string const& name
+				    , char const* dflt
+				    , std::string desc
+				    ) {
+		return bus.raise(Msg::ManifestOption{
+			name, Msg::OptionType_String,
+			Json::Out::direct(std::string(dflt)), std::move(desc),
 			true /* dynamic */
 		});
 	}
