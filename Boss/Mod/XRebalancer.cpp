@@ -70,10 +70,12 @@ auto constexpr default_drain_band = double(75.0);
 auto constexpr default_maxparts = double(80.0);
 
 /* Strictness benders, both neutral by default.  grant credits every
- * channeled peer an assumed prior of grant ppm on one capacity-turn
- * of volume; gain multiplies the joined net rate.  The result is
- * what clboss-xrebalance-view shows as InAdjPpm/OutAdjPpm, beside
- * the raw InNetPpm/OutNetPpm.  */
+ * channeled peer an assumed prior of grant ppm on one rebalance's
+ * worth of volume per side: fill-loc percent of its capacity on the
+ * out side (one fill), 100 - drain-loc percent on the in side (one
+ * drain); gain multiplies the joined net rate.  The result is what
+ * clboss-xrebalance-view shows as InAdjPpm/OutAdjPpm, beside the
+ * raw InNetPpm/OutNetPpm.  */
 auto constexpr default_grant = double(0.0);
 auto constexpr default_gain = double(1.0);
 
@@ -112,7 +114,7 @@ private:
 	double fill_band;
 	double drain_band;
 	std::uint32_t maxparts;   /* MCF split cap (integer count) */
-	double grant_ppm;         /* assumed prior rate (ppm of a capacity-turn) */
+	double grant_ppm;         /* assumed prior rate (ppm, weighted by one rebalance) */
 	double gain;              /* NetPpm multiplier */
 	bool floor_auto;   /* floor option set to "auto" (sweep) */
 	bool started;
@@ -219,11 +221,13 @@ private:
 				"Assumed prior earnings rate (ppm), credited "
 				"to every channeled peer on both sides as if "
 				"it had already earned that rate on one "
-				"capacity-turn of volume.  Admits peers with "
-				"no track record at exactly this rate; "
-				"expenditures spend the credit down (subsidy "
-				"per peer bounded by grant x capacity) and "
-				"real volume dilutes it toward the measured "
+				"rebalance's worth of volume: fill-loc percent "
+				"of its capacity on the out side, 100 - "
+				"drain-loc percent on the in side.  Admits "
+				"peers with no track record at exactly this "
+				"rate; expenditures spend the credit down (one "
+				"fill or drain to the band edge at grant ppm) "
+				"and real volume dilutes it toward the measured "
 				"rate.  0 = record-only (default).")
 			     + manifest_option(opt_gain, default_gain,
 				"Multiplier (> 0) on each side's net earnings "
@@ -533,24 +537,34 @@ private:
 		return db.transact().then([ this, cutoff, chans, demand_scid
 					  ](Sqlite3::Tx tx) {
 			auto net = std::make_shared<std::map<Ln::NodeId, NetPpm>>();
-			/* Per-peer capacity (msat): grant's credit base and
-			 * notional volume.  */
+			/* Per-peer capacity (msat); one rebalance's worth
+			 * of it, per side, is grant's credit base and
+			 * notional volume: a fill moves up to fill_band
+			 * percent in (the out side's credit), a drain moves
+			 * up to 100 - drain_band percent out (the in
+			 * side's).  */
 			auto cap_msat = std::map<Ln::NodeId, double>();
 			for (auto const& c : *chans)
 				cap_msat[c.node] += double(c.cap_sat) * 1000.0;
+			auto w_in = [this](double cm) {
+				return cm * (100.0 - drain_band) / 100.0;
+			};
+			auto w_out = [this](double cm) {
+				return cm * fill_band / 100.0;
+			};
 			/* Join one side.  Strict form is (e - x) / f over
 			 * f > 0.  With grant, credit the peer as if it had
-			 * already earned grant ppm on one capacity-turn:
-			 * (e - x + cap*grant/1e6) / (f + cap) -- a fresh
-			 * peer reads exactly grant, expenditures spend the
-			 * credit down, real volume dilutes it toward the
-			 * measured rate.  gain scales the result either
-			 * way.  */
+			 * already earned grant ppm on w, that side's
+			 * rebalance volume: (e - x + w*grant/1e6) / (f + w)
+			 * -- a fresh peer reads exactly grant, the credit
+			 * covers one move to the band edge at grant ppm,
+			 * and real volume dilutes it toward the measured
+			 * rate.  gain scales the result either way.  */
 			auto joined = [this]( double e, double x, double f
-					    , double cm
+					    , double w
 					    , bool& has, double& ppm
 					    ) {
-				auto g = grant_ppm > 0.0 ? cm : 0.0;
+				auto g = grant_ppm > 0.0 ? w : 0.0;
 				if (!(f + g > 0.0))
 					return;
 				has = true;
@@ -582,8 +596,9 @@ private:
 				if (ci != cap_msat.end())
 					cm = ci->second;
 				auto p = NetPpm();
-				joined(in_e, in_x, in_f, cm, p.has_in, p.in_net);
-				joined(out_e, out_x, out_f, cm,
+				joined(in_e, in_x, in_f, w_in(cm),
+				       p.has_in, p.in_net);
+				joined(out_e, out_x, out_f, w_out(cm),
 				       p.has_out, p.out_net);
 				(*net)[node] = p;
 			}
@@ -594,9 +609,9 @@ private:
 					if (net->count(ce.first))
 						continue;
 					auto p = NetPpm();
-					joined(0.0, 0.0, 0.0, ce.second,
+					joined(0.0, 0.0, 0.0, w_in(ce.second),
 					       p.has_in, p.in_net);
-					joined(0.0, 0.0, 0.0, ce.second,
+					joined(0.0, 0.0, 0.0, w_out(ce.second),
 					       p.has_out, p.out_net);
 					(*net)[ce.first] = p;
 				}

@@ -160,14 +160,19 @@ or `off`.  What each knob moves:
 earned what a transfer costs.
 
 - `grant` credits every peer, on both sides, an assumed rate of
-  `grant` ppm as if it had already been earned on one capacity-turn
-  of volume:
+  `grant` ppm as if it had already been earned on one rebalance's
+  worth of volume: on the out side `fill-loc` percent of the peer's
+  capacity, one fill; on the in side `100 - drain-loc` percent, one
+  drain:
 
-      adjusted rate = (net + capacity * grant / 1e6) / (forwarded + capacity)
+      w = capacity * fill-loc / 100            (out side)
+      w = capacity * (100 - drain-loc) / 100   (in side)
+      adjusted rate = (net + w * grant / 1e6) / (forwarded + w)
 
-  A peer with no record reads exactly `grant`.  The credit weighs
-  one capacity-turn of volume, so it matters only while a peer's
-  forwarded volume is small next to its capacity; as the record
+  A peer with no record reads exactly `grant`, and the credit is
+  what one move to the band edge costs at `grant` ppm.  The credit
+  weighs one rebalance's worth of volume, so it matters only while
+  a peer's forwarded volume is small next to that; as the record
   grows, the adjusted rate converges on the measured net rate, and
   expenditures spend the credit down.  It admits new peers and
   peers with thin records, and lifts a slightly negative record to
@@ -186,9 +191,9 @@ raw and `InAdjPpm` / `OutAdjPpm` adjusted, so the effect of the two
 settings is visible per peer.  A node with no record cannot
 rebalance under the strict rule at all, since no side has earned
 anything; `grant` is what admits it, and the credit dilutes on its
-own as forwarded volume grows past the channel capacity.  One
-production node runs `grant` 100 and `gain` 1.2 on a mature
-record.
+own as forwarded volume grows past one rebalance's worth of the
+channel.  One production node runs `grant` 100 and `gain` 1.2 on a
+mature record.
 
 What to watch:
 
