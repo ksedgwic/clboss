@@ -685,9 +685,11 @@ All of the following are *dynamic* (`setconfig`) options:
   default.
 * `clboss-xrebalance-grant` — assumed prior earnings rate (ppm),
   credited to every channeled peer as if already earned on one
-  capacity-turn of volume; admits peers with no track record at that
-  rate, and real volume dilutes the credit toward the measured rate.
-  Default `0` (record-only).
+  rebalance's worth of volume: `clboss-xrebalance-fill-loc` percent
+  of its capacity on the out side, 100 minus
+  `clboss-xrebalance-drain-loc` percent on the in side; admits peers
+  with no track record at that rate, and real volume dilutes the
+  credit toward the measured rate.  Default `0` (record-only).
 * `clboss-xrebalance-gain` — multiplier on the measured earnings
   rates before candidacy and pricing; above `1` accepts routes
   costing up to gain times the measured rate, below `1` only routes
