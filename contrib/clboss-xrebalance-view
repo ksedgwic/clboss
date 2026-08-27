@@ -181,12 +181,14 @@ def safe_ppm(numerator_msat, denominator_msat):
     return (numerator_msat * 1_000_000) / denominator_msat
 
 
-def adjusted_net_ppm(net_msat, fwd_msat, peer_cap_msat, grant, gain):
+def adjusted_net_ppm(net_msat, fwd_msat, move_msat, grant, gain):
     """The AdjPpm the driver joins for one side: strict (net / fwd) when
     grant is 0, else the peer credited an assumed prior of grant ppm on
-    one capacity-turn -- (net + cap*grant/1e6) / (fwd + cap) -- and gain
-    scales the result either way.  Mirrors XRebalancer's joined()."""
-    g_vol = peer_cap_msat if grant > 0 else 0
+    move_msat, that side's rebalance volume (cap * fill-loc / 100 on
+    the out side, cap * (100 - drain-loc) / 100 on the in side) --
+    (net + w*grant/1e6) / (fwd + w) -- and gain scales the result either
+    way.  Mirrors XRebalancer's joined()."""
+    g_vol = move_msat if grant > 0 else 0
     denom = fwd_msat + g_vol
     if denom <= 0:
         return None
@@ -353,7 +355,8 @@ def pad_string(s, width):
     return s + " " * (width - wcswidth(s))
 
 
-def compute_row(channel, peer, window_days, peer_cap_msat, grant, gain):
+def compute_row(channel, peer, window_days, peer_cap_msat, fill_loc,
+                drain_loc, grant, gain):
     cap_msat = channel.get("total_msat", 0) or 0
     to_us_msat = channel.get("to_us_msat", 0) or 0
     pct_local = (100.0 * to_us_msat / cap_msat) if cap_msat > 0 else 0.0
@@ -372,16 +375,18 @@ def compute_row(channel, peer, window_days, peer_cap_msat, grant, gain):
     in_exp = peer.get("in_expenditures", 0)
     in_net = in_earn - in_exp
     in_net_ppm = safe_ppm(in_net, in_fwd)
-    in_adj_ppm = adjusted_net_ppm(in_net, in_fwd, peer_cap_msat,
-                                   grant, gain)
+    # grant's notional volume per side: one drain (in) or one fill (out)
+    # of the peer's capacity, to the band edge.
+    in_move = peer_cap_msat * (100.0 - drain_loc) / 100.0
+    in_adj_ppm = adjusted_net_ppm(in_net, in_fwd, in_move, grant, gain)
 
     out_fwd = peer.get("out_forwarded", 0)
     out_earn = peer.get("out_earnings", 0)
     out_exp = peer.get("out_expenditures", 0)
     out_net = out_earn - out_exp
     out_net_ppm = safe_ppm(out_net, out_fwd)
-    out_adj_ppm = adjusted_net_ppm(out_net, out_fwd, peer_cap_msat,
-                                    grant, gain)
+    out_move = peer_cap_msat * fill_loc / 100.0
+    out_adj_ppm = adjusted_net_ppm(out_net, out_fwd, out_move, grant, gain)
 
     cap_sat = cap_msat // 1000
     local_sat = to_us_msat // 1000
@@ -493,9 +498,11 @@ def main():
         "--grant", type=float, default=None, metavar="PPM",
         help="Assumed prior earnings rate (ppm) credited to every peer on "
              "both sides, as if it had already earned that rate on one "
-             "capacity-turn of volume: (net + cap*grant/1e6) / (fwd + cap).  "
-             "Peers with no record read exactly PPM.  Default: live "
-             "clboss-xrebalance-grant, else 0 (record-only)."
+             "rebalance's worth of volume, w = cap * fill-loc / 100 on the "
+             "out side and cap * (100 - drain-loc) / 100 on the in side: "
+             "(net + w*grant/1e6) / (fwd + w).  Peers with no record read "
+             "exactly PPM.  Default: live clboss-xrebalance-grant, else 0 "
+             "(record-only)."
     )
     parser.add_argument(
         "--gain", type=float, default=None, metavar="MULT",
@@ -723,8 +730,9 @@ def main():
             lightning_dir, network_option, peer_id, peer_metrics
         )
 
-    # grant's credit base: the peer's total capacity across its channels,
-    # matching the driver's per-node join.
+    # grant's credit base: one rebalance's worth, per side, of the peer's
+    # total capacity across its channels, matching the driver's per-node
+    # join.
     peer_cap_msat = {}
     for ch in channels.values():
         peer_cap_msat[ch["peer_id"]] = (
@@ -737,6 +745,7 @@ def main():
         peer = peers[ch["peer_id"]]
         rows.append(compute_row(ch, peer, args.days,
                                 peer_cap_msat[ch["peer_id"]],
+                                args.fill_loc, args.drain_loc,
                                 args.grant, args.gain))
     # A balance-unmanaged peer reads 'U' in the On column and, like an
     # offline one, never joins a pool; it keeps its band tint.
@@ -1219,8 +1228,9 @@ def main():
     print("# InNetPpm/OutNetPpm = (earnings - expenses) * 1e6 / forwarded "
           "msat on that side")
     print("# InAdjPpm/OutAdjPpm = the same with grant and gain applied, "
-          "(net + cap*grant/1e6) / (fwd + cap) * gain; what the driver "
-          "ranks by")
+          "(net + w*grant/1e6) / (fwd + w) * gain with w = cap * (100 - "
+          "drain-loc) / 100 (in) or cap * fill-loc / 100 (out); what the "
+          "driver ranks by")
     print(f"# Loc% = current local balance / capacity")
     print("# On: . = connected, X = offline, U = balance-unmanaged "
           "(clboss-unmanage); only . rows can join a pool")
