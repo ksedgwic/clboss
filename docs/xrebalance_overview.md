@@ -154,20 +154,23 @@ or `off`.  What each knob moves:
 | `route-cost-floor` | auto | how wide a matched set may grow: a fixed ppm floor on the fee ceiling, or `auto`, a ladder of floors derived from the node's own rates with a random rung picked each cycle, so focused cycles at high ceilings and wide cycles at low ones alternate |
 | `maxparts` | 80 | how finely a transfer may split; larger means more paths and more refusals per solve |
 | `grant` | 0 | an assumed prior rate credited to every peer, see below |
+| `grant-weight` | 25 | the volume the grant is assumed earned on, percent of capacity, see below |
 | `gain` | 1 | a multiplier on the measured rates, see below |
 
 **grant and gain** bend the strict rule that a side must have
 earned what a transfer costs.
 
 - `grant` credits every peer, on both sides, an assumed rate of
-  `grant` ppm as if it had already been earned on one capacity-turn
-  of volume:
+  `grant` ppm as if it had already been earned on `grant-weight`
+  percent of the peer's capacity:
 
-      adjusted rate = (net + capacity * grant / 1e6) / (forwarded + capacity)
+      w = capacity * grant-weight / 100
+      adjusted rate = (net + w * grant / 1e6) / (forwarded + w)
 
-  A peer with no record reads exactly `grant`.  The credit weighs
-  one capacity-turn of volume, so it matters only while a peer's
-  forwarded volume is small next to its capacity; as the record
+  A peer with no record reads exactly `grant`.  `grant-weight` sets
+  how much record it takes to outweigh the credit: the credit
+  matters only while a peer's forwarded volume is small next to
+  that share of its capacity; as the record
   grows, the adjusted rate converges on the measured net rate, and
   expenditures spend the credit down.  It admits new peers and
   peers with thin records, and lifts a slightly negative record to
@@ -186,9 +189,9 @@ raw and `InAdjPpm` / `OutAdjPpm` adjusted, so the effect of the two
 settings is visible per peer.  A node with no record cannot
 rebalance under the strict rule at all, since no side has earned
 anything; `grant` is what admits it, and the credit dilutes on its
-own as forwarded volume grows past the channel capacity.  One
-production node runs `grant` 100 and `gain` 1.2 on a mature
-record.
+own as forwarded volume grows past `grant-weight` percent of the
+channel.  One production node runs `grant` 100 and `gain` 1.2 on a
+mature record.
 
 What to watch:
 
