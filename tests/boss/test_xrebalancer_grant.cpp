@@ -39,17 +39,15 @@
 #include<string>
 #include<sys/socket.h>
 
-/* Checks the weight of clboss-xrebalance-grant: the credit is one
- * rebalance's worth of volume per side -- fill-loc percent of the
- * peer's capacity on the out side, 100 - drain-loc percent on the
- * in side -- not a whole capacity-turn.  Both peers have a
- * 1_000_000_000 msat channel and 1_000_000_000 msat forwarded on
- * their candidate side.  With grant 100, the default fill-loc 25,
- * and drain-loc 70: A's out side weighs 250_000_000 msat,
- * (1_000_000 + 25_000) / 1.25e9 = 820 ppm; B's in side weighs
- * 300_000_000 msat, (500_000 + 30_000) / 1.3e9 = 407.7 ppm; the
- * demand cycle prices at 1228 ppm.  A whole capacity-turn would
- * give 550 + 300 = 850; fill-loc on both sides, 820 + 420 = 1240.  */
+/* Checks the weight of clboss-xrebalance-grant: the credit is
+ * assumed earned on clboss-xrebalance-grant-weight percent of the
+ * peer's capacity, both sides.  Both peers have a 1_000_000_000
+ * msat channel and 1_000_000_000 msat forwarded on their candidate
+ * side.  With grant 100 and grant-weight 30 the prior weighs
+ * 300_000_000 msat: A out, (1_000_000 + 30_000) / 1.3e9 = 792.3
+ * ppm; B in, (500_000 + 30_000) / 1.3e9 = 407.7 ppm; the demand
+ * cycle prices at 1200 ppm.  The default weight 25 would give
+ * 820 + 420 = 1240; a whole capacity-turn, 550 + 300 = 850.  */
 
 namespace {
 
@@ -247,8 +245,8 @@ int main() {
 		return set_option(bus, "clboss-xrebalance-grant",
 				  R"JSON("100")JSON");
 	}).then([&]() {
-		return set_option(bus, "clboss-xrebalance-drain-loc",
-				  R"JSON("70")JSON");
+		return set_option(bus, "clboss-xrebalance-grant-weight",
+				  R"JSON("30")JSON");
 	}).then([&]() {
 		return bus.raise(Boss::Msg::DbResource{db});
 	}).then([&]() {
@@ -273,10 +271,9 @@ int main() {
 		assert(has_scid(req["destinations"], scid_a));
 		assert(has_scid(req["sources"], scid_b));
 
-		/* The fee ceiling is the sum of the two side-weighted
-		 * adjusted rates.  */
+		/* The fee ceiling is the sum of the two adjusted rates.  */
 		assert(log_lines.find(
-			"maxfee=1228 ppm (target 820.0 + min offered 407.7)")
+			"maxfee=1200 ppm (target 792.3 + min offered 407.7)")
 			!= std::string::npos);
 
 		return bus.raise(Boss::Shutdown{});
