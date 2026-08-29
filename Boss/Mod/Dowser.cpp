@@ -151,12 +151,15 @@ private:
 	 * getroute+listchannels loop -- askrene's min-cost-flow solver
 	 * does multi-path enumeration natively (CLN >= v24.08, getroutes).
 	 */
-	Ev::Io<void> probe() {
+	/* Probe once at `try_amt`; returns the raw delivered amount
+	 * (0 if the askrene call failed).  Does NOT apply the reserve
+	 * factor -- the caller applies it once to the final result.  */
+	Ev::Io<Ln::Amount> probe_flow(Ln::Amount try_amt) {
 		auto pj = Json::Out();
 		auto obj = pj.start_object();
 		obj.field("source", std::string(fromid));
 		obj.field("destination", std::string(toid));
-		obj.field("amount_msat", probe_amount.to_msat());
+		obj.field("amount_msat", try_amt.to_msat());
 		/* No auto.localchans / auto.sourcefree here: `fromid` is
 		 * the probe SOURCE and is a remote node (a channel
 		 * candidate/proposal target), not us, so those
@@ -177,7 +180,7 @@ private:
 			la.entry(exclude_layer);
 		la.end_array();
 		obj.field( "maxfee_msat"
-			 , probe_maxfee(probe_amount).to_msat()
+			 , probe_maxfee(try_amt).to_msat()
 			 );
 		obj.field("final_cltv", probe_final_cltv);
 		obj.field("maxparts", probe_maxparts);
@@ -193,25 +196,111 @@ private:
 						if ( !r.is_object()
 						  || !r.has("amount_msat")
 						   )
-							continue;
-						auto amt_j = r["amount_msat"];
-						if (!Ln::Amount::valid_object(amt_j))
-							continue;
-						delivered += Ln::Amount::object(amt_j);
+						continue;
+					auto amt_j = r["amount_msat"];
+					if (!Ln::Amount::valid_object(amt_j))
+						continue;
+					delivered += Ln::Amount::object(amt_j);
 					}
 				}
 			}
-			amount = delivered * reserve_factor;
-			return Ev::lift();
+			return Ev::lift(delivered);
 		}).catching<RpcError>([this](RpcError const& _) {
 			/* getroutes errors -- including 205 "Unable to
 			 * find a route" and 206 "Route too expensive" --
-			 * are the askrene way of saying "no flow"; map
-			 * them all to 0msat.
+			 * are the askrene way of saying "no flow at this
+			 * amount".
 			 */
-			amount = Ln::Amount::sat(0);
-			return Ev::lift();
+			(void)_;
+			return Ev::lift(Ln::Amount::sat(0));
 		});
+	}
+
+	/* Refine between a known-successful `lo` (which delivered
+	 * `lo_delivered`) and a known-failed `hi`, until the gap
+	 * is within the resolution.  Returns the raw delivered.  */
+	Ev::Io<Ln::Amount> refine( Ln::Amount lo
+				, Ln::Amount hi
+				, Ln::Amount lo_delivered
+				, Ln::Amount resolution
+				) {
+		if (hi <= lo || (hi - lo) <= resolution)
+			return Ev::lift(lo_delivered);
+		auto mid = Ln::Amount::msat(
+			(lo.to_msat() + hi.to_msat()) / 2
+		);
+		return probe_flow(mid).then([=, this](Ln::Amount d) {
+			if (d != Ln::Amount::sat(0))
+				return refine(mid, hi, d, resolution);
+			return refine(lo, mid, lo_delivered, resolution);
+		});
+	}
+
+	/* Askrene `getroutes` is all-or-nothing at the requested
+	 * amount: a single probe at the caller's ceiling reports
+	 * only ">= ceiling" or 0, hiding mid-range capacities (the
+	 * [min_channel, max_channel) funding dead zone, live-proven
+	 * on regtest and signet).  Recover the estimate:
+	 *  1. try the full probe first (the common, cheap path is
+	 *     unchanged -- one RPC for full-capacity candidates);
+	 *  2. on failure, bracket by probing the floor
+	 *     (ceiling/32);
+	 *  3. binary-refine between floor and ceiling to within
+	 *     ceiling/32 resolution.
+	 * Result under-states true capacity by at most the
+	 * resolution (conservative for channel sizing).  */
+	Ev::Io<void> probe() {
+		auto resolution = Ln::Amount::msat(
+			probe_amount.to_msat() / 32
+		);
+		auto floor_amt = Ln::Amount::msat(
+			resolution.to_msat() + 1
+		);
+		return probe_flow(probe_amount).then(
+				[=, this](Ln::Amount full) {
+			if (full != Ln::Amount::sat(0))
+				return finish_probe(full);
+			return probe_flow(floor_amt).then(
+					[=, this](Ln::Amount lo) {
+				if (lo == Ln::Amount::sat(0)) {
+					/* Below any caller-relevant
+					 * capacity: genuinely no
+					 * flow.  */
+					amount = Ln::Amount::sat(0);
+					return Boss::log( bus, Debug
+						, "Dowser: %s -> %s:"
+						  " probe %s found no"
+						  " flow -> amount 0."
+						, std::string(fromid)
+							 .c_str()
+						, std::string(toid)
+							 .c_str()
+						, std::string(probe_amount)
+							 .c_str()
+						);
+				}
+				return refine( floor_amt
+					       , probe_amount
+					       , lo
+					       , resolution
+					       ).then([=, this](Ln::Amount d) {
+					return finish_probe(d);
+				});
+			});
+		});
+	}
+
+	Ev::Io<void> finish_probe(Ln::Amount delivered) {
+		amount = delivered * reserve_factor;
+		return Boss::log( bus, Debug
+			, "Dowser: %s -> %s: probe %s delivered %s "
+			"-> amount %s."
+			, std::string(fromid).c_str()
+			, std::string(toid).c_str()
+			, std::string(probe_amount).c_str()
+			, std::string(delivered).c_str()
+			, std::string(amount).c_str()
+			);
 	}
 };
 
