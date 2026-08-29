@@ -85,8 +85,10 @@ how many days of earnings history are considered when ranking channels.
   `Gain` is what the edge hours would have earned at the interior rate: an
   upper bound on what a larger channel recovers (run with `--edge 5` for a
   lower bound).  It is only meaningful for `Class` `bidir` channels (flow
-  within 25% of balanced, rebalancing under 25% of forwarded volume); a
-  sink or source drains to the same floor at any size.  `?` marks a rate
+  within 25% of balanced, rebalancing under 25% of forwarded volume, not
+  pinned at an edge); a sink or source drains to the same floor at any
+  size, and a channel at one edge 90% of the time is classed by that edge
+  because the flow it refuses there never shows up in its net flow.  `?` marks a rate
   resting on under three days of interior time.  `--days` sets the window
   (default 30; a candidate should also show at 60 before acting; balance
   samples exist since CLBOSS started recording them),

@@ -18,11 +18,16 @@
 # rebalancing: a sink that drains after every refill has the same floor at
 # any size.  The Class column separates the cases:
 #
-#   bidir   |net| <= 0.25 and rebalanced volume <= 25% of forwarded volume
-#   rebal   bidirectional but rebalance-carried
-#   sink    net outflow (local side runs dry)
-#   source  net inflow (remote side runs dry)
+#   sink    pinned low (90% of hours or more), or net outflow: the local
+#           side runs dry
+#   source  pinned high, or net inflow: the remote side runs dry
+#   rebal   bidirectional but rebalance-carried (over 25% of forwarded
+#           volume)
+#   bidir   none of the above (|net| <= 0.25)
 #   idle    no settled forwards in the window
+#
+# A channel pinned at an edge is classed by the edge, not by net flow: the
+# flow it refuses there never shows up in net.
 #   ?       appended when the interior rate rests on under 3 days (or 5%)
 #           of interior time
 #
@@ -199,9 +204,9 @@ def classify(row, days):
         return "idle"
     net = row["net"]
     rebal = (row["fill"] + row["drain"]) / gross
-    if net > 0.25:
+    if row["low_pct"] >= 90.0 or net > 0.25:
         cls = "sink"
-    elif net < -0.25:
+    elif row["high_pct"] >= 90.0 or net < -0.25:
         cls = "source"
     elif rebal > 0.25:
         cls = "rebal"
