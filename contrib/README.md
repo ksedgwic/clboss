@@ -94,7 +94,13 @@ how many days of earnings history are considered when ranking channels.
   samples exist since CLBOSS started recording them),
   `--since`/`--before` fix it in unix seconds, `--wide` adds the share of
   refused forwards that happened at the edge and the balance range used,
-  `--json` dumps the rows.  `Inb` is the peer's side of the channel now, in M sat: the inbound
+  `--json` dumps the rows.  `MinLoc` is the lowest the local side got during the window, in M sat:
+  capital that never moved, which a splice-out could remove without
+  changing any forward that happened.  A longer window can only lower it,
+  so read it at 60-90 days before removing capital; the samples are
+  hourly, so a dip that came and went within the hour is missed.  `Turns`
+  is forwarded volume over capacity for the window.  `Inb` is the peer's
+  side of the channel now, in M sat: the inbound
   liquidity a close-and-reopen gives up and a splice keeps.  `Up`/`Up3d`
   show whether the peer is connected
   now and its 3-day connect rate, `Splice` whether it negotiates or

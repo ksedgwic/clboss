@@ -31,6 +31,12 @@
 #   ?       appended when the interior rate rests on under 3 days (or 5%)
 #           of interior time
 #
+# MinLoc is the lowest our side got during the window: capital that never
+# moved, which a splice-out could remove without changing any forward that
+# happened (a longer window can only lower it, so read it at 60-90 days
+# before removing capital; hourly samples miss a dip that came and went
+# within the hour).  Turns is forwarded volume over capacity for the window.
+#
 # Inb is the peer's side of the channel now, the inbound liquidity a close
 # would give up (a splice keeps it).  Up is whether the peer is connected now, Up3d its 3-day connect rate from
 # clboss-status, and Splice whether it negotiates or announces splicing
@@ -170,13 +176,14 @@ class PeerBalance:
                 continue
             if ts < since or ts >= before:
                 continue
-            rows.append((ts, our / total))
+            rows.append((ts, our / total, our))
         rows = sorted(set(rows))
         self.ts = [r[0] for r in rows]
         self.frac = [r[1] for r in rows]
         self.before = before
         self.lo = min(self.frac) if rows else None
         self.hi = max(self.frac) if rows else None
+        self.min_our_msat = min(r[2] for r in rows) if rows else None
 
     def __bool__(self):
         return bool(self.ts)
@@ -446,6 +453,8 @@ def main():
             "refused_low_pct": (a["ref_low_msat"] / a["ref_msat"] * 100.0
                                 if a["ref_msat"] else 0.0),
             "range_pct": (bal.hi - bal.lo) * 100.0,
+            "min_local_sat": bal.min_our_msat / 1000.0,
+            "turns": gross / ch["cap"] if ch["cap"] else 0.0,
             "connected": ch["connected"],
             "connect_rate_3d": connect_rate.get(peer_id),
             "spliceable": (spliceable(features[peer_id])
@@ -479,7 +488,7 @@ def main():
     id_col = "PeerID" if args.ids else "Alias"
     headers = [id_col, "SCID", "Cap", "Inb", "Days", "%Low", "%High", "OutInt",
                "OutLow", "InInt", "InHigh", "Gain", "G%", "Earned", "FwdIn",
-               "FwdOut", "Net", "Fill", "Drain", "RefOut"]
+               "FwdOut", "Net", "Turns", "Fill", "Drain", "RefOut", "MinLoc"]
     if args.wide:
         headers += ["@Low", "Range"]
     headers += ["Up", "Up3d", "Splice", "Class"]
@@ -492,8 +501,8 @@ def main():
                 f"{r['in_int']:.0f}", f"{r['in_high']:.0f}",
                 f"{r['gain']:.0f}", f"{r['gain_pct']:.0f}",
                 f"{r['earned']:.0f}", m(r["fwd_in"]), m(r["fwd_out"]),
-                f"{r['net']:+.2f}", m(r["fill"]), m(r["drain"]),
-                m(r["refused_out"])]
+                f"{r['net']:+.2f}", f"{r['turns']:.1f}", m(r["fill"]),
+                m(r["drain"]), m(r["refused_out"]), m(r["min_local_sat"])]
         if args.wide:
             line += [f"{r['refused_low_pct']:.0f}", f"{r['range_pct']:.0f}"]
         rate = r["connect_rate_3d"]
@@ -512,12 +521,14 @@ def main():
                    colalign=("left", "left") + ("right",) * (len(headers) - 5)
                    + ("left",) * 3))
     print()
-    print("Cap/Inb/FwdIn/FwdOut/Fill/Drain/RefOut in M sat; OutInt/OutLow/InInt/"
+    print("Cap/Inb/FwdIn/FwdOut/Fill/Drain/RefOut/MinLoc in M sat; Turns = "
+          "forwarded volume / capacity; OutInt/OutLow/InInt/"
           "InHigh in sat/day; Gain/Earned in sat over the window.")
     print("Gain = edge hours earning at the interior rate; an upper bound, "
           "meaningful for class bidir only.  ? = thin interior evidence.")
     print("Inb = the peer's side of the channel now (inbound liquidity a "
-          "close gives up).")
+          "close gives up).  MinLoc = lowest our side got in the window: "
+          "capital that never moved.")
     print("Up = connected now, Up3d = 3-day connect rate %, Splice = peer "
           "negotiates or announces splicing (? = no announcement seen).")
     return 0
