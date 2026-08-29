@@ -559,7 +559,8 @@ def main():
           "InHigh in sat/day; GainLoc/GainInb/Earned in sat over the window.")
     print("GainLoc/GainInb = low/high edge hours earning at the interior "
           "rate (our side / the peer's side ran dry); upper bounds, "
-          "meaningful for class bidir only.  ? = thin interior evidence.")
+          "meaningful for class bidir only.  G% = both gains as a share of "
+          "Earned.  ? = thin interior evidence.")
     print("Inb = the peer's side of the channel now (inbound liquidity a "
           "close gives up).  MinLoc = lowest our side got in the window: "
           "capital that never moved.")
