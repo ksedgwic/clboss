@@ -56,6 +56,8 @@ cd contrib/
 
 ./clboss-forwarding-stats
 
+./clboss-capacity-stats
+
 ./recently-closed
 
 ./clboss-xrebalance-view
@@ -75,6 +77,25 @@ how many days of earnings history are considered when ranking channels.
   - `--bucket` lets you aggregate by `day`, `week`, `fortnight`, `month`, or `quarter`.
 - **`clboss-forwarding-stats`** summarizes channel forwarding data and can be
   restricted with `--days`.
+- **`clboss-capacity-stats`** finds channels that lose forwards because they
+  run out of room.  Each hour of CLBOSS's balance samples is labelled low
+  (local side under `--edge` percent of capacity, default 10), high (over
+  100 - edge) or interior; settled forwards are credited to the state their
+  channel was in, giving an interior and an edge earn rate per direction.
+  `Gain` is what the edge hours would have earned at the interior rate: an
+  upper bound on what a larger channel recovers (run with `--edge 5` for a
+  lower bound).  It is only meaningful for `Class` `bidir` channels (flow
+  within 25% of balanced, rebalancing under 25% of forwarded volume); a
+  sink or source drains to the same floor at any size.  `?` marks a rate
+  resting on under three days of interior time.  `--days` sets the window
+  (default 30; a candidate should also show at 60 before acting; balance
+  samples exist since CLBOSS started recording them),
+  `--since`/`--before` fix it in unix seconds, `--wide` adds the share of
+  refused forwards that happened at the edge and the balance range used,
+  `--json` dumps the rows.  `Up`/`Up3d` show whether the peer is connected
+  now and its 3-day connect rate, `Splice` whether it negotiates or
+  announces splicing (feature bit 62/63), so a candidate can be resized
+  in place instead of closed and reopened.
 - **`clboss-routing-stats`** ranks peers using recent earnings data and also
   accepts the `--days` option.
 - **`recently-closed`** lists channels that closed within the last N days, also

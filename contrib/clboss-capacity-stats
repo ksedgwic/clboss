@@ -1,0 +1,517 @@
+#!/usr/bin/env python3
+
+# Interior/edge earn-rate table: which channels lose forwards because they run
+# out of room, and what the lost forwards would have earned.
+#
+# CLBOSS records a balance sample per peer roughly hourly
+# (clboss-feemon-history).  Each sampled hour is labelled by the local share
+# of capacity: "low" (under --edge percent), "high" (over 100 - edge), or
+# interior.  Settled forwards (listforwards) are credited to the state their
+# channel was in when they arrived, which gives an out-side earn rate for
+# interior vs low hours and an in-side rate for interior vs high hours.
+#
+#   gain = (interior rate - edge rate) * edge hours, both directions
+#
+# Gain is what the edge hours would have earned at the interior rate.  It is
+# an upper bound on what more capacity can recover, and it only means
+# something for channels whose flow is bidirectional and not carried by
+# rebalancing: a sink that drains after every refill has the same floor at
+# any size.  The Class column separates the cases:
+#
+#   bidir   |net| <= 0.25 and rebalanced volume <= 25% of forwarded volume
+#   rebal   bidirectional but rebalance-carried
+#   sink    net outflow (local side runs dry)
+#   source  net inflow (remote side runs dry)
+#   idle    no settled forwards in the window
+#   ?       appended when the interior rate rests on under 3 days (or 5%)
+#           of interior time
+#
+# Up is whether the peer is connected now, Up3d its 3-day connect rate from
+# clboss-status, and Splice whether it negotiates or announces splicing
+# (BOLT 9 feature bit 62/63): a channel that can be spliced is resized
+# without a close.
+#
+# Balance samples are per peer, so a peer with several channels shares one
+# state across them.
+
+import argparse
+import bisect
+import json
+import os
+import subprocess
+import sys
+import time
+
+from tabulate import tabulate
+
+from clboss.alias_cache import lookup_alias
+
+HOLD_MAX = 6 * 3600  # a balance sample stands in for at most this long
+
+
+def run_lightning_cli_command(lightning_dir, network_option, command, *args,
+                              keyword=False):
+    argv = ["lightning-cli", network_option]
+    if lightning_dir:
+        argv.append(f"--lightning-dir={lightning_dir}")
+    if keyword:
+        argv.append("-k")
+    argv += [command, *args]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True,
+                                check=True)
+        return json.loads(result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(f"Command '{argv}' failed with error: {e}", file=sys.stderr)
+        print(e.stderr, file=sys.stderr)
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse JSON from command '{argv}': {e}",
+              file=sys.stderr)
+    return None
+
+
+def msat(value):
+    """listforwards amounts arrive as ints or 'Nmsat' strings."""
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    return int(str(value).replace("msat", ""))
+
+
+def feature_bit(features_hex, bit):
+    """BOLT 9: bit 0 is the least significant bit of the last byte."""
+    try:
+        value = int(features_hex, 16)
+    except (TypeError, ValueError):
+        return False
+    return (value >> bit) & 1 == 1
+
+
+def spliceable(features_hex):
+    return feature_bit(features_hex, 62) or feature_bit(features_hex, 63)
+
+
+class Cli:
+    def __init__(self, lightning_dir, network_option):
+        self.lightning_dir = lightning_dir
+        self.network_option = network_option
+
+    def __call__(self, command, *args, keyword=False):
+        return run_lightning_cli_command(self.lightning_dir,
+                                         self.network_option, command, *args,
+                                         keyword=keyword)
+
+
+def forwards_last_index(cli):
+    """Current created_index of the forwards table (wait with nextvalue=0
+    returns immediately)."""
+    data = cli("wait", "forwards", "created", "0")
+    if data and "created" in data:
+        return int(data["created"])
+    return None
+
+
+def forward_at(cli, index):
+    data = cli("listforwards", "index=created", f"start={index}", "limit=1",
+               keyword=True)
+    fwds = data.get("forwards", []) if data else []
+    return fwds[0] if fwds else None
+
+
+def first_index_since(cli, since, last_index):
+    """Smallest created_index whose forward was received at or after since."""
+    lo, hi = 1, last_index + 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        fwd = forward_at(cli, mid)
+        if fwd is None:
+            # index gap or past the end: treat as "after"
+            hi = mid
+        elif fwd.get("received_time", 0) >= since:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+def iter_forwards(cli, status, start, before, page):
+    """Forwards of one status from created_index start, received before
+    'before'."""
+    while True:
+        data = cli("listforwards", f"status={status}", "index=created",
+                   f"start={start}", f"limit={page}", keyword=True)
+        fwds = data.get("forwards", []) if data else []
+        if not fwds:
+            return
+        for fwd in fwds:
+            if fwd.get("received_time", 0) >= before:
+                return
+            yield fwd
+        start = fwds[-1]["created_index"] + 1
+
+
+class PeerBalance:
+    """Hourly balance samples of one peer within the window."""
+
+    def __init__(self, records, since, before):
+        rows = []
+        for r in records:
+            our = r.get("balance_our_msat")
+            total = r.get("balance_total_msat")
+            ts = r.get("ts")
+            if our is None or not total or ts is None:
+                continue
+            if ts < since or ts >= before:
+                continue
+            rows.append((ts, our / total))
+        rows = sorted(set(rows))
+        self.ts = [r[0] for r in rows]
+        self.frac = [r[1] for r in rows]
+        self.before = before
+        self.lo = min(self.frac) if rows else None
+        self.hi = max(self.frac) if rows else None
+
+    def __bool__(self):
+        return bool(self.ts)
+
+    def at(self, t):
+        """Local fraction at time t, or None if no sample covers it."""
+        i = bisect.bisect_right(self.ts, t) - 1
+        if i < 0 or t - self.ts[i] > HOLD_MAX:
+            return None
+        return self.frac[i]
+
+    def hours(self, low, high):
+        h = {"low": 0.0, "mid": 0.0, "high": 0.0}
+        for i, ts in enumerate(self.ts):
+            nxt = self.ts[i + 1] if i + 1 < len(self.ts) else self.before
+            dt = min(max(nxt - ts, 0), HOLD_MAX) / 3600.0
+            f = self.frac[i]
+            key = "low" if f < low else ("high" if f > high else "mid")
+            h[key] += dt
+        return h
+
+
+def classify(row, days):
+    gross = row["fwd_in"] + row["fwd_out"]
+    if gross <= 0:
+        return "idle"
+    net = row["net"]
+    rebal = (row["fill"] + row["drain"]) / gross
+    if net > 0.25:
+        cls = "sink"
+    elif net < -0.25:
+        cls = "source"
+    elif rebal > 0.25:
+        cls = "rebal"
+    else:
+        cls = "bidir"
+    if row["gain"] > 0:
+        thin_h = max(72.0, 0.05 * days * 24)
+        thin_gain = 0.0
+        if row["notlow_h"] < thin_h:
+            thin_gain += row["gain_out"]
+        if row["nothigh_h"] < thin_h:
+            thin_gain += row["gain_in"]
+        if thin_gain > 0.5 * row["gain"]:
+            cls += "?"
+    return cls
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Interior/edge earn-rate table for channel sizing")
+    parser.add_argument("--mainnet", action="store_true", help="Run on mainnet")
+    parser.add_argument("--testnet", action="store_true", help="Run on testnet")
+    parser.add_argument("--signet", action="store_true", help="Run on signet")
+    parser.add_argument("--regtest", action="store_true", help="Run on regtest")
+    parser.add_argument("--network", help="Set the network explicitly")
+    parser.add_argument("--lightning-dir", help="lightning data location")
+    parser.add_argument("--days", type=int, default=30,
+                        help="Window length in days (default: 30; confirm "
+                             "a candidate with 60)")
+    parser.add_argument("--since", type=int,
+                        help="Window start, unix seconds (overrides --days)")
+    parser.add_argument("--before", type=int,
+                        help="Window end, unix seconds (default: now)")
+    parser.add_argument("--edge", type=float, default=10.0,
+                        help="Edge threshold, percent of capacity on the "
+                             "local side (default: 10; try 5 for a lower "
+                             "bound on gain)")
+    parser.add_argument("--sort", choices=["class", "gain", "earned", "cap",
+                                           "alias"],
+                        default="class",
+                        help="Row order (default: class, then gain)")
+    parser.add_argument("--wide", action="store_true",
+                        help="Add the @Low and Range diagnostic columns")
+    parser.add_argument("--ids", action="store_true",
+                        help="Show full peer node ids instead of aliases")
+    parser.add_argument("--json", action="store_true",
+                        help="Print the rows as JSON instead of a table")
+    parser.add_argument("--page", type=int, default=10000,
+                        help="listforwards page size (default: 10000)")
+    args = parser.parse_args()
+
+    if args.days <= 0:
+        parser.error("--days must be a positive integer")
+    if not 0 < args.edge < 50:
+        parser.error("--edge must be between 0 and 50")
+
+    if args.network:
+        network_option = f"--network={args.network}"
+    elif args.testnet:
+        network_option = "--network=testnet"
+    elif args.signet:
+        network_option = "--network=signet"
+    elif args.regtest:
+        network_option = "--network=regtest"
+    else:
+        network_option = "--network=bitcoin"
+
+    lightning_dir = None
+    if args.lightning_dir:
+        lightning_dir = args.lightning_dir
+        assert os.path.isdir(lightning_dir), \
+            f'"{lightning_dir}" is not a valid directory'
+
+    before = args.before or int(time.time())
+    since = args.since or before - args.days * 86400
+    if since >= before:
+        parser.error("--since must be earlier than --before")
+    window_days = (before - since) / 86400.0
+    low = args.edge / 100.0
+    high = 1.0 - low
+
+    cli = Cli(lightning_dir, network_option)
+
+    data = cli("listpeerchannels")
+    if not data:
+        return 1
+    channels = {}
+    for ch in data.get("channels", []):
+        scid = ch.get("short_channel_id")
+        if not scid or ch.get("state") != "CHANNELD_NORMAL":
+            continue
+        channels[scid] = {
+            "peer_id": ch["peer_id"],
+            "cap": msat(ch.get("total_msat")),
+            "connected": bool(ch.get("peer_connected")),
+        }
+    scid2peer = {scid: c["peer_id"] for scid, c in channels.items()}
+    peers = sorted({c["peer_id"] for c in channels.values()})
+
+    aliases = {}
+    for peer_id in peers:
+        aliases[peer_id] = lookup_alias(run_lightning_cli_command,
+                                        lightning_dir, network_option, peer_id)
+
+    # splicing: the negotiated init features of connected peers, else the
+    # node announcement
+    features = {}
+    for peer in (cli("listpeers") or {}).get("peers", []):
+        if peer.get("connected") and peer.get("features"):
+            features[peer["id"]] = peer["features"]
+    for peer_id in peers:
+        if peer_id in features:
+            continue
+        nodes = (cli("listnodes", peer_id) or {}).get("nodes", [])
+        for node in nodes:
+            if node.get("features"):
+                features[peer_id] = node["features"]
+
+    # 3-day connect rate per peer
+    connect_rate = {}
+    metrics = (cli("clboss-status") or {}).get("peer_metrics", {})
+    for peer_id, m in metrics.items():
+        if m.get("connect_rate") is not None:
+            connect_rate[peer_id] = float(m["connect_rate"])
+
+    # rebalance volumes per peer over the same window (CLBOSS day buckets)
+    recent_days = max(1, int(round(window_days)))
+    recent = cli("clboss-recent-earnings", str(recent_days)) or {}
+    recent = recent.get("recent", {})
+
+    balances = {}
+    for peer_id in peers:
+        hist = cli("clboss-feemon-history", peer_id, str(since), str(before))
+        records = hist.get("history", []) if hist else []
+        balances[peer_id] = PeerBalance(records, since, before)
+
+    # forwards
+    last_index = forwards_last_index(cli)
+    if last_index is None:
+        print("could not read the forwards index", file=sys.stderr)
+        return 1
+    start = first_index_since(cli, since, last_index)
+
+    acc = {scid: {k: 0.0 for k in (
+        "in_fwd", "out_fwd", "in_earn", "out_earn",
+        "out_earn_low", "out_earn_notlow", "in_earn_high", "in_earn_nothigh",
+        "ref_msat", "ref_low_msat")} for scid in channels}
+
+    def state(scid, t):
+        peer = scid2peer.get(scid)
+        if peer is None:
+            return None
+        return balances[peer].at(t)
+
+    for fwd in iter_forwards(cli, "settled", start, before, args.page):
+        fee = msat(fwd.get("fee_msat"))
+        t = fwd["received_time"]
+        o = fwd.get("out_channel")
+        i = fwd.get("in_channel")
+        if o in acc:
+            a = acc[o]
+            a["out_fwd"] += msat(fwd.get("out_msat"))
+            a["out_earn"] += fee
+            f = state(o, t)
+            if f is not None:
+                a["out_earn_low" if f < low else "out_earn_notlow"] += fee
+        if i in acc:
+            a = acc[i]
+            a["in_fwd"] += msat(fwd.get("in_msat"))
+            a["in_earn"] += fee
+            f = state(i, t)
+            if f is not None:
+                a["in_earn_high" if f > high else "in_earn_nothigh"] += fee
+
+    for fwd in iter_forwards(cli, "local_failed", start, before, args.page):
+        if fwd.get("failcode") != 4103:  # WIRE_TEMPORARY_CHANNEL_FAILURE
+            continue
+        o = fwd.get("out_channel")
+        if o not in acc:
+            continue
+        amt = msat(fwd.get("in_msat"))
+        acc[o]["ref_msat"] += amt
+        f = state(o, fwd["received_time"])
+        if f is not None and f < low:
+            acc[o]["ref_low_msat"] += amt
+
+    rows = []
+    for scid, ch in channels.items():
+        peer_id = ch["peer_id"]
+        bal = balances[peer_id]
+        if not bal:
+            continue
+        h = bal.hours(low, high)
+        total_h = h["low"] + h["mid"] + h["high"]
+        if total_h <= 0:
+            continue
+        a = acc[scid]
+        notlow_h = h["mid"] + h["high"]
+        nothigh_h = h["low"] + h["mid"]
+        out_int = a["out_earn_notlow"] / notlow_h if notlow_h else 0.0
+        out_low = a["out_earn_low"] / h["low"] if h["low"] else 0.0
+        in_int = a["in_earn_nothigh"] / nothigh_h if nothigh_h else 0.0
+        in_high = a["in_earn_high"] / h["high"] if h["high"] else 0.0
+        gain_out = max(0.0, out_int - out_low) * h["low"]
+        gain_in = max(0.0, in_int - in_high) * h["high"]
+        earned = a["in_earn"] + a["out_earn"]
+        gross = a["in_fwd"] + a["out_fwd"]
+        rec = recent.get(peer_id, {})
+        row = {
+            "peer_id": peer_id,
+            "alias": aliases.get(peer_id, peer_id),
+            "scid": scid,
+            "cap_sat": ch["cap"] / 1000.0,
+            "days": total_h / 24.0,
+            "low_pct": h["low"] / total_h * 100.0,
+            "high_pct": h["high"] / total_h * 100.0,
+            "notlow_h": notlow_h,
+            "nothigh_h": nothigh_h,
+            "out_int": out_int * 24 / 1000.0,   # sat/day
+            "out_low": out_low * 24 / 1000.0,
+            "in_int": in_int * 24 / 1000.0,
+            "in_high": in_high * 24 / 1000.0,
+            "gain_out": gain_out / 1000.0,      # sat over the window
+            "gain_in": gain_in / 1000.0,
+            "gain": (gain_out + gain_in) / 1000.0,
+            "gain_pct": (gain_out + gain_in) / earned * 100.0 if earned else 0.0,
+            "earned": earned / 1000.0,
+            "fwd_in": a["in_fwd"] / 1000.0,
+            "fwd_out": a["out_fwd"] / 1000.0,
+            "net": (a["out_fwd"] - a["in_fwd"]) / gross if gross else 0.0,
+            "fill": rec.get("out_rebalanced", 0) / 1000.0,
+            "drain": rec.get("in_rebalanced", 0) / 1000.0,
+            "refused_out": a["ref_msat"] / 1000.0,
+            "refused_low_pct": (a["ref_low_msat"] / a["ref_msat"] * 100.0
+                                if a["ref_msat"] else 0.0),
+            "range_pct": (bal.hi - bal.lo) * 100.0,
+            "connected": ch["connected"],
+            "connect_rate_3d": connect_rate.get(peer_id),
+            "spliceable": (spliceable(features[peer_id])
+                           if peer_id in features else None),
+        }
+        row["class"] = classify(row, row["days"])
+        rows.append(row)
+
+    class_rank = {"bidir": 0, "bidir?": 1, "rebal": 2, "rebal?": 3,
+                  "sink": 4, "sink?": 5, "source": 4, "source?": 5,
+                  "idle": 6}
+    if args.sort == "class":
+        rows.sort(key=lambda r: (class_rank.get(r["class"], 9), -r["gain"]))
+    elif args.sort == "gain":
+        rows.sort(key=lambda r: -r["gain"])
+    elif args.sort == "earned":
+        rows.sort(key=lambda r: -r["earned"])
+    elif args.sort == "cap":
+        rows.sort(key=lambda r: -r["cap_sat"])
+    else:
+        rows.sort(key=lambda r: r["alias"].lower())
+
+    if args.json:
+        print(json.dumps({"since": since, "before": before,
+                          "edge_pct": args.edge, "rows": rows}, indent=1))
+        return 0
+
+    def m(sat):
+        return f"{sat / 1e6:.1f}"
+
+    id_col = "PeerID" if args.ids else "Alias"
+    headers = [id_col, "SCID", "Cap", "Days", "%Low", "%High", "OutInt",
+               "OutLow", "InInt", "InHigh", "Gain", "G%", "Earned", "FwdIn",
+               "FwdOut", "Net", "Fill", "Drain", "RefOut"]
+    if args.wide:
+        headers += ["@Low", "Range"]
+    headers += ["Up", "Up3d", "Splice", "Class"]
+    table = []
+    for r in rows:
+        line = [r["peer_id"] if args.ids else r["alias"], r["scid"],
+                m(r["cap_sat"]), f"{r['days']:.0f}",
+                f"{r['low_pct']:.0f}", f"{r['high_pct']:.0f}",
+                f"{r['out_int']:.0f}", f"{r['out_low']:.0f}",
+                f"{r['in_int']:.0f}", f"{r['in_high']:.0f}",
+                f"{r['gain']:.0f}", f"{r['gain_pct']:.0f}",
+                f"{r['earned']:.0f}", m(r["fwd_in"]), m(r["fwd_out"]),
+                f"{r['net']:+.2f}", m(r["fill"]), m(r["drain"]),
+                m(r["refused_out"])]
+        if args.wide:
+            line += [f"{r['refused_low_pct']:.0f}", f"{r['range_pct']:.0f}"]
+        rate = r["connect_rate_3d"]
+        line += ["y" if r["connected"] else "n",
+                 "?" if rate is None else f"{rate * 100:.0f}",
+                 "?" if r["spliceable"] is None
+                 else ("y" if r["spliceable"] else "n"),
+                 r["class"]]
+        table.append(line)
+
+    print(f"window {time.strftime('%Y-%m-%d %H:%M', time.gmtime(since))}Z .. "
+          f"{time.strftime('%Y-%m-%d %H:%M', time.gmtime(before))}Z "
+          f"({window_days:.1f} d), edge {args.edge:g}%")
+    print(tabulate(table, headers=headers, tablefmt="plain",
+                   stralign="left", numalign="right", disable_numparse=True,
+                   colalign=("left", "left") + ("right",) * (len(headers) - 5)
+                   + ("left",) * 3))
+    print()
+    print("Cap/FwdIn/FwdOut/Fill/Drain/RefOut in M sat; OutInt/OutLow/InInt/"
+          "InHigh in sat/day; Gain/Earned in sat over the window.")
+    print("Gain = edge hours earning at the interior rate; an upper bound, "
+          "meaningful for class bidir only.  ? = thin interior evidence.")
+    print("Up = connected now, Up3d = 3-day connect rate %, Splice = peer "
+          "negotiates or announces splicing (? = no announcement seen).")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
