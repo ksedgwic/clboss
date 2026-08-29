@@ -56,7 +56,7 @@ cd contrib/
 
 ./clboss-forwarding-stats
 
-./clboss-capacity-stats
+./clboss-channel-sizing
 
 ./recently-closed
 
@@ -77,35 +77,41 @@ how many days of earnings history are considered when ranking channels.
   - `--bucket` lets you aggregate by `day`, `week`, `fortnight`, `month`, or `quarter`.
 - **`clboss-forwarding-stats`** summarizes channel forwarding data and can be
   restricted with `--days`.
-- **`clboss-capacity-stats`** finds channels that lose forwards because they
-  run out of room.  Each hour of CLBOSS's balance samples is labelled low
-  (local side under `--edge` percent of capacity, default 10), high (over
-  100 - edge) or interior; settled forwards are credited to the state their
-  channel was in, giving an interior and an edge earn rate per direction.
-  `Gain` is what the edge hours would have earned at the interior rate: an
-  upper bound on what a larger channel recovers (run with `--edge 5` for a
-  lower bound).  It is only meaningful for `Class` `bidir` channels (flow
-  within 25% of balanced, rebalancing under 25% of forwarded volume, not
-  pinned at an edge); a sink or source drains to the same floor at any
-  size, and a channel at one edge 90% of the time is classed by that edge
-  because the flow it refuses there never shows up in its net flow.  `?` marks a rate
-  resting on under three days of interior time.  `--days` sets the window
-  (default 30; a candidate should also show at 60 before acting; balance
-  samples exist since CLBOSS started recording them),
-  `--since`/`--before` fix it in unix seconds, `--wide` adds the share of
-  refused forwards that happened at the edge and the balance range used,
-  `--json` dumps the rows.  `MinLoc` is the lowest the local side got during the window, in M sat:
-  capital that never moved, which a splice-out could remove without
-  changing any forward that happened.  A longer window can only lower it,
-  so read it at 60-90 days before removing capital; the samples are
-  hourly, so a dip that came and went within the hour is missed.  `Turns`
-  is forwarded volume over capacity for the window.  `Inb` is the peer's
-  side of the channel now, in M sat: the inbound
-  liquidity a close-and-reopen gives up and a splice keeps.  `Up`/`Up3d`
-  show whether the peer is connected
-  now and its 3-day connect rate, `Splice` whether it negotiates or
-  announces splicing (feature bit 62/63), so a candidate can be resized
-  in place instead of closed and reopened.
+- **`clboss-channel-sizing`** shows which channels want more capacity on
+  our side and which carry capital that never moves.  Each hour of
+  CLBOSS's balance samples is labelled low (local side under `--edge`
+  percent of capacity, default 10), high (over 100 - edge) or interior;
+  settled forwards are credited to the state their channel was in, giving
+  an interior and an edge earn rate per direction.  `GainLoc` is what the
+  low hours would have earned at the interior rate (our side ran dry) and
+  `GainInb` the same for the high hours (the peer's side ran dry): upper
+  bounds on what more capacity on that side recovers (run with `--edge 5`
+  for a lower bound).  They are only meaningful for `Class` `bidir`
+  channels (flow within 25% of balanced, rebalancing under 25% of
+  forwarded volume, not pinned at an edge); a sink or source drains to
+  the same floor at any size, and a channel at one edge 90% of the time
+  is classed by that edge because the flow it refuses there never shows
+  up in its net flow.  `?` marks a rate resting on under three days of
+  interior time.  `MinLoc` is the lowest the local side got during the
+  window, in M sat: capital that never moved, which a splice-out could
+  remove without changing any forward that happened.  A longer window can
+  only lower it, so read it at 60-90 days before removing capital; the
+  samples are hourly, so a dip that came and went within the hour is
+  missed.  The default order puts the `bidir` channels with a `GainLoc`
+  at the top, ranked by it, and everything else below ranked by `MinLoc`,
+  so the largest splice-out candidate is the last row.  `Turns` is
+  forwarded volume over capacity for the window.  `Inb` is the peer's
+  side of the channel now, in M sat: the inbound liquidity a
+  close-and-reopen gives up and a splice keeps.  `Up`/`Up3d` show whether
+  the peer is connected now and its 3-day connect rate, `Splice` whether
+  it negotiates or announces splicing (feature bit 62/63), so a candidate
+  can be resized in place instead of closed and reopened.  `--days` sets
+  the window (default 30; a candidate should also show at 60 before
+  acting; balance samples exist since CLBOSS started recording them),
+  `--since`/`--before` fix it in unix seconds, `--wide` adds the edge
+  earn rates, the share of refused forwards that happened at the edge and
+  the balance range used, `--sort` picks another order, `--json` dumps
+  the rows.
 - **`clboss-routing-stats`** ranks peers using recent earnings data and also
   accepts the `--days` option.
 - **`recently-closed`** lists channels that closed within the last N days, also

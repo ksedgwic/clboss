@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
-# Interior/edge earn-rate table: which channels lose forwards because they run
-# out of room, and what the lost forwards would have earned.
+# Which channels want more capacity on our side, and which carry capital
+# that never moves.  One table, one order: channels short on our side at
+# the top, ranked by the income the shortage cost; everything else below,
+# ranked by idle local capital, so the largest splice-out candidate is the
+# last row.
 #
 # CLBOSS records a balance sample per peer roughly hourly
 # (clboss-feemon-history).  Each sampled hour is labelled by the local share
@@ -10,13 +13,17 @@
 # channel was in when they arrived, which gives an out-side earn rate for
 # interior vs low hours and an in-side rate for interior vs high hours.
 #
-#   gain = (interior rate - edge rate) * edge hours, both directions
+#   gain = (interior rate - edge rate) * edge hours, per side:
+#   GainLoc for the low hours (our side ran dry), GainInb for the high
+#   hours (the peer's side ran dry)
 #
 # Gain is what the edge hours would have earned at the interior rate.  It is
-# an upper bound on what more capacity can recover, and it only means
-# something for channels whose flow is bidirectional and not carried by
-# rebalancing: a sink that drains after every refill has the same floor at
-# any size.  The Class column separates the cases:
+# an upper bound on what more capacity on that side can recover, and it
+# only means something for channels whose flow is bidirectional and not
+# carried by rebalancing: a sink that drains after every refill has the
+# same floor at any size.  We control our side, so GainLoc is the sort key;
+# GainInb says what a drain, or the peer adding funds, would be worth.
+# The Class column separates the cases:
 #
 #   sink    pinned low (90% of hours or more), or net outflow: the local
 #           side runs dry
@@ -224,9 +231,9 @@ def classify(row, days):
         thin_h = max(72.0, 0.05 * days * 24)
         thin_gain = 0.0
         if row["notlow_h"] < thin_h:
-            thin_gain += row["gain_out"]
+            thin_gain += row["gain_loc"]
         if row["nothigh_h"] < thin_h:
-            thin_gain += row["gain_in"]
+            thin_gain += row["gain_inb"]
         if thin_gain > 0.5 * row["gain"]:
             cls += "?"
     return cls
@@ -234,7 +241,8 @@ def classify(row, days):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Interior/edge earn-rate table for channel sizing")
+        description="Which channels want more capacity on our side, and "
+                    "which carry capital that never moves")
     parser.add_argument("--mainnet", action="store_true", help="Run on mainnet")
     parser.add_argument("--testnet", action="store_true", help="Run on testnet")
     parser.add_argument("--signet", action="store_true", help="Run on signet")
@@ -252,12 +260,16 @@ def main():
                         help="Edge threshold, percent of capacity on the "
                              "local side (default: 10; try 5 for a lower "
                              "bound on gain)")
-    parser.add_argument("--sort", choices=["class", "gain", "earned", "cap",
-                                           "alias"],
-                        default="class",
-                        help="Row order (default: class, then gain)")
+    parser.add_argument("--sort", choices=["sizing", "class", "gain",
+                                           "earned", "cap", "alias"],
+                        default="sizing",
+                        help="Row order (default: sizing; bidir channels "
+                             "short on our side by GainLoc at the top, the "
+                             "rest by MinLoc so the largest idle local is "
+                             "last)")
     parser.add_argument("--wide", action="store_true",
-                        help="Add the @Low and Range diagnostic columns")
+                        help="Add the OutLow, InHigh, @Low and Range "
+                             "diagnostic columns")
     parser.add_argument("--ids", action="store_true",
                         help="Show full peer node ids instead of aliases")
     parser.add_argument("--json", action="store_true",
@@ -439,8 +451,8 @@ def main():
             "out_low": out_low * 24 / 1000.0,
             "in_int": in_int * 24 / 1000.0,
             "in_high": in_high * 24 / 1000.0,
-            "gain_out": gain_out / 1000.0,      # sat over the window
-            "gain_in": gain_in / 1000.0,
+            "gain_loc": gain_out / 1000.0,      # sat over the window
+            "gain_inb": gain_in / 1000.0,
             "gain": (gain_out + gain_in) / 1000.0,
             "gain_pct": (gain_out + gain_in) / earned * 100.0 if earned else 0.0,
             "earned": earned / 1000.0,
@@ -466,7 +478,13 @@ def main():
     class_rank = {"bidir": 0, "bidir?": 1, "rebal": 2, "rebal?": 3,
                   "sink": 4, "sink?": 5, "source": 4, "source?": 5,
                   "idle": 6}
-    if args.sort == "class":
+    if args.sort == "sizing":
+        def sizing_key(r):
+            if r["class"].startswith("bidir") and r["gain_loc"] > 0:
+                return (0, -r["gain_loc"], 0.0)
+            return (1, r["min_local_sat"], -r["gain_inb"])
+        rows.sort(key=sizing_key)
+    elif args.sort == "class":
         rows.sort(key=lambda r: (class_rank.get(r["class"], 9), -r["gain"]))
     elif args.sort == "gain":
         rows.sort(key=lambda r: -r["gain"])
@@ -485,46 +503,62 @@ def main():
     def m(sat):
         return f"{sat / 1e6:.1f}"
 
+    def yn(value):
+        return "?" if value is None else ("y" if value else "n")
+
+    def rate(value):
+        return "?" if value is None else f"{value * 100:.0f}"
+
     id_col = "PeerID" if args.ids else "Alias"
-    headers = [id_col, "SCID", "Cap", "Inb", "Days", "%Low", "%High", "OutInt",
-               "OutLow", "InInt", "InHigh", "Gain", "G%", "Earned", "FwdIn",
-               "FwdOut", "Net", "Turns", "Fill", "Drain", "RefOut", "MinLoc"]
-    if args.wide:
-        headers += ["@Low", "Range"]
-    headers += ["Up", "Up3d", "Splice", "Class"]
-    table = []
-    for r in rows:
-        line = [r["peer_id"] if args.ids else r["alias"], r["scid"],
-                m(r["cap_sat"]), m(r["inbound_sat"]), f"{r['days']:.0f}",
-                f"{r['low_pct']:.0f}", f"{r['high_pct']:.0f}",
-                f"{r['out_int']:.0f}", f"{r['out_low']:.0f}",
-                f"{r['in_int']:.0f}", f"{r['in_high']:.0f}",
-                f"{r['gain']:.0f}", f"{r['gain_pct']:.0f}",
-                f"{r['earned']:.0f}", m(r["fwd_in"]), m(r["fwd_out"]),
-                f"{r['net']:+.2f}", f"{r['turns']:.1f}", m(r["fill"]),
-                m(r["drain"]), m(r["refused_out"]), m(r["min_local_sat"])]
-        if args.wide:
-            line += [f"{r['refused_low_pct']:.0f}", f"{r['range_pct']:.0f}"]
-        rate = r["connect_rate_3d"]
-        line += ["y" if r["connected"] else "n",
-                 "?" if rate is None else f"{rate * 100:.0f}",
-                 "?" if r["spliceable"] is None
-                 else ("y" if r["spliceable"] else "n"),
-                 r["class"]]
-        table.append(line)
+    # (header, value, wide-only, left-aligned)
+    cols = [
+        (id_col, lambda r: r["peer_id"] if args.ids else r["alias"], False,
+         True),
+        ("SCID", lambda r: r["scid"], False, True),
+        ("Cap", lambda r: m(r["cap_sat"]), False, False),
+        ("Inb", lambda r: m(r["inbound_sat"]), False, False),
+        ("Days", lambda r: f"{r['days']:.0f}", False, False),
+        ("%Low", lambda r: f"{r['low_pct']:.0f}", False, False),
+        ("%High", lambda r: f"{r['high_pct']:.0f}", False, False),
+        ("OutInt", lambda r: f"{r['out_int']:.0f}", False, False),
+        ("OutLow", lambda r: f"{r['out_low']:.0f}", True, False),
+        ("InInt", lambda r: f"{r['in_int']:.0f}", False, False),
+        ("InHigh", lambda r: f"{r['in_high']:.0f}", True, False),
+        ("GainLoc", lambda r: f"{r['gain_loc']:.0f}", False, False),
+        ("GainInb", lambda r: f"{r['gain_inb']:.0f}", False, False),
+        ("G%", lambda r: f"{r['gain_pct']:.0f}", False, False),
+        ("Earned", lambda r: f"{r['earned']:.0f}", False, False),
+        ("FwdIn", lambda r: m(r["fwd_in"]), False, False),
+        ("FwdOut", lambda r: m(r["fwd_out"]), False, False),
+        ("Net", lambda r: f"{r['net']:+.2f}", False, False),
+        ("Turns", lambda r: f"{r['turns']:.1f}", False, False),
+        ("Fill", lambda r: m(r["fill"]), False, False),
+        ("Drain", lambda r: m(r["drain"]), False, False),
+        ("RefOut", lambda r: m(r["refused_out"]), False, False),
+        ("@Low", lambda r: f"{r['refused_low_pct']:.0f}", True, False),
+        ("MinLoc", lambda r: m(r["min_local_sat"]), False, False),
+        ("Range", lambda r: f"{r['range_pct']:.0f}", True, False),
+        ("Up", lambda r: "y" if r["connected"] else "n", False, True),
+        ("Up3d", lambda r: rate(r["connect_rate_3d"]), False, True),
+        ("Splice", lambda r: yn(r["spliceable"]), False, True),
+        ("Class", lambda r: r["class"], False, True),
+    ]
+    cols = [c for c in cols if args.wide or not c[2]]
+    headers = [c[0] for c in cols]
+    table = [[c[1](r) for c in cols] for r in rows]
 
     print(f"window {time.strftime('%Y-%m-%d %H:%M', time.gmtime(since))}Z .. "
           f"{time.strftime('%Y-%m-%d %H:%M', time.gmtime(before))}Z "
           f"({window_days:.1f} d), edge {args.edge:g}%")
     print(tabulate(table, headers=headers, tablefmt="plain",
                    stralign="left", numalign="right", disable_numparse=True,
-                   colalign=("left", "left") + ("right",) * (len(headers) - 5)
-                   + ("left",) * 3))
+                   colalign=tuple("left" if c[3] else "right" for c in cols)))
     print()
     print("Cap/Inb/FwdIn/FwdOut/Fill/Drain/RefOut/MinLoc in M sat; Turns = "
           "forwarded volume / capacity; OutInt/OutLow/InInt/"
-          "InHigh in sat/day; Gain/Earned in sat over the window.")
-    print("Gain = edge hours earning at the interior rate; an upper bound, "
+          "InHigh in sat/day; GainLoc/GainInb/Earned in sat over the window.")
+    print("GainLoc/GainInb = low/high edge hours earning at the interior "
+          "rate (our side / the peer's side ran dry); upper bounds, "
           "meaningful for class bidir only.  ? = thin interior evidence.")
     print("Inb = the peer's side of the channel now (inbound liquidity a "
           "close gives up).  MinLoc = lowest our side got in the window: "
