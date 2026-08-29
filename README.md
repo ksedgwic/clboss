@@ -584,6 +584,11 @@ to unilaterally close, so it is not recommended to set it to 0.
 The amount specified is a ballpark figure, and CLBOSS may leave
 slightly lower or slightly higher than this amount.
 
+The value is floored at 30000 sat, which is CLN's default
+`min-emergency-msat` plus room for the funding fee; if you raise
+`min-emergency-msat`, raise `--clboss-min-onchain` by the same
+amount.
+
 ### `--clboss-auto-close=<true|false>`
 
 This version of CLBOSS has ***EXPERIMENTAL*** code to monitor
