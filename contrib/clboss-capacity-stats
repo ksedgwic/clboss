@@ -31,7 +31,8 @@
 #   ?       appended when the interior rate rests on under 3 days (or 5%)
 #           of interior time
 #
-# Up is whether the peer is connected now, Up3d its 3-day connect rate from
+# Inb is the peer's side of the channel now, the inbound liquidity a close
+# would give up (a splice keeps it).  Up is whether the peer is connected now, Up3d its 3-day connect rate from
 # clboss-status, and Splice whether it negotiates or announces splicing
 # (BOLT 9 feature bit 62/63): a channel that can be spliced is resized
 # without a close.
@@ -301,6 +302,7 @@ def main():
         channels[scid] = {
             "peer_id": ch["peer_id"],
             "cap": msat(ch.get("total_msat")),
+            "inbound": msat(ch.get("total_msat")) - msat(ch.get("to_us_msat")),
             "connected": bool(ch.get("peer_connected")),
         }
     scid2peer = {scid: c["peer_id"] for scid, c in channels.items()}
@@ -420,6 +422,7 @@ def main():
             "alias": aliases.get(peer_id, peer_id),
             "scid": scid,
             "cap_sat": ch["cap"] / 1000.0,
+            "inbound_sat": ch["inbound"] / 1000.0,
             "days": total_h / 24.0,
             "low_pct": h["low"] / total_h * 100.0,
             "high_pct": h["high"] / total_h * 100.0,
@@ -474,7 +477,7 @@ def main():
         return f"{sat / 1e6:.1f}"
 
     id_col = "PeerID" if args.ids else "Alias"
-    headers = [id_col, "SCID", "Cap", "Days", "%Low", "%High", "OutInt",
+    headers = [id_col, "SCID", "Cap", "Inb", "Days", "%Low", "%High", "OutInt",
                "OutLow", "InInt", "InHigh", "Gain", "G%", "Earned", "FwdIn",
                "FwdOut", "Net", "Fill", "Drain", "RefOut"]
     if args.wide:
@@ -483,7 +486,7 @@ def main():
     table = []
     for r in rows:
         line = [r["peer_id"] if args.ids else r["alias"], r["scid"],
-                m(r["cap_sat"]), f"{r['days']:.0f}",
+                m(r["cap_sat"]), m(r["inbound_sat"]), f"{r['days']:.0f}",
                 f"{r['low_pct']:.0f}", f"{r['high_pct']:.0f}",
                 f"{r['out_int']:.0f}", f"{r['out_low']:.0f}",
                 f"{r['in_int']:.0f}", f"{r['in_high']:.0f}",
@@ -509,10 +512,12 @@ def main():
                    colalign=("left", "left") + ("right",) * (len(headers) - 5)
                    + ("left",) * 3))
     print()
-    print("Cap/FwdIn/FwdOut/Fill/Drain/RefOut in M sat; OutInt/OutLow/InInt/"
+    print("Cap/Inb/FwdIn/FwdOut/Fill/Drain/RefOut in M sat; OutInt/OutLow/InInt/"
           "InHigh in sat/day; Gain/Earned in sat over the window.")
     print("Gain = edge hours earning at the interior rate; an upper bound, "
           "meaningful for class bidir only.  ? = thin interior evidence.")
+    print("Inb = the peer's side of the channel now (inbound liquidity a "
+          "close gives up).")
     print("Up = connected now, Up3d = 3-day connect rate %, Splice = peer "
           "negotiates or announces splicing (? = no announcement seen).")
     return 0
