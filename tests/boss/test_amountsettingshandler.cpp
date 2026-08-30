@@ -23,25 +23,36 @@ struct Case {
 	/* Option values as delivered by lightningd; nullptr = unset.  */
 	char const* min_channel;
 	char const* max_channel;
+	char const* min_onchain;
 	/* Expected settings after validation.  */
 	std::uint64_t expect_min;
 	std::uint64_t expect_max;
+	std::uint64_t expect_reserve;
 };
 
 auto const cases = std::vector<Case>{
 	/* Defaults pass through untouched.  */
-	{ nullptr , nullptr  ,  500000, 16777215},
+	{ nullptr , nullptr  , nullptr   ,  500000, 16777215,   30000},
 	/* A pair satisfying max >= 3 * min + 20k passes through.  */
-	{"1000000", "3020000", 1000000,  3020000},
+	{"1000000", "3020000", nullptr  , 1000000,  3020000,   30000},
 	/* min below the absolute floor is raised.  */
-	{ "400000", nullptr  ,  500000, 16777215},
+	{ "400000", nullptr  , nullptr  ,  500000, 16777215,   30000},
 	/* Conflicting pair: max kept, min lowered to the largest
 	 * value satisfying min_channel + min_remaining <= max_channel.  */
-	{"1000000", "2000000",  660000,  2000000},
+	{"1000000", "2000000", nullptr  ,  660000,  2000000,   30000},
 	/* Non-divisible conflict: truncation keeps the invariant.  */
-	{"1000000", "3000000",  993333,  3000000},
+	{"1000000", "3000000", nullptr  ,  993333,  3000000,   30000},
 	/* max too low for any allowed min: max raised, min floored.  */
-	{"2000000", "1000000",  500000,  1520000},
+	{"2000000", "1000000", nullptr  ,  500000, 1520000,   30000},
+	/* F-3: reserve below CLN min-emergency-msat (25000 sat
+	 * default) + funding fees makes every multifundchannel
+	 * fail 313 forever; forced up to the usable floor.  */
+	{ nullptr , nullptr  ,  "10000" ,  500000, 16777215,   30000},
+	{ nullptr , nullptr  ,  "29999" ,  500000, 16777215,   30000},
+	/* Exactly at the floor stays.  */
+	{ nullptr , nullptr  ,  "30000" ,  500000, 16777215,   30000},
+	/* Higher reserves pass through untouched.  */
+	{ nullptr , nullptr  ,  "500000",  500000, 16777215,  500000},
 };
 
 Boss::Msg::Option make_option(char const* name, char const* value) {
@@ -90,6 +101,12 @@ int main() {
 			return bus.raise(make_option( "clboss-max-channel"
 						    , c.max_channel
 						    ));
+		}).then([&bus, c]() {
+			if (!c.min_onchain)
+				return Ev::lift();
+			return bus.raise(make_option( "clboss-min-onchain"
+						    , c.min_onchain
+						    ));
 		}).then([&bus]() {
 			return bus.raise(Boss::Msg::EndOfOptions{});
 		}).then([captured, have, c]() {
@@ -99,6 +116,9 @@ int main() {
 			      );
 			assert( captured->max_channel
 			     == Ln::Amount::sat(c.expect_max)
+			      );
+			assert( captured->reserve
+			     == Ln::Amount::sat(c.expect_reserve)
 			      );
 			/* min_remaining derivation.  */
 			assert( captured->min_remaining

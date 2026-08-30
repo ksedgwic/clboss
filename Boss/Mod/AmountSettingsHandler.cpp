@@ -40,6 +40,15 @@ auto const additional_remaining = Ln::Amount::sat(20000);
 auto const min_usable_max_channel =
 	(1.0 + trigger_factor) * min_min_channel + additional_remaining;
 
+/* CLBOSS computes the channel-creation budget as
+ *   onchain_spendable - reserve
+ * and spends down to that level, but CLN refuses any funding
+ * transaction that would leave less than its `min-emergency-msat`
+ * (25,000 sat default) plus the funding fee.  A reserve below
+ * that floor makes every multifundchannel fail with error 313
+ * forever while churning the candidate table, so floor it.  */
+auto const min_usable_reserve = Ln::Amount::sat(30000);
+
 Ln::Amount parse_sats(Jsmn::Object value) {
 	auto is = std::istringstream(std::string(value));
 	auto sats = std::uint64_t();
@@ -173,6 +182,23 @@ private:
 						  min_usable_max_channel.to_sat()
 						);
 				settings->max_channel = min_usable_max_channel;
+			}
+			if (settings->reserve < min_usable_reserve) {
+				act += Boss::log( bus, Warn
+						, "AmountSettingsHandler: "
+						  "--clboss-min-onchain %u "
+						  "below the CLN "
+						  "min-emergency-msat floor "
+						  "(25000 sat default) plus "
+						  "funding fees; every channel "
+						  "creation would fail with "
+						  "error 313.  Forced to %u."
+						, (unsigned int)
+						  settings->reserve.to_sat()
+						, (unsigned int)
+						  min_usable_reserve.to_sat()
+						);
+				settings->reserve = min_usable_reserve;
 			}
 
 			/* Compute the rest.  */
