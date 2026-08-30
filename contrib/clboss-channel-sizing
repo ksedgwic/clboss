@@ -268,8 +268,10 @@ def classify(row, days):
     return cls
 
 
-def group_of(row, args):
-    if row["days"] < args.min_days:
+def group_of(row, args, window_days):
+    # a channel with samples across the whole window is never young; the
+    # 1-day slack covers samples not landing exactly on the window edges
+    if row["days"] < min(args.min_days, window_days) - 1.0:
         return "young"
     if row["turns"] < args.min_turns:
         return "notraffic"
@@ -568,7 +570,7 @@ def main():
         rows.append(row)
 
     for r in rows:
-        r["group"] = group_of(r, args)
+        r["group"] = group_of(r, args, window_days)
         r["hold"] = holds_for(r, args)
         r["actionable"] = (r["group"] in ("grow", "shrink")
                            and not r["hold"])
