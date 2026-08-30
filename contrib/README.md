@@ -115,8 +115,9 @@ how many days of earnings history are considered when ranking channels.
   (0.1) of capacity forwarded in the window -- a probe still waiting for
   flow, or a dead channel, told apart by `Days` -- by `Cap`.  `Change` is the proposed splice in M sat: for
   Shrink, remove enough that the window's lowest local balance lands at
-  the edge threshold of the smaller channel (`close` when under 1M sat
-  would be left); for Grow, add the current capacity -- a step rather
+  the edge threshold of the smaller channel (in parentheses when under 1M sat
+  would be left: consider closing instead, which is
+  `clboss-forwarding-stats --days 90 --sort tral`'s call); for Grow, add the current capacity -- a step rather
   than a measurement, since refused volume is inflated by retries, so
   double and read the next window.  In Grow and Shrink the `Hold`
   column names the penalty to weigh before acting on a row -- advice, not a veto: `thin` evidence; peer `offline` or `flaky`

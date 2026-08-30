@@ -17,8 +17,10 @@
 #
 # Change is the proposed splice, in M sat.  Shrink is measured: remove
 # enough that the window's lowest local balance lands at the edge
-# threshold of the smaller channel, or close when under 1M sat would be
-# left.  Grow is a step, not a measurement: add the current capacity,
+# threshold of the smaller channel; when under 1M sat would be left the
+# number is shown in parentheses, since closing may be the better move,
+# and that is clboss-forwarding-stats' call.  Grow is a step, not a
+# measurement: add the current capacity,
 # which lands our side near the midpoint; refused volume cannot size it
 # (retries inflate it), so double and read the next window.
 #
@@ -297,17 +299,17 @@ def group_of(row, args, window_days):
 
 
 def change_for(row, args):
-    """proposed splice in sat (+ in, - out), or "close", or None"""
+    """(proposed splice in sat, + in / - out, or None; True when the
+    remainder would be under MIN_IDLE_SAT, so closing may be the better
+    move)"""
     if row["group"] == "grow":
-        return row["cap_sat"]
+        return row["cap_sat"], False
     if row["group"] == "shrink":
         edge = args.edge / 100.0
         out = (row["min_local_sat"] - edge * row["cap_sat"]) / (1.0 - edge)
         out = min(out, row["cap_sat"])
-        if row["cap_sat"] - out < MIN_IDLE_SAT:
-            return "close"
-        return -out
-    return None
+        return -out, row["cap_sat"] - out < MIN_IDLE_SAT
+    return None, False
 
 
 def holds_for(row, args):
@@ -595,7 +597,7 @@ def main():
 
     for r in rows:
         r["group"] = group_of(r, args, window_days)
-        r["change_sat"] = change_for(r, args)
+        r["change_sat"], r["consider_close"] = change_for(r, args)
         r["hold"] = holds_for(r, args)
         r["actionable"] = (r["group"] in ("grow", "shrink")
                            and not r["hold"])
@@ -667,12 +669,11 @@ def main():
     def rate(value):
         return "?" if value is None else f"{value * 100:.0f}"
 
-    def change(value):
-        if value is None:
+    def change(r):
+        if r["change_sat"] is None:
             return ""
-        if value == "close":
-            return "close"
-        return f"{value / 1e6:+.1f}"
+        text = f"{r['change_sat'] / 1e6:+.1f}"
+        return f"({text})" if r["consider_close"] else text
 
     def per_day(value, hours):
         """a rate over a state the channel was never in has no value"""
@@ -686,7 +687,7 @@ def main():
         ("SCID", lambda r: r["scid"], False, True, None),
         ("Cap", lambda r: m(r["cap_sat"]), False, False, None),
         ("Inb", lambda r: m(r["inbound_sat"]), False, False, "inbound_sat"),
-        ("Change", lambda r: change(r["change_sat"]), False, False, None),
+        ("Change", change, False, False, None),
         ("Days", lambda r: f"{r['days']:.0f}", False, False, "days"),
         ("%Low", lambda r: f"{r['low_pct']:.0f}", False, False, None),
         ("%Int", lambda r: f"{r['mid_pct']:.0f}", False, False, None),
@@ -779,8 +780,10 @@ def main():
           f"no traffic: Turns under {args.min_turns:g}.")
     print("Change: proposed splice, M sat.  Shrink removes enough that the "
           "window's lowest local balance lands at the edge of the smaller "
-          "channel (close if under 1M would be left); Grow adds the current "
-          "capacity as a step, then read the next window.")
+          "channel; in parentheses when under 1M would be left, so consider "
+          "closing instead (clboss-forwarding-stats --days 90 --sort tral).  "
+          "Grow adds the current capacity as a step, then read the next "
+          "window.")
     print("Hold: the penalty to weigh before acting on a Grow/Shrink row -- "
           "thin evidence; peer offline or flaky; or, with no splicing, a "
           "resize is a close: inbound = it would forfeit inbound liquidity, "
