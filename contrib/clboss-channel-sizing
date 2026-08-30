@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
 
 # Which channels want more capacity on our side, and which carry capital
-# that never moves.  One table, one order: channels short on our side at
-# the top, ranked by the income the shortage cost; everything else below,
-# ranked by idle local capital, so the largest splice-out candidate is the
-# last row.
+# that never moves.  The table is grouped:
+#
+#   Grow        bidir channels whose GainLoc clears --min-gain, by GainLoc
+#   Shrink      channels whose MinLoc is at least --idle-frac of capacity
+#               (and 1M sat), by MinLoc
+#   Right-sized the other bidir channels, by Earned
+#   Liquidity   sinks, sources and rebalance-carried channels: refills, not
+#               size, are the lever; by RefOut
+#   Young       under --min-days of samples: a new channel's balance is its
+#               opening state, not its behavior; by Days
+#   No traffic  under --min-turns of capacity forwarded in the window: a
+#               probe still waiting for flow, or a dead channel; by Cap
+#
+# In Grow and Shrink a row is actionable when nothing holds it back: the
+# Hold column names what does (thin evidence, peer offline or flaky, or a
+# close that would forfeit inbound liquidity or a productive channel
+# because the peer cannot splice), the stat that triggered it is tinted,
+# and actionable rows are bold.
 #
 # CLBOSS records a balance sample per peer roughly hourly
 # (clboss-feemon-history).  Each sampled hour is labelled by the local share
@@ -66,6 +80,21 @@ from tabulate import tabulate
 from clboss.alias_cache import lookup_alias
 
 HOLD_MAX = 6 * 3600  # a balance sample stands in for at most this long
+MIN_IDLE_SAT = 1_000_000  # MinLoc below this is never worth a splice-out
+FLAKY_RATE = 0.9  # 3-day connect rate under this holds a resize
+
+ANSI_BOLD = "\033[1m"    # actionable row
+ANSI_HOLD = "\033[33m"   # yellow: the stat that holds a row back
+ANSI_RESET = "\033[0m"
+
+GROUPS = [
+    ("grow", "Grow: our side ran dry"),
+    ("shrink", "Shrink: local capital that never moved"),
+    ("right", "Right-sized"),
+    ("liquidity", "Liquidity-limited: refills, not size, are the lever"),
+    ("young", "Too young to judge"),
+    ("notraffic", "Little or no traffic"),
+]
 
 
 def run_lightning_cli_command(lightning_dir, network_option, command, *args,
@@ -239,6 +268,46 @@ def classify(row, days):
     return cls
 
 
+def group_of(row, args):
+    if row["days"] < args.min_days:
+        return "young"
+    if row["turns"] < args.min_turns:
+        return "notraffic"
+    bidir = row["class"].startswith("bidir")
+    if bidir and row["gain_loc"] >= args.min_gain:
+        return "grow"
+    if row["min_local_sat"] >= max(args.idle_frac * row["cap_sat"],
+                                   MIN_IDLE_SAT):
+        return "shrink"
+    if bidir:
+        return "right"
+    return "liquidity"
+
+
+def holds_for(row, args):
+    """(word, [row fields that triggered it]) for each reason not to act."""
+    if row["group"] not in ("grow", "shrink"):
+        return []
+    holds = []
+    if row["class"].endswith("?"):
+        holds.append(("thin", ["class"]))
+    if not row["connected"]:
+        holds.append(("offline", ["connected"]))
+    elif (row["connect_rate_3d"] is not None
+          and row["connect_rate_3d"] < FLAKY_RATE):
+        holds.append(("flaky", ["connect_rate_3d"]))
+    if not row["spliceable"]:
+        # without splicing a resize is a close: what would it forfeit?
+        fields = ["spliceable"]
+        if row["inbound_sat"] >= 0.25 * row["cap_sat"]:
+            fields.append("inbound_sat")
+        if row["earned"] >= args.min_gain:
+            fields.append("earned")
+        if len(fields) > 1:
+            holds.append(("close", fields))
+    return holds
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Which channels want more capacity on our side, and "
@@ -260,13 +329,33 @@ def main():
                         help="Edge threshold, percent of capacity on the "
                              "local side (default: 10; try 5 for a lower "
                              "bound on gain)")
-    parser.add_argument("--sort", choices=["sizing", "class", "gain",
+    parser.add_argument("--min-gain", type=int, default=1000,
+                        help="GainLoc, sat over the window, that puts a "
+                             "bidir channel in Grow (default: 1000, about "
+                             "one on-chain transaction)")
+    parser.add_argument("--idle-frac", type=float, default=0.4,
+                        help="MinLoc as a fraction of capacity that puts a "
+                             "channel in Shrink (default: 0.4; never under "
+                             "1M sat)")
+    parser.add_argument("--min-days", type=int, default=30,
+                        help="Days of samples under which a channel is too "
+                             "young to judge (default: 30, the default "
+                             "window: a younger channel's balance is still "
+                             "its opening state)")
+    parser.add_argument("--min-turns", type=float, default=0.1,
+                        help="Forwarded volume over capacity under which a "
+                             "channel has too little traffic to size "
+                             "(default: 0.1)")
+    parser.add_argument("--sort", choices=["group", "sizing", "class", "gain",
                                            "earned", "cap", "alias"],
-                        default="sizing",
-                        help="Row order (default: sizing; bidir channels "
-                             "short on our side by GainLoc at the top, the "
-                             "rest by MinLoc so the largest idle local is "
-                             "last)")
+                        default="group",
+                        help="Row order (default: group; sizing is one "
+                             "list, channels short on our side by GainLoc "
+                             "first, the rest by MinLoc ascending)")
+    parser.add_argument("--color", action="store_true",
+                        help="Bold and tint even when stdout is not a tty")
+    parser.add_argument("--no-color", action="store_true",
+                        help="Never bold or tint")
     parser.add_argument("--wide", action="store_true",
                         help="Add the OutLow, InHigh, @Low and Range "
                              "diagnostic columns")
@@ -282,6 +371,9 @@ def main():
         parser.error("--days must be a positive integer")
     if not 0 < args.edge < 50:
         parser.error("--edge must be between 0 and 50")
+    if not 0 < args.idle_frac < 1:
+        parser.error("--idle-frac must be between 0 and 1")
+    color = (args.color or sys.stdout.isatty()) and not args.no_color
 
     if args.network:
         network_option = f"--network={args.network}"
@@ -475,10 +567,36 @@ def main():
         row["class"] = classify(row, row["days"])
         rows.append(row)
 
+    for r in rows:
+        r["group"] = group_of(r, args)
+        r["hold"] = holds_for(r, args)
+        r["actionable"] = (r["group"] in ("grow", "shrink")
+                           and not r["hold"])
+
     class_rank = {"bidir": 0, "bidir?": 1, "rebal": 2, "rebal?": 3,
                   "sink": 4, "sink?": 5, "source": 4, "source?": 5,
                   "idle": 6}
-    if args.sort == "sizing":
+    group_rank = {name: i for i, (name, _) in enumerate(GROUPS)}
+
+    def group_key(r):
+        g = r["group"]
+        if g == "grow":
+            second = -r["gain_loc"]
+        elif g == "shrink":
+            second = -r["min_local_sat"]
+        elif g == "right":
+            second = -r["earned"]
+        elif g == "liquidity":
+            second = -r["refused_out"]
+        elif g == "young":
+            second = -r["days"]
+        else:
+            second = -r["cap_sat"]
+        return (group_rank[g], second)
+
+    if args.sort == "group":
+        rows.sort(key=group_key)
+    elif args.sort == "sizing":
         def sizing_key(r):
             if r["class"].startswith("bidir") and r["gain_loc"] > 0:
                 return (0, -r["gain_loc"], 0.0)
@@ -496,8 +614,13 @@ def main():
         rows.sort(key=lambda r: r["alias"].lower())
 
     if args.json:
+        out = []
+        for r in rows:
+            j = dict(r)
+            j["hold"] = [word for word, _ in r["hold"]]
+            out.append(j)
         print(json.dumps({"since": since, "before": before,
-                          "edge_pct": args.edge, "rows": rows}, indent=1))
+                          "edge_pct": args.edge, "rows": out}, indent=1))
         return 0
 
     def m(sat):
@@ -510,52 +633,82 @@ def main():
         return "?" if value is None else f"{value * 100:.0f}"
 
     id_col = "PeerID" if args.ids else "Alias"
-    # (header, value, wide-only, left-aligned)
+    # (header, value, wide-only, left-aligned, row field for tinting)
     cols = [
         (id_col, lambda r: r["peer_id"] if args.ids else r["alias"], False,
-         True),
-        ("SCID", lambda r: r["scid"], False, True),
-        ("Cap", lambda r: m(r["cap_sat"]), False, False),
-        ("Inb", lambda r: m(r["inbound_sat"]), False, False),
-        ("Days", lambda r: f"{r['days']:.0f}", False, False),
-        ("%Low", lambda r: f"{r['low_pct']:.0f}", False, False),
-        ("%High", lambda r: f"{r['high_pct']:.0f}", False, False),
-        ("OutInt", lambda r: f"{r['out_int']:.0f}", False, False),
-        ("OutLow", lambda r: f"{r['out_low']:.0f}", True, False),
-        ("InInt", lambda r: f"{r['in_int']:.0f}", False, False),
-        ("InHigh", lambda r: f"{r['in_high']:.0f}", True, False),
-        ("GainLoc", lambda r: f"{r['gain_loc']:.0f}", False, False),
-        ("GainInb", lambda r: f"{r['gain_inb']:.0f}", False, False),
-        ("G%", lambda r: f"{r['gain_pct']:.0f}", False, False),
-        ("Earned", lambda r: f"{r['earned']:.0f}", False, False),
-        ("FwdIn", lambda r: m(r["fwd_in"]), False, False),
-        ("FwdOut", lambda r: m(r["fwd_out"]), False, False),
-        ("Net", lambda r: f"{r['net']:+.2f}", False, False),
-        ("Turns", lambda r: f"{r['turns']:.1f}", False, False),
-        ("Fill", lambda r: m(r["fill"]), False, False),
-        ("Drain", lambda r: m(r["drain"]), False, False),
-        ("RefOut", lambda r: m(r["refused_out"]), False, False),
-        ("@Low", lambda r: f"{r['refused_low_pct']:.0f}", True, False),
-        ("MinLoc", lambda r: m(r["min_local_sat"]), False, False),
-        ("Range", lambda r: f"{r['range_pct']:.0f}", True, False),
-        ("Up", lambda r: "y" if r["connected"] else "n", False, True),
-        ("Up3d", lambda r: rate(r["connect_rate_3d"]), False, True),
-        ("Splice", lambda r: yn(r["spliceable"]), False, True),
-        ("Class", lambda r: r["class"], False, True),
+         True, None),
+        ("SCID", lambda r: r["scid"], False, True, None),
+        ("Cap", lambda r: m(r["cap_sat"]), False, False, None),
+        ("Inb", lambda r: m(r["inbound_sat"]), False, False, "inbound_sat"),
+        ("Days", lambda r: f"{r['days']:.0f}", False, False, "days"),
+        ("%Low", lambda r: f"{r['low_pct']:.0f}", False, False, None),
+        ("%High", lambda r: f"{r['high_pct']:.0f}", False, False, None),
+        ("OutLow", lambda r: f"{r['out_low']:.0f}", True, False, None),
+        ("OutInt", lambda r: f"{r['out_int']:.0f}", False, False, None),
+        ("InInt", lambda r: f"{r['in_int']:.0f}", False, False, None),
+        ("InHigh", lambda r: f"{r['in_high']:.0f}", True, False, None),
+        ("GainLoc", lambda r: f"{r['gain_loc']:.0f}", False, False, None),
+        ("GainInb", lambda r: f"{r['gain_inb']:.0f}", False, False, None),
+        ("G%", lambda r: f"{r['gain_pct']:.0f}", False, False, None),
+        ("Earned", lambda r: f"{r['earned']:.0f}", False, False, "earned"),
+        ("FwdIn", lambda r: m(r["fwd_in"]), False, False, None),
+        ("FwdOut", lambda r: m(r["fwd_out"]), False, False, None),
+        ("Net", lambda r: f"{r['net']:+.2f}", False, False, None),
+        ("Turns", lambda r: f"{r['turns']:.1f}", False, False, None),
+        ("Fill", lambda r: m(r["fill"]), False, False, None),
+        ("Drain", lambda r: m(r["drain"]), False, False, None),
+        ("RefOut", lambda r: m(r["refused_out"]), False, False, None),
+        ("@Low", lambda r: f"{r['refused_low_pct']:.0f}", True, False, None),
+        ("MinLoc", lambda r: m(r["min_local_sat"]), False, False, None),
+        ("Range", lambda r: f"{r['range_pct']:.0f}", True, False, None),
+        ("Up", lambda r: "y" if r["connected"] else "n", False, True,
+         "connected"),
+        ("Up3d", lambda r: rate(r["connect_rate_3d"]), False, True,
+         "connect_rate_3d"),
+        ("Splice", lambda r: yn(r["spliceable"]), False, True, "spliceable"),
+        ("Class", lambda r: r["class"], False, True, "class"),
+        ("Hold", lambda r: ",".join(word for word, _ in r["hold"]), False,
+         True, None),
     ]
     cols = [c for c in cols if args.wide or not c[2]]
     headers = [c[0] for c in cols]
-    table = [[c[1](r) for c in cols] for r in rows]
+
+    def paint(r, col):
+        text = col[1](r)
+        if not color:
+            return text
+        tinted = any(col[4] in fields for _, fields in r["hold"])
+        if tinted:
+            return ANSI_HOLD + text + ANSI_RESET
+        if r["actionable"]:
+            return ANSI_BOLD + text + ANSI_RESET
+        return text
+
+    table = [[paint(r, c) for c in cols] for r in rows]
 
     print(f"window {time.strftime('%Y-%m-%d %H:%M', time.gmtime(since))}Z .. "
           f"{time.strftime('%Y-%m-%d %H:%M', time.gmtime(before))}Z "
           f"({window_days:.1f} d), edge {args.edge:g}%")
-    print(tabulate(table, headers=headers, tablefmt="plain",
-                   stralign="left", numalign="right", disable_numparse=True,
-                   colalign=tuple("left" if c[3] else "right" for c in cols)))
+    lines = tabulate(table, headers=headers, tablefmt="plain",
+                     stralign="left", numalign="right", disable_numparse=True,
+                     colalign=tuple("left" if c[3] else "right"
+                                    for c in cols)).splitlines()
+    print(lines[0])
+    if args.sort == "group":
+        titles = dict(GROUPS)
+        current = None
+        for r, line in zip(rows, lines[1:]):
+            if r["group"] != current:
+                current = r["group"]
+                print()
+                print(titles[current])
+            print(line)
+    else:
+        for line in lines[1:]:
+            print(line)
     print()
     print("Cap/Inb/FwdIn/FwdOut/Fill/Drain/RefOut/MinLoc in M sat; Turns = "
-          "forwarded volume / capacity; OutInt/OutLow/InInt/"
+          "forwarded volume / capacity; OutLow/OutInt/InInt/"
           "InHigh in sat/day; GainLoc/GainInb/Earned in sat over the window.")
     print("GainLoc/GainInb = low/high edge hours earning at the interior "
           "rate (our side / the peer's side ran dry); upper bounds, "
@@ -566,6 +719,14 @@ def main():
           "capital that never moved.")
     print("Up = connected now, Up3d = 3-day connect rate %, Splice = peer "
           "negotiates or announces splicing (? = no announcement seen).")
+    print(f"Grow: bidir with GainLoc >= {args.min_gain} sat.  Shrink: MinLoc "
+          f">= {args.idle_frac:g} of Cap and >= {MIN_IDLE_SAT // 1_000_000}M "
+          f"sat.  Young: under {args.min_days} days of samples.  Little or "
+          f"no traffic: Turns under {args.min_turns:g}.")
+    print("Hold: why a Grow/Shrink row is not actionable -- thin evidence, "
+          "peer offline or flaky, or close = no splicing and the close would "
+          "forfeit inbound liquidity or a productive channel.  Empty = "
+          "actionable" + (" (bold)." if color else "."))
     return 0
 
 

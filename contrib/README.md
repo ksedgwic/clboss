@@ -97,11 +97,28 @@ how many days of earnings history are considered when ranking channels.
   remove without changing any forward that happened.  A longer window can
   only lower it, so read it at 60-90 days before removing capital; the
   samples are hourly, so a dip that came and went within the hour is
-  missed.  The default order puts the `bidir` channels with a `GainLoc`
-  at the top, ranked by it, and everything else below ranked by `MinLoc`,
-  so the largest splice-out candidate is the last row.  `Turns` is
-  forwarded volume over capacity for the window.  `Inb` is the peer's
-  side of the channel now, in M sat: the inbound liquidity a
+  missed.
+
+  The table is grouped.  *Grow*: `bidir` channels whose `GainLoc` clears
+  `--min-gain` (default 1000 sat, about one on-chain transaction), by
+  `GainLoc`.  *Shrink*: channels whose `MinLoc` is at least `--idle-frac`
+  of capacity (default 0.4) and 1M sat, by `MinLoc`.  *Right-sized*: the
+  other `bidir` channels, by `Earned`.  *Liquidity-limited*: sinks,
+  sources and rebalance-carried channels, where refills rather than size
+  are the lever, by `RefOut`.  *Too young*: under `--min-days` (30, the
+  default window) of samples, since a new channel's balance is its
+  opening state rather than its behavior, by `Days`.  *Little or no traffic*: under `--min-turns`
+  (0.1) of capacity forwarded in the window -- a probe still waiting for
+  flow, or a dead channel, told apart by `Days` -- by `Cap`.  In Grow and Shrink the `Hold` column names what
+  stops a row being acted on -- `thin` evidence, peer `offline` or
+  `flaky` (3-day connect rate under 90%), or `close`: the peer cannot
+  splice and a close would forfeit inbound liquidity (`Inb` over a
+  quarter of `Cap`) or a productive channel (`Earned` over `--min-gain`).
+  On a terminal the triggering stat is tinted and actionable rows are
+  bold (`--color` forces this, `--no-color` disables it).
+
+  `Turns` is forwarded volume over capacity for the window.  `Inb` is the
+  peer's side of the channel now, in M sat: the inbound liquidity a
   close-and-reopen gives up and a splice keeps.  `Up`/`Up3d` show whether
   the peer is connected now and its 3-day connect rate, `Splice` whether
   it negotiates or announces splicing (feature bit 62/63), so a candidate
@@ -110,8 +127,8 @@ how many days of earnings history are considered when ranking channels.
   acting; balance samples exist since CLBOSS started recording them),
   `--since`/`--before` fix it in unix seconds, `--wide` adds the edge
   earn rates, the share of refused forwards that happened at the edge and
-  the balance range used, `--sort` picks another order, `--json` dumps
-  the rows.
+  the balance range used, `--sort` picks a flat order instead of groups,
+  `--json` dumps the rows with their group and holds.
 - **`clboss-routing-stats`** ranks peers using recent earnings data and also
   accepts the `--days` option.
 - **`recently-closed`** lists channels that closed within the last N days, also
