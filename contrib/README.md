@@ -110,10 +110,11 @@ how many days of earnings history are considered when ranking channels.
   opening state rather than its behavior, by `Days`.  *Little or no traffic*: under `--min-turns`
   (0.1) of capacity forwarded in the window -- a probe still waiting for
   flow, or a dead channel, told apart by `Days` -- by `Cap`.  In Grow and Shrink the `Hold` column names what
-  stops a row being acted on -- `thin` evidence, peer `offline` or
-  `flaky` (3-day connect rate under 90%), or `close`: the peer cannot
-  splice and a close would forfeit inbound liquidity (`Inb` over a
-  quarter of `Cap`) or a productive channel (`Earned` over `--min-gain`).
+  stops a row being acted on: `thin` evidence; peer `offline` or `flaky`
+  (3-day connect rate under 90%); or, when the peer cannot splice so a
+  resize means a close, `inbound` for the inbound liquidity the close
+  would forfeit (`Inb` over a quarter of `Cap`) and `busy` for the
+  productive channel it would interrupt (`Earned` over `--min-gain`).
   On a terminal the triggering stat is tinted and actionable rows are
   bold (`--color` forces this, `--no-color` disables it).
 

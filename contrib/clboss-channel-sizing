@@ -15,10 +15,11 @@
 #               probe still waiting for flow, or a dead channel; by Cap
 #
 # In Grow and Shrink a row is actionable when nothing holds it back: the
-# Hold column names what does (thin evidence, peer offline or flaky, or a
-# close that would forfeit inbound liquidity or a productive channel
-# because the peer cannot splice), the stat that triggered it is tinted,
-# and actionable rows are bold.
+# Hold column names what does (thin evidence; peer offline or flaky; or,
+# when the peer cannot splice so a resize means a close, inbound for the
+# inbound liquidity the close would forfeit and busy for the productive
+# channel it would interrupt), the stat that triggered it is tinted, and
+# actionable rows are bold.
 #
 # CLBOSS records a balance sample per peer roughly hourly
 # (clboss-feemon-history).  Each sampled hour is labelled by the local share
@@ -300,13 +301,10 @@ def holds_for(row, args):
         holds.append(("flaky", ["connect_rate_3d"]))
     if not row["spliceable"]:
         # without splicing a resize is a close: what would it forfeit?
-        fields = ["spliceable"]
         if row["inbound_sat"] >= 0.25 * row["cap_sat"]:
-            fields.append("inbound_sat")
+            holds.append(("inbound", ["spliceable", "inbound_sat"]))
         if row["earned"] >= args.min_gain:
-            fields.append("earned")
-        if len(fields) > 1:
-            holds.append(("close", fields))
+            holds.append(("busy", ["spliceable", "earned"]))
     return holds
 
 
@@ -725,10 +723,11 @@ def main():
           f">= {args.idle_frac:g} of Cap and >= {MIN_IDLE_SAT // 1_000_000}M "
           f"sat.  Young: under {args.min_days} days of samples.  Little or "
           f"no traffic: Turns under {args.min_turns:g}.")
-    print("Hold: why a Grow/Shrink row is not actionable -- thin evidence, "
-          "peer offline or flaky, or close = no splicing and the close would "
-          "forfeit inbound liquidity or a productive channel.  Empty = "
-          "actionable" + (" (bold)." if color else "."))
+    print("Hold: why a Grow/Shrink row is not actionable -- thin evidence; "
+          "peer offline or flaky; or, with no splicing, a resize is a close: "
+          "inbound = it would forfeit inbound liquidity, busy = it would "
+          "interrupt a productive channel.  Empty = actionable"
+          + (" (bold)." if color else "."))
     return 0
 
 
