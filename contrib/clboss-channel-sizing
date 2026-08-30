@@ -538,7 +538,10 @@ def main():
             "inbound_sat": ch["inbound"] / 1000.0,
             "days": total_h / 24.0,
             "low_pct": h["low"] / total_h * 100.0,
+            "mid_pct": h["mid"] / total_h * 100.0,
             "high_pct": h["high"] / total_h * 100.0,
+            "low_h": h["low"],
+            "high_h": h["high"],
             "notlow_h": notlow_h,
             "nothigh_h": nothigh_h,
             "out_int": out_int * 24 / 1000.0,   # sat/day
@@ -642,6 +645,10 @@ def main():
     def rate(value):
         return "?" if value is None else f"{value * 100:.0f}"
 
+    def per_day(value, hours):
+        """a rate over a state the channel was never in has no value"""
+        return "-" if hours <= 0 else f"{value:.0f}"
+
     id_col = "PeerID" if args.ids else "Alias"
     # (header, value, wide-only, left-aligned, row field for tinting)
     cols = [
@@ -652,11 +659,16 @@ def main():
         ("Inb", lambda r: m(r["inbound_sat"]), False, False, "inbound_sat"),
         ("Days", lambda r: f"{r['days']:.0f}", False, False, "days"),
         ("%Low", lambda r: f"{r['low_pct']:.0f}", False, False, None),
+        ("%Int", lambda r: f"{r['mid_pct']:.0f}", False, False, None),
         ("%High", lambda r: f"{r['high_pct']:.0f}", False, False, None),
-        ("OutLow", lambda r: f"{r['out_low']:.0f}", True, False, None),
-        ("OutInt", lambda r: f"{r['out_int']:.0f}", False, False, None),
-        ("InInt", lambda r: f"{r['in_int']:.0f}", False, False, None),
-        ("InHigh", lambda r: f"{r['in_high']:.0f}", True, False, None),
+        ("OutLow", lambda r: per_day(r["out_low"], r["low_h"]), True, False,
+         None),
+        ("OutInt", lambda r: per_day(r["out_int"], r["notlow_h"]), False,
+         False, None),
+        ("InInt", lambda r: per_day(r["in_int"], r["nothigh_h"]), False,
+         False, None),
+        ("InHigh", lambda r: per_day(r["in_high"], r["high_h"]), True, False,
+         None),
         ("GainLoc", lambda r: f"{r['gain_loc']:.0f}", False, False, None),
         ("GainInb", lambda r: f"{r['gain_inb']:.0f}", False, False, None),
         ("G%", lambda r: f"{r['gain_pct']:.0f}", False, False, None),
@@ -719,7 +731,9 @@ def main():
     print()
     print("Cap/Inb/FwdIn/FwdOut/Fill/Drain/RefOut/MinLoc in M sat; Turns = "
           "forwarded volume / capacity; OutLow/OutInt/InInt/"
-          "InHigh in sat/day; GainLoc/GainInb/Earned in sat over the window.")
+          "InHigh in sat/day, - when the channel was never in that state; "
+          "%Low/%Int/%High = share of hours, sum 100; GainLoc/GainInb/Earned "
+          "in sat over the window.")
     print("GainLoc/GainInb = low/high edge hours earning at the interior "
           "rate (our side / the peer's side ran dry); upper bounds, "
           "meaningful for class bidir only.  G% = both gains as a share of "

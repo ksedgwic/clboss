@@ -82,7 +82,9 @@ how many days of earnings history are considered when ranking channels.
   CLBOSS's balance samples is labelled low (local side under `--edge`
   percent of capacity, default 10), high (over 100 - edge) or interior;
   settled forwards are credited to the state their channel was in, giving
-  an interior and an edge earn rate per direction.  `GainLoc` is what the
+  an interior and an edge earn rate per direction (`%Low`/`%Int`/`%High`
+  are the shares of hours in each state; a rate over a state the channel
+  was never in prints as `-`).  `GainLoc` is what the
   low hours would have earned at the interior rate (our side ran dry) and
   `GainInb` the same for the high hours (the peer's side ran dry): upper
   bounds on what more capacity on that side recovers (run with `--edge 5`
