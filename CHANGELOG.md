@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.1] - Unreleased
+
+### Fixed
+
+- Channel-candidate selection by popularity now samples with A-ES
+  (Efraimidis and Spirakis) instead of an A-Chao variant that
+  omitted the reservoir-size factor m: selection was
+  arrival-order-dominated, and an overweight item could still be
+  evicted by later arrivals.  The popularity finder now shares
+  `Stats::ReservoirSampler` with the other finders instead of a
+  drifted inline copy.
+
 ## [0.17.0] - 2026-09-11: "Reason to Rebalance"
 
 ### Upgrading from 0.16.x

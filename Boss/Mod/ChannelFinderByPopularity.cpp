@@ -30,6 +30,7 @@
 #include"Ln/NodeId.hpp"
 #include"S/Bus.hpp"
 #include"Sqlite3.hpp"
+#include"Stats/ReservoirSampler.hpp"
 #include"Util/make_unique.hpp"
 #include<algorithm>
 #include<iterator>
@@ -303,12 +304,11 @@ private:
 		Ln::NodeId node;
 		std::set<Ln::NodeId> peers;
 	};
-	/* Number of nodes with at least one peer that passed through
-	 * the A-Chao algorithm.  */
+	/* Number of nodes with at least one peer that passed
+	 * through the sampler.  */
 	std::size_t num_processed;
-	/* A-Chao algorithm.  */
-	double wsum;
-	std::vector<Popular> selected;
+	/* Weighted reservoir sampling of popular nodes.  */
+	Stats::ReservoirSampler<Popular> sampler;
 
 	/* Called after a new connection while we were deferring
 	 * a solicitation.  */
@@ -407,10 +407,12 @@ private:
 					continue;
 				all_nodes.emplace(std::move(nid));
 			}
-			/* Initialize the A-Chao algorithm.  */
+			/* Initialize the sampler.  single_proposal_only
+			 * is decided above, before the pass starts, so
+			 * the capacity is fixed for the whole pass.  */
 			num_processed = 0;
-			wsum = 0;
-			selected.clear();
+			sampler.clear(single_proposal_only ? 1
+						    : max_proposals);
 			/* Initialize progress tracking.  */
 			prev_time = Ev::now();
 			count = 0;
@@ -448,7 +450,7 @@ private:
 		});
 	}
 
-	/* A-Chao Reservoir sampling algorithm.  */
+	/* Weighted reservoir sampling pass over all nodes.  */
 	Ev::Io<void> select_by_popularity() {
 		auto act = Ev::yield();
 		if (Ev::now() - prev_time >= 5.0) {
@@ -511,31 +513,16 @@ private:
 			++num_processed;
 
 			/* ***Finally*** determine if we should select
-			 * this entry.  */
-			wsum += entry.peers.size();
-			/* If fewer are selected than max proposals, go extend
-			 * it.  */
-			auto actual_max_proposals = max_proposals;
-			if (single_proposal_only)
-				actual_max_proposals = 1;
-			if (selected.size() < actual_max_proposals) {
-				selected.emplace_back(std::move(entry));
-				return select_by_popularity();
-			}
-			/* Otherwise see if we should replace.  */
-			auto dist = std::uniform_real_distribution<double>(
-				0, 1
-			);
-			auto p = double(entry.peers.size()) / wsum;
-			auto j = dist(Boss::random_engine);
-			if (j <= p) {
-				/* Randomly replace an existing selection.  */
-				auto dist_i = std::uniform_int_distribution<size_t>(
-					0, selected.size() - 1
-				);
-				auto i = dist_i(Boss::random_engine);
-				selected[i] = std::move(entry);
-			}
+			 * this entry: weight it by popularity and let
+			 * the sampler decide.  The weight is computed
+			 * before the move: parameter initialization is
+			 * not ordered against this argument's
+			 * evaluation, and add() moves from entry.  */
+			auto const weight = double(entry.peers.size());
+			sampler.add( std::move(entry)
+				   , weight
+				   , Boss::random_engine
+				   );
 
 			return select_by_popularity();
 		});
@@ -548,7 +535,7 @@ private:
 		 * even reach the min_nodes_to_process?
 		 */
 		if (num_processed < min_nodes_to_process) {
-			selected.clear();
+			sampler.clear();
 			try_later = true;
 			return Boss::log( bus, Info
 					, "ChannelFinderByPopularity: "
@@ -567,7 +554,7 @@ private:
 		    << "Random selection (by popularity): "
 		    ;
 		auto first = true;
-		for (auto const& s : selected) {
+		for (auto const& s : sampler.get()) {
 			if (first)
 				first = false;
 			else
@@ -584,7 +571,7 @@ private:
 						 , this
 						 , std::placeholders::_1
 						 )
-				      , std::move(selected)
+				      , std::move(sampler).finalize()
 				      );
 		}).then([this](std::vector<int>) {
 			return signal_task_completion(false);
