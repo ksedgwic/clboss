@@ -8,14 +8,16 @@
 #               (and 1M sat), by MinLoc
 #   Right-sized the other bidir channels, by Earned
 #   Liquidity   sinks, sources and rebalance-carried channels: refills, not
-#               size, are the lever; by RefOut
+#               size, are the lever; sinks by RefOut, then sources by
+#               GainInb, then rebalance-carried by Earned
 #   Young       under --min-days of samples: a new channel's balance is its
 #               opening state, not its behavior; by Days
 #   No traffic  under --min-turns of capacity forwarded in the window: a
 #               probe still waiting for flow, or a dead channel; by Cap
 #
-# In Grow and Shrink a row is actionable when nothing holds it back: the
-# Hold column names what does (thin evidence; peer offline or flaky; or,
+# In Grow and Shrink a row is actionable when nothing holds it back.  A
+# hold is advice, not a veto: the row stays a candidate and the person
+# weighs the penalty.  The Hold column names it (thin evidence; peer offline or flaky; or,
 # when the peer cannot splice so a resize means a close, inbound for the
 # inbound liquidity the close would forfeit and busy for the productive
 # channel it would interrupt), the stat that triggered it is tinted, and
@@ -587,7 +589,15 @@ def main():
         elif g == "right":
             second = -r["earned"]
         elif g == "liquidity":
-            second = -r["refused_out"]
+            # sinks together, then sources, then rebalance-carried, each
+            # ranked by the best estimate of the demand it refuses
+            cls = r["class"].rstrip("?")
+            if cls == "sink":
+                second = (0, -r["refused_out"])
+            elif cls == "source":
+                second = (1, -r["gain_inb"])
+            else:
+                second = (2, -r["earned"])
         elif g == "young":
             second = -r["days"]
         else:
@@ -723,11 +733,11 @@ def main():
           f">= {args.idle_frac:g} of Cap and >= {MIN_IDLE_SAT // 1_000_000}M "
           f"sat.  Young: under {args.min_days} days of samples.  Little or "
           f"no traffic: Turns under {args.min_turns:g}.")
-    print("Hold: why a Grow/Shrink row is not actionable -- thin evidence; "
-          "peer offline or flaky; or, with no splicing, a resize is a close: "
-          "inbound = it would forfeit inbound liquidity, busy = it would "
-          "interrupt a productive channel.  Empty = actionable"
-          + (" (bold)." if color else "."))
+    print("Hold: the penalty to weigh before acting on a Grow/Shrink row -- "
+          "thin evidence; peer offline or flaky; or, with no splicing, a "
+          "resize is a close: inbound = it would forfeit inbound liquidity, "
+          "busy = it would interrupt a productive channel.  Empty = nothing "
+          "to weigh" + (" (bold)." if color else "."))
     return 0
 
 

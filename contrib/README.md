@@ -105,12 +105,14 @@ how many days of earnings history are considered when ranking channels.
   of capacity (default 0.4) and 1M sat, by `MinLoc`.  *Right-sized*: the
   other `bidir` channels, by `Earned`.  *Liquidity-limited*: sinks,
   sources and rebalance-carried channels, where refills rather than size
-  are the lever, by `RefOut`.  *Too young*: under `--min-days` (30, the
+  are the lever -- sinks together by `RefOut`, then sources by `GainInb`
+  (inbound refusals happen at the peer, so that estimate is all there
+  is), then rebalance-carried by `Earned`.  *Too young*: under `--min-days` (30, the
   default window) of samples, since a new channel's balance is its
   opening state rather than its behavior, by `Days`.  *Little or no traffic*: under `--min-turns`
   (0.1) of capacity forwarded in the window -- a probe still waiting for
-  flow, or a dead channel, told apart by `Days` -- by `Cap`.  In Grow and Shrink the `Hold` column names what
-  stops a row being acted on: `thin` evidence; peer `offline` or `flaky`
+  flow, or a dead channel, told apart by `Days` -- by `Cap`.  In Grow and Shrink the `Hold` column names the
+  penalty to weigh before acting on a row -- advice, not a veto: `thin` evidence; peer `offline` or `flaky`
   (3-day connect rate under 90%); or, when the peer cannot splice so a
   resize means a close, `inbound` for the inbound liquidity the close
   would forfeit (`Inb` over a quarter of `Cap`) and `busy` for the
