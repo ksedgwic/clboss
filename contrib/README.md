@@ -105,11 +105,12 @@ how many days of earnings history are considered when ranking channels.
   `--min-gain` (default 1000 sat, about one on-chain transaction), by
   `GainLoc`.  *Shrink*: channels whose `MinLoc` is at least `--idle-frac`
   of capacity (default 0.4) and 1M sat, by `MinLoc`.  *Right-sized*: the
-  other `bidir` channels, by `Earned`.  *Liquidity-limited*: sinks,
+  other `bidir` channels, by `NetEarn` (forwarding fees less the
+  rebalance expenditures CLBOSS attributes to the peer over the window).  *Liquidity-limited*: sinks,
   sources and rebalance-carried channels, where refills rather than size
   are the lever -- sinks together by `RefOut`, then sources by `GainInb`
   (inbound refusals happen at the peer, so that estimate is all there
-  is), then rebalance-carried by `Earned`.  *Too young*: under `--min-days` (30, the
+  is), then rebalance-carried by `NetEarn`.  *Too young*: under `--min-days` (30, the
   default window) of samples, since a new channel's balance is its
   opening state rather than its behavior, by `Days`.  *Little or no traffic*: under `--min-turns`
   (0.1) of capacity forwarded in the window -- a probe still waiting for
@@ -124,7 +125,7 @@ how many days of earnings history are considered when ranking channels.
   (3-day connect rate under 90%); or, when the peer cannot splice so a
   resize means a close, `inbound` for the inbound liquidity the close
   would forfeit (`Inb` over a quarter of `Cap`) and `busy` for the
-  productive channel it would interrupt (`Earned` over `--min-gain`).
+  productive channel it would interrupt (`NetEarn` over `--min-gain`).
   On a terminal the triggering stat is tinted and actionable rows are
   bold (`--color` forces this, `--no-color` disables it).
 

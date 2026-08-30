@@ -6,10 +6,10 @@
 #   Grow        bidir channels whose GainLoc clears --min-gain, by GainLoc
 #   Shrink      channels whose MinLoc is at least --idle-frac of capacity
 #               (and 1M sat), by MinLoc
-#   Right-sized the other bidir channels, by Earned
+#   Right-sized the other bidir channels, by NetEarn
 #   Liquidity   sinks, sources and rebalance-carried channels: refills, not
 #               size, are the lever; sinks by RefOut, then sources by
-#               GainInb, then rebalance-carried by Earned
+#               GainInb, then rebalance-carried by NetEarn
 #   Young       under --min-days of samples: a new channel's balance is its
 #               opening state, not its behavior; by Days
 #   No traffic  under --min-turns of capacity forwarded in the window: a
@@ -328,8 +328,8 @@ def holds_for(row, args):
         # without splicing a resize is a close: what would it forfeit?
         if row["inbound_sat"] >= 0.25 * row["cap_sat"]:
             holds.append(("inbound", ["spliceable", "inbound_sat"]))
-        if row["earned"] >= args.min_gain:
-            holds.append(("busy", ["spliceable", "earned"]))
+        if row["net_earned"] >= args.min_gain:
+            holds.append(("busy", ["spliceable", "net_earned"]))
     return holds
 
 
@@ -553,6 +553,8 @@ def main():
         earned = a["in_earn"] + a["out_earn"]
         gross = a["in_fwd"] + a["out_fwd"]
         rec = recent.get(peer_id, {})
+        spent = rec.get("in_expenditures", 0) + rec.get("out_expenditures", 0)
+        net_earned = earned - spent
         row = {
             "peer_id": peer_id,
             "alias": aliases.get(peer_id, peer_id),
@@ -574,8 +576,11 @@ def main():
             "gain_loc": gain_out / 1000.0,      # sat over the window
             "gain_inb": gain_in / 1000.0,
             "gain": (gain_out + gain_in) / 1000.0,
-            "gain_pct": (gain_out + gain_in) / earned * 100.0 if earned else 0.0,
+            "gain_pct": ((gain_out + gain_in) / net_earned * 100.0
+                         if net_earned > 0 else None),
             "earned": earned / 1000.0,
+            "spent": spent / 1000.0,
+            "net_earned": net_earned / 1000.0,
             "fwd_in": a["in_fwd"] / 1000.0,
             "fwd_out": a["out_fwd"] / 1000.0,
             "net": (a["out_fwd"] - a["in_fwd"]) / gross if gross else 0.0,
@@ -614,7 +619,7 @@ def main():
         elif g == "shrink":
             second = -r["min_local_sat"]
         elif g == "right":
-            second = -r["earned"]
+            second = -r["net_earned"]
         elif g == "liquidity":
             # sinks together, then sources, then rebalance-carried, each
             # ranked by the best estimate of the demand it refuses
@@ -624,7 +629,7 @@ def main():
             elif cls == "source":
                 second = (1, -r["gain_inb"])
             else:
-                second = (2, -r["earned"])
+                second = (2, -r["net_earned"])
         elif g == "young":
             second = -r["days"]
         else:
@@ -644,7 +649,7 @@ def main():
     elif args.sort == "gain":
         rows.sort(key=lambda r: -r["gain"])
     elif args.sort == "earned":
-        rows.sort(key=lambda r: -r["earned"])
+        rows.sort(key=lambda r: -r["net_earned"])
     elif args.sort == "cap":
         rows.sort(key=lambda r: -r["cap_sat"])
     else:
@@ -702,8 +707,10 @@ def main():
          None),
         ("GainLoc", lambda r: f"{r['gain_loc']:.0f}", False, False, None),
         ("GainInb", lambda r: f"{r['gain_inb']:.0f}", False, False, None),
-        ("G%", lambda r: f"{r['gain_pct']:.0f}", False, False, None),
-        ("Earned", lambda r: f"{r['earned']:.0f}", False, False, "earned"),
+        ("G%", lambda r: ("-" if r["gain_pct"] is None
+                           else f"{r['gain_pct']:.0f}"), False, False, None),
+        ("NetEarn", lambda r: f"{r['net_earned']:.0f}", False, False,
+         "net_earned"),
         ("FwdIn", lambda r: m(r["fwd_in"]), False, False, None),
         ("FwdOut", lambda r: m(r["fwd_out"]), False, False, None),
         ("Net", lambda r: f"{r['net']:+.2f}", False, False, None),
@@ -763,12 +770,13 @@ def main():
     print("Cap/Inb/FwdIn/FwdOut/Fill/Drain/RefOut/MinLoc in M sat; Turns = "
           "forwarded volume / capacity; OutLow/OutInt/InInt/"
           "InHigh in sat/day, - when the channel was never in that state; "
-          "%Low/%Int/%High = share of hours, sum 100; GainLoc/GainInb/Earned "
-          "in sat over the window.")
+          "%Low/%Int/%High = share of hours, sum 100; GainLoc/GainInb/NetEarn "
+          "in sat over the window; NetEarn = forwarding fees less rebalance "
+          "expenditures (CLBOSS's per-peer figure).")
     print("GainLoc/GainInb = low/high edge hours earning at the interior "
           "rate (our side / the peer's side ran dry); upper bounds, "
           "meaningful for class bidir only.  G% = both gains as a share of "
-          "Earned.  ? = thin interior evidence.")
+          "NetEarn, - when nothing was netted.  ? = thin interior evidence.")
     print("Inb = the peer's side of the channel now (inbound liquidity a "
           "close gives up).  MinLoc = lowest our side got in the window: "
           "capital that never moved.")
