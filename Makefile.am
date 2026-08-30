@@ -615,6 +615,7 @@ TESTS = \
 	tests/boss/test_askrene_layer \
 	tests/boss/test_availablerpccommandsannouncer \
 	tests/boss/test_channel_create_destroy_monitor_missing_old_state \
+	tests/boss/test_channelcandidatepreinvestigator \
 	tests/boss/test_channelcreationdecider \
 	tests/boss/test_channelcreator_planner \
 	tests/boss/test_channelcreator_rearrangerbysize \
