@@ -93,6 +93,9 @@ private:
 
 	Ln::Amount amount;
 	Ln::Amount probe_amount;
+	/* Relevance floor for the search's lower bracket (see
+	 * Dowser::floor_probe_amount); 0 = legacy probe/32.  */
+	Ln::Amount floor_target;
 	/* Name of the self-exclusion layer to pass to getroutes, or
 	 * empty to probe without one (askrene unavailable).  Resolved
 	 * by Dowser::start() via AskreneLayer::ensure_self_layer
@@ -105,6 +108,7 @@ public:
 	   , Ln::NodeId const& fromid_
 	   , Ln::NodeId const& toid_
 	   , Ln::Amount probe_target_
+	   , Ln::Amount floor_target_ = Ln::Amount::sat(0)
 	   ) : bus(bus_)
 	     , requester(requester_)
 	     , fromid(fromid_)
@@ -126,6 +130,7 @@ public:
 			   ? probe_target_ * (1.0 / reserve_factor) + Ln::Amount::sat(1)
 			   : default_probe_amount
 			   )
+	     , floor_target(floor_target_)
 	     { }
 
 	Ev::Io<void> run( Boss::Mod::Rpc& rpc_
@@ -253,8 +258,8 @@ private:
 		auto resolution = Ln::Amount::msat(
 			probe_amount.to_msat() / 32
 		);
-		auto floor_amt = Ln::Amount::msat(
-			resolution.to_msat() + 1
+		auto floor_amt = Dowser::floor_probe_amount(
+			probe_amount, floor_target
 		);
 		return probe_flow(probe_amount).then(
 				[=, this](Ln::Amount full) {
@@ -381,7 +386,28 @@ public:
 		     { start(); }
 };
 
-void Dowser::start() {
+Ln::Amount
+Dowser::floor_probe_amount( Ln::Amount probe_amount
+			  , Ln::Amount floor_target
+			  ) {
+	auto resolution = Ln::Amount::msat(
+		probe_amount.to_msat() / 32
+	);
+	if (floor_target == Ln::Amount::sat(0))
+		return Ln::Amount::msat(resolution.to_msat() + 1);
+	/* Scale like probe_target (Dowser::Run ctor): a full-flow
+	 * result at this bracket survives the 0.985 haircut and still
+	 * clears the caller's threshold.  */
+	auto scaled = floor_target * (1.0 / reserve_factor)
+		    + Ln::Amount::sat(1)
+		    ;
+	if (scaled < resolution)
+		return Ln::Amount::msat(scaled.to_msat() + 1);
+	return Ln::Amount::msat(resolution.to_msat() + 1);
+}
+
+void
+Dowser::start() {
 	bus.subscribe<Msg::Init
 		     >([this](Msg::Init const& init) {
 		rpc = &init.rpc;
@@ -393,6 +419,7 @@ void Dowser::start() {
 		auto run = std::make_shared<Run>( bus, r.requester
 						, r.fromid, r.toid
 						, r.probe_target
+						, r.floor_target
 						);
 		return Ev::lift().then([this]() {
 			return wait_for_rpc(rpc);
