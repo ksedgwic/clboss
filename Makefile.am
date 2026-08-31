@@ -619,6 +619,7 @@ TESTS = \
 	tests/boss/test_channelcreator_planner \
 	tests/boss/test_channelcreator_rearrangerbysize \
 	tests/boss/test_channelcreator_reprioritizer \
+	tests/boss/test_dowser_floor \
 	tests/boss/test_earningstracker \
 	tests/boss/test_feemon_history \
 	tests/boss/test_feemodderbypricetheory \
