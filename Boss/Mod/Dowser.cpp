@@ -192,7 +192,7 @@ private:
 		obj.end_object();
 		return rpc->command( "getroutes"
 				   , std::move(pj)
-				   ).then([this](Jsmn::Object res) {
+				   ).then([](Jsmn::Object res) {
 			auto delivered = Ln::Amount::sat(0);
 			if (res.is_object() && res.has("routes")) {
 				auto routes = res["routes"];
@@ -210,7 +210,7 @@ private:
 				}
 			}
 			return Ev::lift(delivered);
-		}).catching<RpcError>([this](RpcError const& _) {
+		}).catching<RpcError>([](RpcError const& _) {
 			/* getroutes errors -- including 205 "Unable to
 			 * find a route" and 206 "Route too expensive" --
 			 * are the askrene way of saying "no flow at this
