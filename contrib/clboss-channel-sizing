@@ -243,12 +243,11 @@ class PeerBalance:
         self.hi = max(self.frac) if rows else None
         self.min_our_msat = min(r[2] for r in rows) if rows else None
 
-    def capacity_scale(self):
-        """Time-weighted mean of the sampled capacity over the latest
-        sample's, so a channel resized within the window is measured
-        against the capacity it actually had (1.0 when nothing changed)."""
-        if not self.ts:
-            return 1.0
+    def mean_total_msat(self):
+        """Time-weighted mean of the sampled capacity (the peer's, summed
+        over its channels), so a channel resized within the window is
+        measured against the capacity it actually had; None without
+        samples."""
         weight = 0.0
         total = 0.0
         for i, ts in enumerate(self.ts):
@@ -256,9 +255,7 @@ class PeerBalance:
             dt = min(max(nxt - ts, 0), HOLD_MAX)
             weight += dt
             total += dt * self.total[i]
-        if weight <= 0 or not self.total[-1]:
-            return 1.0
-        return total / weight / self.total[-1]
+        return total / weight if weight > 0 else None
 
     def __bool__(self):
         return bool(self.ts)
@@ -496,6 +493,9 @@ def main():
         }
     scid2peer = {scid: c["peer_id"] for scid, c in channels.items()}
     peers = sorted({c["peer_id"] for c in channels.values()})
+    peer_cap = {}
+    for c in channels.values():
+        peer_cap[c["peer_id"]] = peer_cap.get(c["peer_id"], 0) + c["cap"]
 
     # A splice gives a channel a new short channel id; its forwards keep
     # the id they happened under.  listpeerchannels does not print the old
@@ -609,6 +609,15 @@ def main():
     for scid, ch in channels.items():
         peer_id = ch["peer_id"]
         bal = balances[peer_id]
+        # the capacity the channel had over the window: the peer's mean
+        # sampled capacity, apportioned by this channel's share of the
+        # peer's capacity now (the samples are per peer and may lag a
+        # splice by an hour; the current capacity alone would divide
+        # pre-splice volume by post-splice size)
+        mean_total = bal.mean_total_msat() if bal else None
+        window_cap = ch["cap"]
+        if mean_total and peer_cap.get(peer_id):
+            window_cap = mean_total * ch["cap"] / peer_cap[peer_id]
         if not bal:
             continue
         h = bal.hours(low, high)
@@ -665,8 +674,7 @@ def main():
                                 if a["ref_msat"] else 0.0),
             "range_pct": (bal.hi - bal.lo) * 100.0,
             "min_local_sat": bal.min_our_msat / 1000.0,
-            "turns": (gross / (ch["cap"] * bal.capacity_scale())
-                      if ch["cap"] else 0.0),
+            "turns": gross / window_cap if window_cap else 0.0,
             "connected": ch["connected"],
             "connect_rate_3d": connect_rate.get(peer_id),
             "spliceable": (spliceable(features[peer_id])
