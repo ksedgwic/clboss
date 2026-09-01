@@ -88,6 +88,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 import time
 
 from tabulate import tabulate
@@ -788,40 +789,89 @@ def main():
         for line in lines[1:]:
             print(line)
     print()
-    print("Cap/Inb/Fill/Drain/RefOut/MinLoc in M sat; Turns = "
-          "forwarded volume / capacity; OutLow/OutInt/InInt/"
-          "InHigh in sat/day, - when the channel was never in that state; "
-          "%Low/%Int/%High = share of hours, sum 100; GainOut/GainIn/NetEarn "
-          "in sat over the window; NetEarn = forwarding fees less rebalance "
-          "expenditures (CLBOSS's per-peer figure).")
-    print("GainOut/GainIn = low/high edge hours earning at the interior "
-          "rate (our side / the peer's side ran dry); upper bounds, "
-          "meaningful for class bidir only.  ? = thin interior evidence.")
-    print("Inb = the peer's side of the channel now (inbound liquidity a "
-          "close gives up).  MinLoc = lowest our side got in the window: "
-          "capital that never moved.")
-    print("Up = connected now, Up3d = 3-day connect rate %, Splice = peer "
-          "negotiates or announces splicing (? = no announcement seen).")
-    print(f"Grow: bidir with GainOut >= {args.min_gain} sat, or turning "
-          f"over {args.grow_turns:g}x Cap/day with refusals >= "
-          f"{args.grow_refused:g} of carried (a fast-cycling channel never "
-          f"parks at an edge; its shortage shows as refusals).  Shrink: "
-          f"MinLoc >= {args.idle_frac:g} of Cap and >= "
-          f"{MIN_IDLE_SAT // 1_000_000}M sat.  Young: under "
-          f"{args.min_days} days of samples.  Little or no traffic: Turns "
-          f"under {args.min_turns:g}.")
-    print("Change: proposed splice, M sat.  Shrink removes enough that the "
-          "window's lowest local balance lands at the edge of the smaller "
-          "channel; in parentheses when under 1M would be left, so consider "
-          "closing instead (clboss-forwarding-stats --days 90 --sort tral).  "
-          "Grow adds the current capacity as a step, then read the next "
-          "window.")
-    print("Hold: the penalty to weigh before acting on a Grow/Shrink row -- "
-          "young or thin evidence; peer offline or flaky; or, with no "
-          "splicing, a resize is a close: inbound = it would forfeit "
-          "inbound liquidity, busy = it would interrupt a productive "
-          "channel.  Empty = nothing to weigh" + (" (bold)." if color
-                                                  else "."))
+
+    def legend(name, desc):
+        first, *rest = textwrap.wrap(desc, width=101)
+        print(f"{name:<9}{first}")
+        for cont in rest:
+            print(f"{'':9}{cont}")
+
+    blocks = [
+        [(id_col, "the peer's node id" if args.ids
+          else "the peer's alias (--ids shows node ids)", False),
+         ("SCID", "short channel id, ready for splice and close commands",
+          False),
+         ("Cap", "capacity, M sat", False),
+         ("Inb", "the peer's side now, M sat: the inbound liquidity a "
+          "close gives up and a splice keeps", False),
+         ("Change", "proposed splice, M sat; in parentheses when under 1M "
+          "sat would remain, so consider closing instead "
+          "(clboss-forwarding-stats --days 90 --sort tral)", False),
+         ("Days", "days of balance samples in the window", False)],
+        [("%Low", f"share of sampled hours with our side under "
+          f"{args.edge:g}% of capacity: outbound runs dry", False),
+         ("%Int", "share in the interior; the three shares sum to 100",
+          False),
+         ("%High", f"share with our side over {100 - args.edge:g}%: the "
+          f"peer's side runs dry", False),
+         ("GainOut", "foregone outbound fees, sat: low hours priced at "
+          "the interior rate; an upper bound on what more capacity on our "
+          "side recovers, meaningful for class bidir only", False),
+         ("OutLow", "outbound fee rate in low hours, sat/day; - = no low "
+          "hours", True),
+         ("OutInt", "outbound fee rate outside low hours, sat/day", False),
+         ("InInt", "inbound fee rate outside high hours, sat/day", False),
+         ("InHigh", "inbound fee rate in high hours, sat/day; - = no high "
+          "hours", True),
+         ("GainIn", "foregone inbound fees, sat: high hours at the "
+          "interior rate; a drain or the peer's funds recover it, our "
+          "splice does not", False)],
+        [("NetEarn", "forwarding fees less the rebalance spend CLBOSS "
+          "attributes to the peer, sat over the window", False),
+         ("Turns", "forwarded volume over capacity", False),
+         ("Fill", "rebalanced into our side by CLBOSS, M sat", False),
+         ("Drain", "rebalanced out of our side by CLBOSS, M sat", False),
+         ("RefOut", "outbound volume refused, M sat; retries inflate it",
+          False),
+         ("@Low", "share of refused volume that arrived in low hours, %",
+          True),
+         ("MinLoc", "lowest our side got, M sat: capital that never moved",
+          False),
+         ("Range", "highest minus lowest local share in the window, % of "
+          "capacity", True)],
+        [("Up", "connected now", False),
+         ("Up3d", "3-day connect rate, %", False),
+         ("Splice", "peer negotiates or announces splicing; ? = no "
+          "announcement seen", False),
+         ("Class", "flow shape -- bidir, sink, source, rebal, idle; ? = "
+          "thin interior evidence", False),
+         ("Hold", "penalties to weigh before acting on a Grow/Shrink row, "
+          "advice not a veto: young or thin evidence; peer offline or "
+          "flaky; and when the peer cannot splice, so a resize is a "
+          "close, inbound = it would forfeit inbound liquidity and busy "
+          "= it would interrupt a productive channel; nothing to weigh = "
+          "actionable" + (" (bold)" if color else ""), False)],
+    ]
+    for i, block in enumerate(blocks):
+        if i:
+            print()
+        for name, desc, wide_only in block:
+            if wide_only and not args.wide:
+                continue
+            legend(name, desc)
+    print()
+    print(textwrap.fill(
+        f"Grow: bidir with GainOut >= {args.min_gain} sat (our side ran "
+        f"dry), or turning over {args.grow_turns:g}x Cap/day with refusals "
+        f">= {args.grow_refused:g} of carried (a fast-cycling channel "
+        f"never parks at an edge; its shortage shows as refusals); its "
+        f"Change adds the current capacity as a step, then read the next "
+        f"window.  Shrink: MinLoc >= {args.idle_frac:g} of Cap and >= "
+        f"{MIN_IDLE_SAT // 1_000_000}M sat; its Change removes enough "
+        f"that the window's lowest local balance lands at the edge of the "
+        f"smaller channel.  Too young: under {args.min_days} days of "
+        f"samples.  Little or no traffic: Turns under {args.min_turns:g}.",
+        width=110))
     return 0
 
 
