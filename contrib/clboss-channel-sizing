@@ -3,13 +3,13 @@
 # Which channels want more capacity on our side, and which carry capital
 # that never moves.  The table is grouped:
 #
-#   Grow        bidir channels whose GainLoc clears --min-gain, by GainLoc
+#   Grow        bidir channels whose GainOut clears --min-gain, by GainOut
 #   Shrink      channels whose MinLoc is at least --idle-frac of capacity
 #               (and 1M sat), by MinLoc
 #   Right-sized the other bidir channels, by NetEarn
 #   Liquidity   sinks, sources and rebalance-carried channels: refills, not
 #               size, are the lever; sinks by RefOut, then sources by
-#               GainInb, then rebalance-carried by NetEarn
+#               GainIn, then rebalance-carried by NetEarn
 #   Young       under --min-days of samples: a new channel's balance is its
 #               opening state, not its behavior; by Days
 #   No traffic  under --min-turns of capacity forwarded in the window: a
@@ -40,15 +40,15 @@
 # interior vs low hours and an in-side rate for interior vs high hours.
 #
 #   gain = (interior rate - edge rate) * edge hours, per side:
-#   GainLoc for the low hours (our side ran dry), GainInb for the high
+#   GainOut for the low hours (our side ran dry), GainIn for the high
 #   hours (the peer's side ran dry)
 #
 # Gain is what the edge hours would have earned at the interior rate.  It is
 # an upper bound on what more capacity on that side can recover, and it
 # only means something for channels whose flow is bidirectional and not
 # carried by rebalancing: a sink that drains after every refill has the
-# same floor at any size.  We control our side, so GainLoc is the sort key;
-# GainInb says what a drain, or the peer adding funds, would be worth.
+# same floor at any size.  We control our side, so GainOut is the sort key;
+# GainIn says what a drain, or the peer adding funds, would be worth.
 # The Class column separates the cases:
 #
 #   sink    pinned low (90% of hours or more), or net outflow: the local
@@ -272,9 +272,9 @@ def classify(row, days):
         thin_h = max(72.0, 0.05 * days * 24)
         thin_gain = 0.0
         if row["notlow_h"] < thin_h:
-            thin_gain += row["gain_loc"]
+            thin_gain += row["gain_out"]
         if row["nothigh_h"] < thin_h:
-            thin_gain += row["gain_inb"]
+            thin_gain += row["gain_in"]
         if thin_gain > 0.5 * row["gain"]:
             cls += "?"
     return cls
@@ -288,7 +288,7 @@ def group_of(row, args, window_days):
     if row["turns"] < args.min_turns:
         return "notraffic"
     bidir = row["class"].startswith("bidir")
-    if bidir and row["gain_loc"] >= args.min_gain:
+    if bidir and row["gain_out"] >= args.min_gain:
         return "grow"
     if row["min_local_sat"] >= max(args.idle_frac * row["cap_sat"],
                                    MIN_IDLE_SAT):
@@ -355,7 +355,7 @@ def main():
                              "local side (default: 10; try 5 for a lower "
                              "bound on gain)")
     parser.add_argument("--min-gain", type=int, default=1000,
-                        help="GainLoc, sat over the window, that puts a "
+                        help="GainOut, sat over the window, that puts a "
                              "bidir channel in Grow (default: 1000, about "
                              "one on-chain transaction)")
     parser.add_argument("--idle-frac", type=float, default=0.4,
@@ -375,7 +375,7 @@ def main():
                                            "earned", "cap", "alias"],
                         default="group",
                         help="Row order (default: group; sizing is one "
-                             "list, channels short on our side by GainLoc "
+                             "list, channels short on our side by GainOut "
                              "first, the rest by MinLoc ascending)")
     parser.add_argument("--color", action="store_true",
                         help="Bold and tint even when stdout is not a tty")
@@ -573,8 +573,8 @@ def main():
             "out_low": out_low * 24 / 1000.0,
             "in_int": in_int * 24 / 1000.0,
             "in_high": in_high * 24 / 1000.0,
-            "gain_loc": gain_out / 1000.0,      # sat over the window
-            "gain_inb": gain_in / 1000.0,
+            "gain_out": gain_out / 1000.0,      # sat over the window
+            "gain_in": gain_in / 1000.0,
             "gain": (gain_out + gain_in) / 1000.0,
             "gain_pct": ((gain_out + gain_in) / net_earned * 100.0
                          if net_earned > 0 else None),
@@ -615,7 +615,7 @@ def main():
     def group_key(r):
         g = r["group"]
         if g == "grow":
-            second = -r["gain_loc"]
+            second = -r["gain_out"]
         elif g == "shrink":
             second = -r["min_local_sat"]
         elif g == "right":
@@ -627,7 +627,7 @@ def main():
             if cls == "sink":
                 second = (0, -r["refused_out"])
             elif cls == "source":
-                second = (1, -r["gain_inb"])
+                second = (1, -r["gain_in"])
             else:
                 second = (2, -r["net_earned"])
         elif g == "young":
@@ -640,9 +640,9 @@ def main():
         rows.sort(key=group_key)
     elif args.sort == "sizing":
         def sizing_key(r):
-            if r["class"].startswith("bidir") and r["gain_loc"] > 0:
-                return (0, -r["gain_loc"], 0.0)
-            return (1, r["min_local_sat"], -r["gain_inb"])
+            if r["class"].startswith("bidir") and r["gain_out"] > 0:
+                return (0, -r["gain_out"], 0.0)
+            return (1, r["min_local_sat"], -r["gain_in"])
         rows.sort(key=sizing_key)
     elif args.sort == "class":
         rows.sort(key=lambda r: (class_rank.get(r["class"], 9), -r["gain"]))
@@ -705,8 +705,8 @@ def main():
          False, None),
         ("InHigh", lambda r: per_day(r["in_high"], r["high_h"]), True, False,
          None),
-        ("GainLoc", lambda r: f"{r['gain_loc']:.0f}", False, False, None),
-        ("GainInb", lambda r: f"{r['gain_inb']:.0f}", False, False, None),
+        ("GainOut", lambda r: f"{r['gain_out']:.0f}", False, False, None),
+        ("GainIn", lambda r: f"{r['gain_in']:.0f}", False, False, None),
         ("G%", lambda r: ("-" if r["gain_pct"] is None
                            else f"{r['gain_pct']:.0f}"), False, False, None),
         ("NetEarn", lambda r: f"{r['net_earned']:.0f}", False, False,
@@ -770,10 +770,10 @@ def main():
     print("Cap/Inb/FwdIn/FwdOut/Fill/Drain/RefOut/MinLoc in M sat; Turns = "
           "forwarded volume / capacity; OutLow/OutInt/InInt/"
           "InHigh in sat/day, - when the channel was never in that state; "
-          "%Low/%Int/%High = share of hours, sum 100; GainLoc/GainInb/NetEarn "
+          "%Low/%Int/%High = share of hours, sum 100; GainOut/GainIn/NetEarn "
           "in sat over the window; NetEarn = forwarding fees less rebalance "
           "expenditures (CLBOSS's per-peer figure).")
-    print("GainLoc/GainInb = low/high edge hours earning at the interior "
+    print("GainOut/GainIn = low/high edge hours earning at the interior "
           "rate (our side / the peer's side ran dry); upper bounds, "
           "meaningful for class bidir only.  G% = both gains as a share of "
           "NetEarn, - when nothing was netted.  ? = thin interior evidence.")
@@ -782,7 +782,7 @@ def main():
           "capital that never moved.")
     print("Up = connected now, Up3d = 3-day connect rate %, Splice = peer "
           "negotiates or announces splicing (? = no announcement seen).")
-    print(f"Grow: bidir with GainLoc >= {args.min_gain} sat.  Shrink: MinLoc "
+    print(f"Grow: bidir with GainOut >= {args.min_gain} sat.  Shrink: MinLoc "
           f">= {args.idle_frac:g} of Cap and >= {MIN_IDLE_SAT // 1_000_000}M "
           f"sat.  Young: under {args.min_days} days of samples.  Little or "
           f"no traffic: Turns under {args.min_turns:g}.")

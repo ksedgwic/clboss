@@ -84,9 +84,9 @@ how many days of earnings history are considered when ranking channels.
   settled forwards are credited to the state their channel was in, giving
   an interior and an edge earn rate per direction (`%Low`/`%Int`/`%High`
   are the shares of hours in each state; a rate over a state the channel
-  was never in prints as `-`).  `GainLoc` is what the
+  was never in prints as `-`).  `GainOut` is what the
   low hours would have earned at the interior rate (our side ran dry) and
-  `GainInb` the same for the high hours (the peer's side ran dry): upper
+  `GainIn` the same for the high hours (the peer's side ran dry): upper
   bounds on what more capacity on that side recovers (run with `--edge 5`
   for a lower bound).  They are only meaningful for `Class` `bidir`
   channels (flow within 25% of balanced, rebalancing under 25% of
@@ -101,14 +101,14 @@ how many days of earnings history are considered when ranking channels.
   samples are hourly, so a dip that came and went within the hour is
   missed.
 
-  The table is grouped.  *Grow*: `bidir` channels whose `GainLoc` clears
+  The table is grouped.  *Grow*: `bidir` channels whose `GainOut` clears
   `--min-gain` (default 1000 sat, about one on-chain transaction), by
-  `GainLoc`.  *Shrink*: channels whose `MinLoc` is at least `--idle-frac`
+  `GainOut`.  *Shrink*: channels whose `MinLoc` is at least `--idle-frac`
   of capacity (default 0.4) and 1M sat, by `MinLoc`.  *Right-sized*: the
   other `bidir` channels, by `NetEarn` (forwarding fees less the
   rebalance expenditures CLBOSS attributes to the peer over the window).  *Liquidity-limited*: sinks,
   sources and rebalance-carried channels, where refills rather than size
-  are the lever -- sinks together by `RefOut`, then sources by `GainInb`
+  are the lever -- sinks together by `RefOut`, then sources by `GainIn`
   (inbound refusals happen at the peer, so that estimate is all there
   is), then rebalance-carried by `NetEarn`.  *Too young*: under `--min-days` (30, the
   default window) of samples, since a new channel's balance is its
