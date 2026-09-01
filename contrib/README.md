@@ -128,8 +128,11 @@ how many days of earnings history are considered when ranking channels.
   double and read the next window.  In Grow and Shrink two columns
   name what holds a row back -- advice, not a veto.  `Wait` lists what
   resolves itself with time: `young` (under `--min-days` of samples) or
-  `thin` evidence, peer `offline` or `flaky` (3-day connect rate under
-  90%).  `Cost` lists the price of acting now, a person's to accept:
+  `thin` evidence, `resized` (the capacity changed under `--min-days`
+  ago -- a splice, or a sibling channel of the peer opened or closed,
+  since the samples are per peer -- so `MinLoc` and `Change` rest on
+  the samples since the change), peer `offline` or `flaky` (3-day
+  connect rate under 90%).  `Cost` lists the price of acting now, a person's to accept:
   when the peer cannot splice a resize means a close, so `inbound`
   marks the inbound liquidity the close would forfeit (`Inb` over a
   quarter of `Cap`).  On a terminal the

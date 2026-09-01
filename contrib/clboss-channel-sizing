@@ -29,8 +29,9 @@
 #
 # In Grow and Shrink a row is actionable when nothing holds it back.  A
 # hold is advice, not a veto, and comes in two kinds.  Wait names what
-# resolves itself with time: young or thin evidence, a peer offline or
-# flaky.  Cost names the price of acting now, a person's to accept: when
+# resolves itself with time: young or thin evidence, a capacity resized
+# within --min-days (MinLoc and Change then rest on the samples since
+# the change), a peer offline or flaky.  Cost names the price of acting now, a person's to accept: when
 # the peer cannot splice a resize means a close, so inbound marks the
 # inbound liquidity the close would forfeit.  The stat that triggered
 # either is tinted, and actionable rows are bold.
@@ -241,7 +242,16 @@ class PeerBalance:
         self.before = before
         self.lo = min(self.frac) if rows else None
         self.hi = max(self.frac) if rows else None
-        self.min_our_msat = min(r[2] for r in rows) if rows else None
+        # a capacity change (splice, or a sibling channel opened or closed,
+        # since the samples are per peer) starts the sizing evidence over:
+        # MinLoc is read from the samples since the last one
+        self.resized_at = None
+        for i in range(1, len(rows)):
+            if rows[i][3] != rows[i - 1][3]:
+                self.resized_at = rows[i][0]
+        since = [r for r in rows if self.resized_at is None
+                 or r[0] >= self.resized_at]
+        self.min_our_msat = min(r[2] for r in since) if since else None
 
     def mean_total_msat(self):
         """Time-weighted mean of the sampled capacity (the peer's, summed
@@ -355,6 +365,9 @@ def holds_for(row, args, window_days):
     waits = []
     if row["days"] < min(args.min_days, window_days) - 1.0:
         waits.append(("young", ["days"]))
+    if (row["resized_days"] is not None
+            and row["resized_days"] < min(args.min_days, window_days) - 1.0):
+        waits.append(("resized", ["cap_sat"]))
     if row["class"].endswith("?"):
         waits.append(("thin", ["class"]))
     if not row["connected"]:
@@ -674,6 +687,8 @@ def main():
                                 if a["ref_msat"] else 0.0),
             "range_pct": (bal.hi - bal.lo) * 100.0,
             "min_local_sat": bal.min_our_msat / 1000.0,
+            "resized_days": ((before - bal.resized_at) / 86400.0
+                             if bal.resized_at is not None else None),
             "turns": gross / window_cap if window_cap else 0.0,
             "connected": ch["connected"],
             "connect_rate_3d": connect_rate.get(peer_id),
@@ -774,7 +789,7 @@ def main():
         (id_col, lambda r: r["peer_id"] if args.ids else r["alias"], False,
          True, None),
         ("SCID", lambda r: r["scid"], False, True, None),
-        ("Cap", lambda r: m(r["cap_sat"]), False, False, None),
+        ("Cap", lambda r: m(r["cap_sat"]), False, False, "cap_sat"),
         ("Inb", lambda r: m(r["inbound_sat"]), False, False, "inbound_sat"),
         ("Change", change, False, False, None),
         ("Days", lambda r: f"{r['days']:.0f}", False, False, "days"),
@@ -910,8 +925,9 @@ def main():
          ("Class", "flow shape -- bidir, sink, source, rebal, idle; ? = "
           "thin interior evidence", False),
          ("Wait", "reasons to defer a Grow/Shrink row that resolve "
-          "themselves with time: young or thin evidence, peer offline or "
-          "flaky", False),
+          "themselves with time: young or thin evidence, resized (the "
+          "capacity changed under --min-days ago, so MinLoc and Change "
+          "rest on the samples since), peer offline or flaky", False),
          ("Cost", "the price of acting on a Grow/Shrink row now, a "
           "person's to accept: inbound = the peer cannot splice, so a "
           "resize is a close, forfeiting the inbound liquidity.  Wait "
