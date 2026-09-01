@@ -28,12 +28,13 @@
 # (retries inflate it), so double and read the next window.
 #
 # In Grow and Shrink a row is actionable when nothing holds it back.  A
-# hold is advice, not a veto: the row stays a candidate and the person
-# weighs the penalty.  The Hold column names it (young or thin evidence; peer offline or flaky; or,
-# when the peer cannot splice so a resize means a close, inbound for the
-# inbound liquidity the close would forfeit and busy for the productive
-# channel it would interrupt), the stat that triggered it is tinted, and
-# actionable rows are bold.
+# hold is advice, not a veto, and comes in two kinds.  Wait names what
+# resolves itself with time: young or thin evidence, a peer offline or
+# flaky.  Cost names the price of acting now, a person's to accept: when
+# the peer cannot splice a resize means a close, so inbound marks the
+# inbound liquidity the close would forfeit and busy the productive
+# channel it would interrupt.  The stat that triggered either is tinted,
+# and actionable rows are bold.
 #
 # CLBOSS records a balance sample per peer roughly hourly
 # (clboss-feemon-history).  Each sampled hour is labelled by the local share
@@ -328,26 +329,28 @@ def change_for(row, args):
 
 
 def holds_for(row, args, window_days):
-    """(word, [row fields that triggered it]) for each reason not to act."""
+    """Two lists of (word, [row fields that triggered it]): waits, which
+    resolve themselves with time, and costs, prices a person can accept."""
     if row["group"] not in ("grow", "shrink"):
-        return []
-    holds = []
+        return [], []
+    waits = []
     if row["days"] < min(args.min_days, window_days) - 1.0:
-        holds.append(("young", ["days"]))
+        waits.append(("young", ["days"]))
     if row["class"].endswith("?"):
-        holds.append(("thin", ["class"]))
+        waits.append(("thin", ["class"]))
     if not row["connected"]:
-        holds.append(("offline", ["connected"]))
+        waits.append(("offline", ["connected"]))
     elif (row["connect_rate_3d"] is not None
           and row["connect_rate_3d"] < FLAKY_RATE):
-        holds.append(("flaky", ["connect_rate_3d"]))
+        waits.append(("flaky", ["connect_rate_3d"]))
+    costs = []
     if not row["spliceable"]:
         # without splicing a resize is a close: what would it forfeit?
         if row["inbound_sat"] >= 0.25 * row["cap_sat"]:
-            holds.append(("inbound", ["spliceable", "inbound_sat"]))
+            costs.append(("inbound", ["spliceable", "inbound_sat"]))
         if row["net_earned"] >= args.min_gain:
-            holds.append(("busy", ["spliceable", "net_earned"]))
-    return holds
+            costs.append(("busy", ["spliceable", "net_earned"]))
+    return waits, costs
 
 
 def main():
@@ -630,9 +633,9 @@ def main():
     for r in rows:
         r["group"] = group_of(r, args, window_days)
         r["change_sat"], r["consider_close"] = change_for(r, args)
-        r["hold"] = holds_for(r, args, window_days)
+        r["wait"], r["cost"] = holds_for(r, args, window_days)
         r["actionable"] = (r["group"] in ("grow", "shrink")
-                           and not r["hold"])
+                           and not r["wait"] and not r["cost"])
 
     class_rank = {"bidir": 0, "bidir?": 1, "rebal": 2, "rebal?": 3,
                   "sink": 4, "sink?": 5, "source": 4, "source?": 5,
@@ -686,7 +689,8 @@ def main():
         out = []
         for r in rows:
             j = dict(r)
-            j["hold"] = [word for word, _ in r["hold"]]
+            j["wait"] = [word for word, _ in r["wait"]]
+            j["cost"] = [word for word, _ in r["cost"]]
             out.append(j)
         print(json.dumps({"since": since, "before": before,
                           "edge_pct": args.edge, "rows": out}, indent=1))
@@ -749,7 +753,9 @@ def main():
          "connect_rate_3d"),
         ("Splice", lambda r: yn(r["spliceable"]), False, True, "spliceable"),
         ("Class", lambda r: r["class"], False, True, "class"),
-        ("Hold", lambda r: ",".join(word for word, _ in r["hold"]), False,
+        ("Wait", lambda r: ",".join(word for word, _ in r["wait"]), False,
+         True, None),
+        ("Cost", lambda r: ",".join(word for word, _ in r["cost"]), False,
          True, None),
     ]
     cols = [c for c in cols if args.wide or not c[2]]
@@ -759,7 +765,8 @@ def main():
         text = col[1](r)
         if not color:
             return text
-        tinted = any(col[4] in fields for _, fields in r["hold"])
+        tinted = any(col[4] in fields
+                     for _, fields in r["wait"] + r["cost"])
         if tinted:
             return ANSI_HOLD + text + ANSI_RESET
         if r["actionable"]:
@@ -848,12 +855,15 @@ def main():
           "announcement seen", False),
          ("Class", "flow shape -- bidir, sink, source, rebal, idle; ? = "
           "thin interior evidence", False),
-         ("Hold", "penalties to weigh before acting on a Grow/Shrink row, "
-          "advice not a veto: young or thin evidence; peer offline or "
-          "flaky; and when the peer cannot splice, so a resize is a "
-          "close, inbound = it would forfeit inbound liquidity and busy "
-          "= it would interrupt a productive channel; nothing to weigh = "
-          "actionable" + (" (bold)" if color else ""), False)],
+         ("Wait", "reasons to defer a Grow/Shrink row that resolve "
+          "themselves with time: young or thin evidence, peer offline or "
+          "flaky", False),
+         ("Cost", "the price of acting on a Grow/Shrink row now, a "
+          "person's to accept: the peer cannot splice, so a resize is a "
+          "close, and inbound = it would forfeit inbound liquidity, busy "
+          "= it would interrupt a productive channel.  Wait and Cost "
+          "both empty = actionable" + (" (bold)" if color else ""),
+          False)],
     ]
     for i, block in enumerate(blocks):
         if i:

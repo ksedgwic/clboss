@@ -125,14 +125,17 @@ how many days of earnings history are considered when ranking channels.
   would be left: consider closing instead, which is
   `clboss-forwarding-stats --days 90 --sort tral`'s call); for Grow, add the current capacity -- a step rather
   than a measurement, since refused volume is inflated by retries, so
-  double and read the next window.  In Grow and Shrink the `Hold`
-  column names the penalty to weigh before acting on a row -- advice, not a veto: `young` (under `--min-days` of samples) or `thin` evidence; peer `offline` or `flaky`
-  (3-day connect rate under 90%); or, when the peer cannot splice so a
-  resize means a close, `inbound` for the inbound liquidity the close
-  would forfeit (`Inb` over a quarter of `Cap`) and `busy` for the
-  productive channel it would interrupt (`NetEarn` over `--min-gain`).
-  On a terminal the triggering stat is tinted and actionable rows are
-  bold (`--color` forces this, `--no-color` disables it).
+  double and read the next window.  In Grow and Shrink two columns
+  name what holds a row back -- advice, not a veto.  `Wait` lists what
+  resolves itself with time: `young` (under `--min-days` of samples) or
+  `thin` evidence, peer `offline` or `flaky` (3-day connect rate under
+  90%).  `Cost` lists the price of acting now, a person's to accept:
+  when the peer cannot splice a resize means a close, so `inbound`
+  marks the inbound liquidity the close would forfeit (`Inb` over a
+  quarter of `Cap`) and `busy` the productive channel it would
+  interrupt (`NetEarn` over `--min-gain`).  On a terminal the
+  triggering stat is tinted and actionable rows -- both columns empty
+  -- are bold (`--color` forces this, `--no-color` disables it).
 
   `Turns` is forwarded volume over capacity for the window.  `Inb` is the
   peer's side of the channel now, in M sat: the inbound liquidity a
