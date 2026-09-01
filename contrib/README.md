@@ -113,7 +113,7 @@ how many days of earnings history are considered when ranking channels.
   other `bidir` channels, by `NetEarn` (forwarding fees less the
   rebalance expenditures CLBOSS attributes to the peer over the window).  *Liquidity-limited*: sinks,
   sources and rebalance-carried channels, where refills rather than size
-  are the lever -- sinks together by `RefOut`, then sources by `GainIn`
+  are the lever -- sinks together by `Refused`, then sources by `GainIn`
   (inbound refusals happen at the peer, so that estimate is all there
   is), then rebalance-carried by `NetEarn`.  *Too young*: under `--min-days` (30, the
   default window) of samples, since a new channel's balance is its

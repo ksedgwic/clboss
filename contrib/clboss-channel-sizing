@@ -11,7 +11,7 @@
 #               (and 1M sat), by MinLoc
 #   Right-sized the other bidir channels, by NetEarn
 #   Liquidity   sinks, sources and rebalance-carried channels: refills, not
-#               size, are the lever; sinks by RefOut, then sources by
+#               size, are the lever; sinks by Refused, then sources by
 #               GainIn, then rebalance-carried by NetEarn
 #   Young       under --min-days of samples: a new channel's balance is its
 #               opening state, not its behavior; by Days
@@ -743,7 +743,7 @@ def main():
         ("Turns", lambda r: f"{r['turns']:.1f}", False, False, None),
         ("Fill", lambda r: m(r["fill"]), False, False, None),
         ("Drain", lambda r: m(r["drain"]), False, False, None),
-        ("RefOut", lambda r: m(r["refused_out"]), False, False, None),
+        ("Refused", lambda r: m(r["refused_out"]), False, False, None),
         ("@Low", lambda r: f"{r['refused_low_pct']:.0f}", True, False, None),
         ("MinLoc", lambda r: m(r["min_local_sat"]), False, False, None),
         ("Range", lambda r: f"{r['range_pct']:.0f}", True, False, None),
@@ -841,10 +841,11 @@ def main():
          ("Turns", "forwarded volume over capacity", False),
          ("Fill", "rebalanced into our side by CLBOSS, M sat", False),
          ("Drain", "rebalanced out of our side by CLBOSS, M sat", False),
-         ("RefOut", "outbound volume refused, M sat; retries inflate it",
+         ("Refused", "outbound volume refused, M sat; retries inflate it",
           False),
-         ("@Low", "share of refused volume that arrived in low hours, %",
-          True),
+         ("@Low", "share of Refused that arrived in low hours, %: at 100 "
+          "the dry side turned it away, at 0 the refusals are mid-range, "
+          "the fast-cycling signature", True),
          ("MinLoc", "lowest our side got, M sat: capital that never moved",
           False),
          ("Range", "highest minus lowest local share in the window, % of "
