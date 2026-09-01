@@ -735,9 +735,6 @@ def main():
         ("GainIn", lambda r: f"{r['gain_in']:.0f}", False, False, None),
         ("NetEarn", lambda r: f"{r['net_earned']:.0f}", False, False,
          "net_earned"),
-        ("FwdIn", lambda r: m(r["fwd_in"]), False, False, None),
-        ("FwdOut", lambda r: m(r["fwd_out"]), False, False, None),
-        ("Net", lambda r: f"{r['net']:+.2f}", False, False, None),
         ("Turns", lambda r: f"{r['turns']:.1f}", False, False, None),
         ("Fill", lambda r: m(r["fill"]), False, False, None),
         ("Drain", lambda r: m(r["drain"]), False, False, None),
@@ -791,7 +788,7 @@ def main():
         for line in lines[1:]:
             print(line)
     print()
-    print("Cap/Inb/FwdIn/FwdOut/Fill/Drain/RefOut/MinLoc in M sat; Turns = "
+    print("Cap/Inb/Fill/Drain/RefOut/MinLoc in M sat; Turns = "
           "forwarded volume / capacity; OutLow/OutInt/InInt/"
           "InHigh in sat/day, - when the channel was never in that state; "
           "%Low/%Int/%High = share of hours, sum 100; GainOut/GainIn/NetEarn "
