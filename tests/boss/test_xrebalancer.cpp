@@ -43,7 +43,9 @@
  * bus, checking that a peer unmanaged for "balance" is excluded from
  * both the fill and drain pools: peer C below is deliberately the
  * best-paying drain candidate, so without the exclusion it would top
- * the source list of every cycle.  */
+ * the source list of every cycle.  Peer D's channel is awaiting
+ * splice lock-in and pays better than B; it stays out too, since the
+ * xrebalance plugin rejects a request that names it.  */
 
 namespace {
 
@@ -53,10 +55,14 @@ auto const node_a = "02000000000000000000000000000000000000000000000000000000000
 auto const node_b = "020000000000000000000000000000000000000000000000000000000000000001";
 /* Peer C: 95% local, best in_net -> drain candidate, but unmanaged.  */
 auto const node_c = "020000000000000000000000000000000000000000000000000000000000000002";
+/* Peer D: 95% local, out-pays B -> drain candidate, but its channel
+ * is CHANNELD_AWAITING_SPLICE.  */
+auto const node_d = "020000000000000000000000000000000000000000000000000000000000000003";
 
 auto const scid_a = "103x1x0";
 auto const scid_b = "103x1x1";
 auto const scid_c = "103x2x0";
+auto const scid_d = "103x2x1";
 
 auto const listpeerchannels_result = R"JSON(
 {
@@ -83,6 +89,14 @@ auto const listpeerchannels_result = R"JSON(
       "total_msat": "1000000000msat",
       "short_channel_id": "103x2x0",
       "peer_id": "020000000000000000000000000000000000000000000000000000000000000002",
+      "peer_connected": true
+    },
+    {
+      "state": "CHANNELD_AWAITING_SPLICE",
+      "to_us_msat": "950000000msat",
+      "total_msat": "1000000000msat",
+      "short_channel_id": "103x2x1",
+      "peer_id": "020000000000000000000000000000000000000000000000000000000000000003",
       "peer_connected": true
     }
   ]
@@ -250,6 +264,7 @@ int main() {
 		insert(node_a, 0, 0, 1000000, 1000000000); /* out 1000ppm */
 		insert(node_b, 500000, 1000000000, 0, 0);  /* in 500ppm */
 		insert(node_c, 2000000, 1000000000, 0, 0); /* in 2000ppm */
+		insert(node_d, 1500000, 1000000000, 0, 0); /* in 1500ppm */
 		tx.commit();
 
 		/* Pause the Poisson loop so only the demand trigger
@@ -292,6 +307,10 @@ int main() {
 		 * it out-pays B.  */
 		assert(!has_scid(srcs, scid_c));
 		assert(!has_scid(dsts, scid_c));
+		/* D's channel is awaiting splice lock-in: not sent to
+		 * the plugin on either side.  */
+		assert(!has_scid(srcs, scid_d));
+		assert(!has_scid(dsts, scid_d));
 
 		/* The exclusion is named in the cycle's log.  */
 		assert(log_lines.find(std::string(

@@ -178,6 +178,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   CLN's `channel_state_changed` notification as soon as it carries a
   short channel id, and a part with one end still unknown is
   attributed to the end that is known (#337).
+- A channel awaiting splice lock-in (`CHANNELD_AWAITING_SPLICE`,
+  open and forwarding for the hours until the new funding confirms)
+  was skipped wherever channels were summed or chosen by
+  `CHANNELD_NORMAL`: the peer judge's channel total, the node
+  balance swapper's sendable and receivable totals, the by-balance
+  fee modder, and the active prober.  They now admit that state.
+  The rebalancer keeps to `CHANNELD_NORMAL`: the xrebalance plugin
+  accepts only that state and rejects a request naming any other
+  channel, so a channel being spliced sits its cycles out until
+  lock-in.  While a splice-out is pending, CLN reports the balance
+  of the old funding until the new one locks in but already admits
+  HTLCs against the lower post-splice balance; the node balance
+  swapper and the by-balance fee modder now deduct the pending
+  splice-out the same way, so a channel awaiting a splice-out is
+  never read as holding funds it no longer has.
+
 
 ## [0.16.3] - 2026-08-18: "Tougher Than the Race"
 
