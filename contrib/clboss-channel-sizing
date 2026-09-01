@@ -104,8 +104,8 @@ ANSI_HOLD = "\033[33m"   # yellow: the stat that holds a row back
 ANSI_RESET = "\033[0m"
 
 GROUPS = [
-    ("grow", "Grow: our side ran dry"),
-    ("shrink", "Shrink: local capital that never moved"),
+    ("grow", "Grow"),
+    ("shrink", "Shrink"),
     ("right", "Right-sized"),
     ("liquidity", "Liquidity-limited: refills, not size, are the lever"),
     ("young", "Too young to judge"),
@@ -783,7 +783,10 @@ def main():
             if r["group"] != current:
                 current = r["group"]
                 print()
-                print(titles[current])
+                if color:
+                    print(ANSI_BOLD + titles[current] + ANSI_RESET)
+                else:
+                    print(titles[current])
             print(line)
     else:
         for line in lines[1:]:
