@@ -178,6 +178,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   CLN's `channel_state_changed` notification as soon as it carries a
   short channel id, and a part with one end still unknown is
   attributed to the end that is known (#337).
+- A channel awaiting splice lock-in (`CHANNELD_AWAITING_SPLICE`,
+  open and forwarding for the hours until the new funding confirms)
+  was skipped wherever channels were summed or chosen by
+  `CHANNELD_NORMAL`: the rebalancer's channel table and per-peer
+  capacity, the peer judge's channel total, the node balance
+  swapper's sendable and receivable totals, the by-balance fee
+  modder, and the active prober.  They now admit that state.
+
 
 ## [0.16.3] - 2026-08-18: "Tougher Than the Race"
 

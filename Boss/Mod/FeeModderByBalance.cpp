@@ -176,7 +176,9 @@ private:
 					auto state = std::string(
 						c["state"]
 					);
-					if (state != "CHANNELD_NORMAL")
+					if ( state != "CHANNELD_NORMAL"
+					  && state != "CHANNELD_AWAITING_SPLICE"
+					   )
 						continue;
 					found = true;
 					to_us = Ln::Amount::object(

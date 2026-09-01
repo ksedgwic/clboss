@@ -146,7 +146,9 @@ private:
 					auto state = std::string(
 						c["state"]
 					);
-					if (state != "CHANNELD_NORMAL")
+					if ( state != "CHANNELD_NORMAL"
+					  && state != "CHANNELD_AWAITING_SPLICE"
+					   )
 						continue;
 
 					chan0 = Ln::Scid(std::string(
@@ -167,9 +169,9 @@ private:
 
 			if (!chan0)
 				return Boss::log( bus, Info
-						, "ActiveProber: No "
-						  "CHANNELD_NORMAL channel "
-						  "with node %s, cannot probe."
+						, "ActiveProber: No open "
+						  "channel with node %s, "
+						  "cannot probe."
 						, std::string(peer).c_str()
 						);
 
