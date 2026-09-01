@@ -132,8 +132,7 @@ how many days of earnings history are considered when ranking channels.
   90%).  `Cost` lists the price of acting now, a person's to accept:
   when the peer cannot splice a resize means a close, so `inbound`
   marks the inbound liquidity the close would forfeit (`Inb` over a
-  quarter of `Cap`) and `busy` the productive channel it would
-  interrupt (`NetEarn` over `--min-gain`).  On a terminal the
+  quarter of `Cap`).  On a terminal the
   triggering stat is tinted and actionable rows -- both columns empty
   -- are bold (`--color` forces this, `--no-color` disables it).
 

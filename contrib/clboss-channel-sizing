@@ -32,9 +32,8 @@
 # resolves itself with time: young or thin evidence, a peer offline or
 # flaky.  Cost names the price of acting now, a person's to accept: when
 # the peer cannot splice a resize means a close, so inbound marks the
-# inbound liquidity the close would forfeit and busy the productive
-# channel it would interrupt.  The stat that triggered either is tinted,
-# and actionable rows are bold.
+# inbound liquidity the close would forfeit.  The stat that triggered
+# either is tinted, and actionable rows are bold.
 #
 # CLBOSS records a balance sample per peer roughly hourly
 # (clboss-feemon-history).  Each sampled hour is labelled by the local share
@@ -344,12 +343,12 @@ def holds_for(row, args, window_days):
           and row["connect_rate_3d"] < FLAKY_RATE):
         waits.append(("flaky", ["connect_rate_3d"]))
     costs = []
-    if not row["spliceable"]:
-        # without splicing a resize is a close: what would it forfeit?
-        if row["inbound_sat"] >= 0.25 * row["cap_sat"]:
-            costs.append(("inbound", ["spliceable", "inbound_sat"]))
-        if row["net_earned"] >= args.min_gain:
-            costs.append(("busy", ["spliceable", "net_earned"]))
+    # without splicing a resize is a close: what would it forfeit?
+    # (downtime is not on the list: open the replacement first, close
+    # the old channel once it is locked in and announced)
+    if (not row["spliceable"]
+            and row["inbound_sat"] >= 0.25 * row["cap_sat"]):
+        costs.append(("inbound", ["spliceable", "inbound_sat"]))
     return waits, costs
 
 
@@ -860,11 +859,10 @@ def main():
           "themselves with time: young or thin evidence, peer offline or "
           "flaky", False),
          ("Cost", "the price of acting on a Grow/Shrink row now, a "
-          "person's to accept: the peer cannot splice, so a resize is a "
-          "close, and inbound = it would forfeit inbound liquidity, busy "
-          "= it would interrupt a productive channel.  Wait and Cost "
-          "both empty = actionable" + (" (bold)" if color else ""),
-          False)],
+          "person's to accept: inbound = the peer cannot splice, so a "
+          "resize is a close, forfeiting the inbound liquidity.  Wait "
+          "and Cost both empty = actionable"
+          + (" (bold)" if color else ""), False)],
     ]
     for i, block in enumerate(blocks):
         if i:
