@@ -56,6 +56,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   progress looked unchanneled; it now counts `DUALOPEND` states
   too, and no longer reads past the end of the shorter `ONCHAIN`
   (#332).
+- A splice no longer reads as losing the channel.  CLN keeps a
+  spliced channel open and forwarding in `CHANNELD_AWAITING_SPLICE`
+  until the new funding locks in, which the create/destroy monitor
+  took as leaving `CHANNELD_NORMAL`: it announced a
+  `ChannelDestruction`, and a `ChannelCreation` minutes later, so
+  the peer's complaint history was archived, its channel age reset,
+  and the fee monitor's state for it flushed.  That state now counts
+  as live.  The monitor's polling path also never reported a
+  destruction: peers that had gone were appended to the creations
+  list (#344).
 
 ### Removed
 
