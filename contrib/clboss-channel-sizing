@@ -697,6 +697,7 @@ def main():
         ("%Low", lambda r: f"{r['low_pct']:.0f}", False, False, None),
         ("%Int", lambda r: f"{r['mid_pct']:.0f}", False, False, None),
         ("%High", lambda r: f"{r['high_pct']:.0f}", False, False, None),
+        ("GainOut", lambda r: f"{r['gain_out']:.0f}", False, False, None),
         ("OutLow", lambda r: per_day(r["out_low"], r["low_h"]), True, False,
          None),
         ("OutInt", lambda r: per_day(r["out_int"], r["notlow_h"]), False,
@@ -705,7 +706,6 @@ def main():
          False, None),
         ("InHigh", lambda r: per_day(r["in_high"], r["high_h"]), True, False,
          None),
-        ("GainOut", lambda r: f"{r['gain_out']:.0f}", False, False, None),
         ("GainIn", lambda r: f"{r['gain_in']:.0f}", False, False, None),
         ("G%", lambda r: ("-" if r["gain_pct"] is None
                            else f"{r['gain_pct']:.0f}"), False, False, None),
