@@ -707,8 +707,6 @@ def main():
         ("InHigh", lambda r: per_day(r["in_high"], r["high_h"]), True, False,
          None),
         ("GainIn", lambda r: f"{r['gain_in']:.0f}", False, False, None),
-        ("G%", lambda r: ("-" if r["gain_pct"] is None
-                           else f"{r['gain_pct']:.0f}"), False, False, None),
         ("NetEarn", lambda r: f"{r['net_earned']:.0f}", False, False,
          "net_earned"),
         ("FwdIn", lambda r: m(r["fwd_in"]), False, False, None),
@@ -775,8 +773,7 @@ def main():
           "expenditures (CLBOSS's per-peer figure).")
     print("GainOut/GainIn = low/high edge hours earning at the interior "
           "rate (our side / the peer's side ran dry); upper bounds, "
-          "meaningful for class bidir only.  G% = both gains as a share of "
-          "NetEarn, - when nothing was netted.  ? = thin interior evidence.")
+          "meaningful for class bidir only.  ? = thin interior evidence.")
     print("Inb = the peer's side of the channel now (inbound liquidity a "
           "close gives up).  MinLoc = lowest our side got in the window: "
           "capital that never moved.")
