@@ -88,8 +88,10 @@ def main():
     channels = {}
     peers = {}
     for channel in channels_data:
-        # Skip channels that are not open
-        if channel.get("state") != "CHANNELD_NORMAL":
+        # Skip channels that are not open (a channel awaiting splice
+        # lock-in is open and forwarding)
+        if channel.get("state") not in ("CHANNELD_NORMAL",
+                                        "CHANNELD_AWAITING_SPLICE"):
             continue
 
         short_channel_id = channel.get("short_channel_id")

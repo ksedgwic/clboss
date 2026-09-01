@@ -654,7 +654,9 @@ def main():
     channels = {}
     peers = {}
     for ch in channels_data:
-        if ch.get("state") != "CHANNELD_NORMAL":
+        # a channel awaiting splice lock-in is open and forwarding
+        if ch.get("state") not in ("CHANNELD_NORMAL",
+                                   "CHANNELD_AWAITING_SPLICE"):
             continue
         scid = ch.get("short_channel_id")
         peer_id = ch.get("peer_id")
