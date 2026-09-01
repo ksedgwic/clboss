@@ -81,6 +81,11 @@
 #
 # Balance samples are per peer, so a peer with several channels shares one
 # state across them.
+#
+# A splice keeps the channel and its history.  Forwards recorded under the
+# pre-splice short channel id are attributed through CLN's own lookup of
+# old ids, Turns is measured over the window's mean sampled capacity, and
+# a channel awaiting splice lock-in stays in the table.
 
 import argparse
 import bisect
@@ -228,14 +233,32 @@ class PeerBalance:
                 continue
             if ts < since or ts >= before:
                 continue
-            rows.append((ts, our / total, our))
+            rows.append((ts, our / total, our, total))
         rows = sorted(set(rows))
         self.ts = [r[0] for r in rows]
         self.frac = [r[1] for r in rows]
+        self.total = [r[3] for r in rows]
         self.before = before
         self.lo = min(self.frac) if rows else None
         self.hi = max(self.frac) if rows else None
         self.min_our_msat = min(r[2] for r in rows) if rows else None
+
+    def capacity_scale(self):
+        """Time-weighted mean of the sampled capacity over the latest
+        sample's, so a channel resized within the window is measured
+        against the capacity it actually had (1.0 when nothing changed)."""
+        if not self.ts:
+            return 1.0
+        weight = 0.0
+        total = 0.0
+        for i, ts in enumerate(self.ts):
+            nxt = self.ts[i + 1] if i + 1 < len(self.ts) else self.before
+            dt = min(max(nxt - ts, 0), HOLD_MAX)
+            weight += dt
+            total += dt * self.total[i]
+        if weight <= 0 or not self.total[-1]:
+            return 1.0
+        return total / weight / self.total[-1]
 
     def __bool__(self):
         return bool(self.ts)
@@ -462,7 +485,8 @@ def main():
     channels = {}
     for ch in data.get("channels", []):
         scid = ch.get("short_channel_id")
-        if not scid or ch.get("state") != "CHANNELD_NORMAL":
+        if not scid or ch.get("state") not in ("CHANNELD_NORMAL",
+                                                "CHANNELD_AWAITING_SPLICE"):
             continue
         channels[scid] = {
             "peer_id": ch["peer_id"],
@@ -472,6 +496,27 @@ def main():
         }
     scid2peer = {scid: c["peer_id"] for scid, c in channels.items()}
     peers = sorted({c["peer_id"] for c in channels.values()})
+
+    # A splice gives a channel a new short channel id; its forwards keep
+    # the id they happened under.  listpeerchannels does not print the old
+    # ids, but its short_channel_id filter resolves them, so ask once per
+    # unknown id and remember the answer (a closed channel resolves to
+    # nothing and its forwards stay unattributed, as before).
+    resolved = {}
+
+    def current_scid(scid):
+        if scid is None or scid in channels:
+            return scid
+        if scid not in resolved:
+            found = cli("listpeerchannels", f"short_channel_id={scid}",
+                        keyword=True)
+            hit = None
+            for ch in (found or {}).get("channels", []):
+                if ch.get("short_channel_id") in channels:
+                    hit = ch["short_channel_id"]
+                    break
+            resolved[scid] = hit
+        return resolved[scid]
 
     aliases = {}
     for peer_id in peers:
@@ -531,8 +576,8 @@ def main():
     for fwd in iter_forwards(cli, "settled", start, before, args.page):
         fee = msat(fwd.get("fee_msat"))
         t = fwd["received_time"]
-        o = fwd.get("out_channel")
-        i = fwd.get("in_channel")
+        o = current_scid(fwd.get("out_channel"))
+        i = current_scid(fwd.get("in_channel"))
         if o in acc:
             a = acc[o]
             a["out_fwd"] += msat(fwd.get("out_msat"))
@@ -551,7 +596,7 @@ def main():
     for fwd in iter_forwards(cli, "local_failed", start, before, args.page):
         if fwd.get("failcode") != 4103:  # WIRE_TEMPORARY_CHANNEL_FAILURE
             continue
-        o = fwd.get("out_channel")
+        o = current_scid(fwd.get("out_channel"))
         if o not in acc:
             continue
         amt = msat(fwd.get("in_msat"))
@@ -620,7 +665,8 @@ def main():
                                 if a["ref_msat"] else 0.0),
             "range_pct": (bal.hi - bal.lo) * 100.0,
             "min_local_sat": bal.min_our_msat / 1000.0,
-            "turns": gross / ch["cap"] if ch["cap"] else 0.0,
+            "turns": (gross / (ch["cap"] * bal.capacity_scale())
+                      if ch["cap"] else 0.0),
             "connected": ch["connected"],
             "connect_rate_3d": connect_rate.get(peer_id),
             "spliceable": (spliceable(features[peer_id])

@@ -136,7 +136,11 @@ how many days of earnings history are considered when ranking channels.
   triggering stat is tinted and actionable rows -- both columns empty
   -- are bold (`--color` forces this, `--no-color` disables it).
 
-  `Turns` is forwarded volume over capacity for the window.  `Inb` is the
+  `Turns` is forwarded volume over capacity for the window, the capacity
+  being the window's mean of the sampled total when a splice changed it.
+  A splice keeps the channel's history: forwards recorded under the old
+  short channel id are attributed through CLN's lookup of old ids, and a
+  channel awaiting splice lock-in stays in the table.  `Inb` is the
   peer's side of the channel now, in M sat: the inbound liquidity a
   close-and-reopen gives up and a splice keeps.  `Up`/`Up3d` show whether
   the peer is connected now and its 3-day connect rate, `Splice` whether
