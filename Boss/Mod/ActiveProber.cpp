@@ -146,6 +146,12 @@ private:
 					auto state = std::string(
 						c["state"]
 					);
+					/* CHANNELD_NORMAL only.  The probe is
+					 * sized from spendable_msat below, which
+					 * CLN reports for the old funding until a
+					 * pending splice locks in; a probe over a
+					 * splice-out could then fail locally
+					 * instead of measuring the peer.  */
 					if (state != "CHANNELD_NORMAL")
 						continue;
 
