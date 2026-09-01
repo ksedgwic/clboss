@@ -3,7 +3,10 @@
 # Which channels want more capacity on our side, and which carry capital
 # that never moves.  The table is grouped:
 #
-#   Grow        bidir channels whose GainOut clears --min-gain, by GainOut
+#   Grow        bidir channels whose GainOut clears --min-gain, or which
+#               turn over --grow-turns of capacity per day while refusing
+#               at least --grow-refused of the outbound volume they carry
+#               (the fast-cycling case, admitted even young); by GainOut
 #   Shrink      channels whose MinLoc is at least --idle-frac of capacity
 #               (and 1M sat), by MinLoc
 #   Right-sized the other bidir channels, by NetEarn
@@ -26,7 +29,7 @@
 #
 # In Grow and Shrink a row is actionable when nothing holds it back.  A
 # hold is advice, not a veto: the row stays a candidate and the person
-# weighs the penalty.  The Hold column names it (thin evidence; peer offline or flaky; or,
+# weighs the penalty.  The Hold column names it (young or thin evidence; peer offline or flaky; or,
 # when the peer cannot splice so a resize means a close, inbound for the
 # inbound liquidity the close would forfeit and busy for the productive
 # channel it would interrupt), the stat that triggered it is tinted, and
@@ -283,13 +286,24 @@ def classify(row, days):
 def group_of(row, args, window_days):
     # a channel with samples across the whole window is never young; the
     # 1-day slack covers samples not landing exactly on the window edges
-    if row["days"] < min(args.min_days, window_days) - 1.0:
+    young = row["days"] < min(args.min_days, window_days) - 1.0
+    bidir = row["class"].startswith("bidir")
+    # A fast-cycling channel never parks at an edge long enough to accrue
+    # GainOut: its shortage shows as refusals in mid-range, when an HTLC
+    # exceeds what is spendable at that moment.  Turns plus refused volume
+    # is its grow signal, and it is readable well before --min-days (a
+    # young row keeps a young hold).  GainOut, by contrast, is not trusted
+    # young: a remote open is born at the low edge, inflating it.
+    lively = (bidir and row["days"] >= 3.0
+              and row["turns"] >= args.grow_turns * row["days"]
+              and row["fwd_out"] > 0
+              and row["refused_out"] >= args.grow_refused * row["fwd_out"])
+    if lively or (bidir and not young and row["gain_out"] >= args.min_gain):
+        return "grow"
+    if young:
         return "young"
     if row["turns"] < args.min_turns:
         return "notraffic"
-    bidir = row["class"].startswith("bidir")
-    if bidir and row["gain_out"] >= args.min_gain:
-        return "grow"
     if row["min_local_sat"] >= max(args.idle_frac * row["cap_sat"],
                                    MIN_IDLE_SAT):
         return "shrink"
@@ -312,11 +326,13 @@ def change_for(row, args):
     return None, False
 
 
-def holds_for(row, args):
+def holds_for(row, args, window_days):
     """(word, [row fields that triggered it]) for each reason not to act."""
     if row["group"] not in ("grow", "shrink"):
         return []
     holds = []
+    if row["days"] < min(args.min_days, window_days) - 1.0:
+        holds.append(("young", ["days"]))
     if row["class"].endswith("?"):
         holds.append(("thin", ["class"]))
     if not row["connected"]:
@@ -358,6 +374,16 @@ def main():
                         help="GainOut, sat over the window, that puts a "
                              "bidir channel in Grow (default: 1000, about "
                              "one on-chain transaction)")
+    parser.add_argument("--grow-turns", type=float, default=0.5,
+                        help="Turns per day at which a bidir channel joins "
+                             "Grow on activity alone, when its refusals "
+                             "also clear --grow-refused (default: 0.5)")
+    parser.add_argument("--grow-refused", type=float, default=0.25,
+                        help="Refused outbound volume as a fraction of "
+                             "carried outbound that, with --grow-turns, "
+                             "puts a fast-cycling bidir channel in Grow "
+                             "(default: 0.25; retries inflate refusals, so "
+                             "this is a coarse gate, not a sizer)")
     parser.add_argument("--idle-frac", type=float, default=0.4,
                         help="MinLoc as a fraction of capacity that puts a "
                              "channel in Shrink (default: 0.4; never under "
@@ -603,7 +629,7 @@ def main():
     for r in rows:
         r["group"] = group_of(r, args, window_days)
         r["change_sat"], r["consider_close"] = change_for(r, args)
-        r["hold"] = holds_for(r, args)
+        r["hold"] = holds_for(r, args, window_days)
         r["actionable"] = (r["group"] in ("grow", "shrink")
                            and not r["hold"])
 
@@ -779,10 +805,14 @@ def main():
           "capital that never moved.")
     print("Up = connected now, Up3d = 3-day connect rate %, Splice = peer "
           "negotiates or announces splicing (? = no announcement seen).")
-    print(f"Grow: bidir with GainOut >= {args.min_gain} sat.  Shrink: MinLoc "
-          f">= {args.idle_frac:g} of Cap and >= {MIN_IDLE_SAT // 1_000_000}M "
-          f"sat.  Young: under {args.min_days} days of samples.  Little or "
-          f"no traffic: Turns under {args.min_turns:g}.")
+    print(f"Grow: bidir with GainOut >= {args.min_gain} sat, or turning "
+          f"over {args.grow_turns:g}x Cap/day with refusals >= "
+          f"{args.grow_refused:g} of carried (a fast-cycling channel never "
+          f"parks at an edge; its shortage shows as refusals).  Shrink: "
+          f"MinLoc >= {args.idle_frac:g} of Cap and >= "
+          f"{MIN_IDLE_SAT // 1_000_000}M sat.  Young: under "
+          f"{args.min_days} days of samples.  Little or no traffic: Turns "
+          f"under {args.min_turns:g}.")
     print("Change: proposed splice, M sat.  Shrink removes enough that the "
           "window's lowest local balance lands at the edge of the smaller "
           "channel; in parentheses when under 1M would be left, so consider "
@@ -790,10 +820,11 @@ def main():
           "Grow adds the current capacity as a step, then read the next "
           "window.")
     print("Hold: the penalty to weigh before acting on a Grow/Shrink row -- "
-          "thin evidence; peer offline or flaky; or, with no splicing, a "
-          "resize is a close: inbound = it would forfeit inbound liquidity, "
-          "busy = it would interrupt a productive channel.  Empty = nothing "
-          "to weigh" + (" (bold)." if color else "."))
+          "young or thin evidence; peer offline or flaky; or, with no "
+          "splicing, a resize is a close: inbound = it would forfeit "
+          "inbound liquidity, busy = it would interrupt a productive "
+          "channel.  Empty = nothing to weigh" + (" (bold)." if color
+                                                  else "."))
     return 0
 
 

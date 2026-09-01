@@ -102,8 +102,13 @@ how many days of earnings history are considered when ranking channels.
   missed.
 
   The table is grouped.  *Grow*: `bidir` channels whose `GainOut` clears
-  `--min-gain` (default 1000 sat, about one on-chain transaction), by
-  `GainOut`.  *Shrink*: channels whose `MinLoc` is at least `--idle-frac`
+  `--min-gain` (default 1000 sat, about one on-chain transaction), or
+  which turn over `--grow-turns` of capacity per day (default 0.5) while
+  refusing at least `--grow-refused` of the outbound volume they carry
+  (default 0.25) -- a fast-cycling channel never parks at an edge long
+  enough to accrue `GainOut`; its shortage shows as refusals in
+  mid-range, and that signal is readable early, so such a channel joins
+  Grow even under `--min-days` (with a `young` hold).  By `GainOut`.  *Shrink*: channels whose `MinLoc` is at least `--idle-frac`
   of capacity (default 0.4) and 1M sat, by `MinLoc`.  *Right-sized*: the
   other `bidir` channels, by `NetEarn` (forwarding fees less the
   rebalance expenditures CLBOSS attributes to the peer over the window).  *Liquidity-limited*: sinks,
@@ -121,7 +126,7 @@ how many days of earnings history are considered when ranking channels.
   `clboss-forwarding-stats --days 90 --sort tral`'s call); for Grow, add the current capacity -- a step rather
   than a measurement, since refused volume is inflated by retries, so
   double and read the next window.  In Grow and Shrink the `Hold`
-  column names the penalty to weigh before acting on a row -- advice, not a veto: `thin` evidence; peer `offline` or `flaky`
+  column names the penalty to weigh before acting on a row -- advice, not a veto: `young` (under `--min-days` of samples) or `thin` evidence; peer `offline` or `flaky`
   (3-day connect rate under 90%); or, when the peer cannot splice so a
   resize means a close, `inbound` for the inbound liquidity the close
   would forfeit (`Inb` over a quarter of `Cap`) and `busy` for the
