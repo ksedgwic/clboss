@@ -137,7 +137,8 @@ private:
 	std::size_t absent_cycles;      /* consecutive cycles that found it missing */
 	double last_absent_warn;        /* get_now() of the last not-loaded Warn */
 
-	/* One row per CHANNELD_NORMAL channel, built live from
+	/* One row per open channel (CHANNELD_NORMAL, or
+	 * CHANNELD_AWAITING_SPLICE while a splice locks in), built live from
 	 * listpeerchannels each cycle (balances and online status must be
 	 * current, not a cached snapshot).  NetPpm is joined per-node from
 	 * the EarningsTracker table.  Amounts in sat (the view works in sat).
@@ -387,8 +388,12 @@ private:
 				return out;
 			for (auto i = std::size_t(0); i < channels.size(); ++i) {
 				auto c = channels[i];
-				if (!c.has("state")
-				 || std::string(c["state"]) != "CHANNELD_NORMAL")
+				if (!c.has("state"))
+					continue;
+				auto state = std::string(c["state"]);
+				if ( state != "CHANNELD_NORMAL"
+				  && state != "CHANNELD_AWAITING_SPLICE"
+				   )
 					continue;
 				if (!c.has("short_channel_id")
 				 || !c.has("peer_id")

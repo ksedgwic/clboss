@@ -54,8 +54,11 @@ private:
 					for (auto chan : channels) {
 						/* Skip non-active channels.
 						 */
-						if ( std::string(chan["state"])
-						  != "CHANNELD_NORMAL"
+						auto state = std::string(
+							chan["state"]
+						);
+						if ( state != "CHANNELD_NORMAL"
+						  && state != "CHANNELD_AWAITING_SPLICE"
 						   )
 							continue;
 						auto recv = Ln::Amount();
