@@ -178,6 +178,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   CLN's `channel_state_changed` notification as soon as it carries a
   short channel id, and a part with one end still unknown is
   attributed to the end that is known (#337).
+- A splice no longer reads as losing the channel.  CLN keeps a
+  spliced channel open and forwarding in `CHANNELD_AWAITING_SPLICE`
+  until the new funding locks in, which the create/destroy monitor
+  took as leaving `CHANNELD_NORMAL`: it announced a
+  `ChannelDestruction`, and a `ChannelCreation` minutes later, so
+  the peer's complaint history was archived, its channel age reset,
+  and the fee monitor's state for it flushed.  That state now counts
+  as live.  The monitor's polling path also never reported a
+  destruction: peers that had gone were appended to the creations
+  list.
+
 
 ## [0.16.3] - 2026-08-18: "Tougher Than the Race"
 
