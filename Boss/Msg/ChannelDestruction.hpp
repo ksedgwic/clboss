@@ -9,9 +9,10 @@ namespace Boss { namespace Msg {
  *
  * @brief Tells everyone that we lost an existing channel
  * with a peer.
- * Basically, if we leave `CHANNELD_NORMAL`, or if we leave
- * `CHANNELD_AWAITING_LOCKIN` but did not enter
- * `CHANNELD_NORMAL`.
+ * Basically, if we leave the live states (`CHANNELD_NORMAL`, or
+ * `CHANNELD_AWAITING_SPLICE` while a splice locks in) for some
+ * other state, or if we leave `CHANNELD_AWAITING_LOCKIN` but did
+ * not enter a live state.
  * See also `Boss::Msg::ChannelCreation`.
  */
 struct ChannelDestruction {
