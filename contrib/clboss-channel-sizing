@@ -91,8 +91,9 @@
 # A closed channel's forwards are credited to the peer's current channel:
 # the balance samples are per peer, so a reopened channel is already read
 # against the closed one's balance history.  A closed channel that had
-# been spliced is listed under its last short channel id only; its first
-# one is rebuilt from the channel id and the wallet's transactions.
+# been spliced is listed under its last short channel id only; the
+# earlier ones are rebuilt from the channel id and the wallet's
+# transactions, splice by splice.
 #
 # NetEarn, Fill and Drain are read from CLBOSS's per-peer earnings record
 # (clboss-recent-earnings), which counts every channel the peer had in the
@@ -216,28 +217,50 @@ def first_index_since(cli, since, last_index):
     return lo
 
 
-def first_scids(cli, closed_ids, channels, closed_peer):
-    """Add the first short channel id of each closed channel to closed_peer.
+def former_scids(cli, not_open, channels, closed_peer):
+    """Add the short channel ids a closed channel had before its last one
+    to closed_peer.
 
     A splice moves a channel to a new funding output and a new short
-    channel id, and listclosedchannels names only the last one.  A
+    channel id, and listclosedchannels names only the last one.  The
+    wallet's transactions (listtransactions) hold the rest.  A
     single-funded channel's id is its first funding txid with the output
-    index folded into the last two bytes, and the wallet's transactions
-    (listtransactions) carry the block height and position of every
-    funding transaction, so the first id can be rebuilt.  A dual-funded
-    channel's id is a hash of basepoints and matches no transaction, so
-    it keeps its listed id only.  The ids of intermediate splices are
-    not recovered."""
-    if not closed_ids:
+    index folded into the last two bytes; each splice spends the funding
+    output before it and creates the next, the pay-to-witness-script-hash
+    output that a later wallet transaction spends; and every transaction
+    carries its block height and position.  The walk runs from the first
+    funding output to the channel's last one, and its ids count only when
+    it gets there.  A dual-funded channel's id is a hash of basepoints
+    and matches no transaction, so it keeps its listed id only.  A
+    funding the wallet saw only unconfirmed has no position; its id is
+    skipped and the walk goes on."""
+    if not not_open:
         return
     txs = (cli("listtransactions") or {}).get("transactions", [])
+    spent_by = {}
     by_prefix = {}
     for tx in txs:
-        if not tx.get("blockheight") or not tx.get("txindex"):
-            continue  # unconfirmed, or a funding seen before its block
+        for inp in tx.get("inputs", []):
+            spent_by[(inp["txid"], inp["index"])] = tx
         txid = bytes.fromhex(tx["hash"])[::-1]
         by_prefix[txid[:30]] = (txid[30:], tx)
-    for cid_hex, peer_id in closed_ids.items():
+
+    def scid_of(tx, outnum):
+        if not tx.get("blockheight") or not tx.get("txindex"):
+            return None  # unconfirmed, or a funding seen before its block
+        return f"{tx['blockheight']}x{tx['txindex']}x{outnum}"
+
+    def funding_output(tx, last):
+        """The output of a splice transaction that carries the channel on:
+        the one 2-of-2 output another wallet transaction spends."""
+        if last and tx["hash"] == last[0]:
+            return last[1]
+        picks = [o["index"] for o in tx.get("outputs", [])
+                 if o.get("scriptPubKey", "").startswith("0020")
+                 and (tx["hash"], o["index"]) in spent_by]
+        return picks[0] if len(picks) == 1 else None
+
+    for cid_hex, (peer_id, last) in not_open.items():
         cid = bytes.fromhex(cid_hex)
         hit = by_prefix.get(cid[:30])
         if hit is None:
@@ -247,9 +270,20 @@ def first_scids(cli, closed_ids, channels, closed_peer):
                                 "big")
         if outnum >= len(tx.get("outputs", [])):
             continue
-        scid = f"{tx['blockheight']}x{tx['txindex']}x{outnum}"
-        if scid not in channels:
-            closed_peer.setdefault(scid, peer_id)
+        found = [scid_of(tx, outnum)]
+        seen = set()
+        while last and (tx["hash"], outnum) != last:
+            seen.add((tx["hash"], outnum))
+            tx = spent_by.get((tx["hash"], outnum))
+            outnum = funding_output(tx, last) if tx else None
+            if outnum is None or (tx["hash"], outnum) in seen:
+                found = found[:1]  # the chain is broken: keep the first
+                break
+            if (tx["hash"], outnum) != last:
+                found.append(scid_of(tx, outnum))
+        for scid in found:
+            if scid and scid not in channels:
+                closed_peer.setdefault(scid, peer_id)
 
 
 def iter_forwards(cli, status, start, before, page):
@@ -541,7 +575,13 @@ def main():
         return 1
     channels = {}
     closed_peer = {}  # short channel id -> peer of a channel not open
-    closed_ids = {}  # channel id -> peer of a channel not open
+    not_open = {}  # channel id -> (peer, last funding outpoint)
+
+    def funding_of(ch):
+        if ch.get("funding_txid") is None or ch.get("funding_outnum") is None:
+            return None
+        return (ch["funding_txid"], ch["funding_outnum"])
+
     for ch in data.get("channels", []):
         scid = ch.get("short_channel_id")
         if not scid:
@@ -550,7 +590,7 @@ def main():
                                    "CHANNELD_AWAITING_SPLICE"):
             closed_peer[scid] = ch["peer_id"]
             if ch.get("channel_id"):
-                closed_ids[ch["channel_id"]] = ch["peer_id"]
+                not_open[ch["channel_id"]] = (ch["peer_id"], funding_of(ch))
             continue
         channels[scid] = {
             "peer_id": ch["peer_id"],
@@ -571,8 +611,9 @@ def main():
         if scid and ch.get("peer_id") and scid not in channels:
             closed_peer.setdefault(scid, ch["peer_id"])
         if ch.get("channel_id") and ch.get("peer_id"):
-            closed_ids.setdefault(ch["channel_id"], ch["peer_id"])
-    first_scids(cli, closed_ids, channels, closed_peer)
+            not_open.setdefault(ch["channel_id"],
+                                (ch["peer_id"], funding_of(ch)))
+    former_scids(cli, not_open, channels, closed_peer)
 
     # A splice gives a channel a new short channel id; its forwards keep
     # the id they happened under.  listpeerchannels does not print the old
