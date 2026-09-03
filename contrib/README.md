@@ -110,8 +110,9 @@ how many days of earnings history are considered when ranking channels.
   mid-range, and that signal is readable early, so such a channel joins
   Grow even under `--min-days` (with a `young` hold).  By `GainOut`.  *Shrink*: channels whose `MinLoc` is at least `--idle-frac`
   of capacity (default 0.4) and 1M sat, by `MinLoc`.  *Right-sized*: the
-  other `bidir` channels, by `NetEarn` (forwarding fees less the
-  rebalance expenditures CLBOSS attributes to the peer over the window).  *Liquidity-limited*: sinks,
+  other `bidir` channels, by `NetEarn` (forwarding fees less rebalance
+  expenditures, both from CLBOSS's per-peer earnings record over the
+  window: the figure `clboss-forwarding-stats` prints).  *Liquidity-limited*: sinks,
   sources and rebalance-carried channels, where refills rather than size
   are the lever -- sinks together by `Refused`, then sources by `GainIn`
   (inbound refusals happen at the peer, so that estimate is all there

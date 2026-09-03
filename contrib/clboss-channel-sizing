@@ -91,6 +91,11 @@
 # A closed channel's forwards are credited to the peer's current channel:
 # the balance samples are per peer, so a reopened channel is already read
 # against the closed one's balance history.
+#
+# NetEarn, Fill and Drain are read from CLBOSS's per-peer earnings record
+# (clboss-recent-earnings), which counts every channel the peer had in the
+# window, closed ones included; it is the figure clboss-forwarding-stats
+# prints.  The rate and Gain columns rest on the forwards attributed above.
 
 import argparse
 import bisect
@@ -578,7 +583,8 @@ def main():
         if m.get("connect_rate") is not None:
             connect_rate[peer_id] = float(m["connect_rate"])
 
-    # rebalance volumes per peer over the same window (CLBOSS day buckets)
+    # fees, rebalance spend and rebalance volumes per peer over the same
+    # window (CLBOSS day buckets)
     recent_days = max(1, int(round(window_days)))
     recent = cli("clboss-recent-earnings", str(recent_days)) or {}
     recent = recent.get("recent", {})
@@ -597,7 +603,7 @@ def main():
     start = first_index_since(cli, since, last_index)
 
     acc = {scid: {k: 0.0 for k in (
-        "in_fwd", "out_fwd", "in_earn", "out_earn",
+        "in_fwd", "out_fwd",
         "out_earn_low", "out_earn_notlow", "in_earn_high", "in_earn_nothigh",
         "ref_msat", "ref_low_msat")} for scid in channels}
 
@@ -615,14 +621,12 @@ def main():
         if o in acc:
             a = acc[o]
             a["out_fwd"] += msat(fwd.get("out_msat"))
-            a["out_earn"] += fee
             f = state(o, t)
             if f is not None:
                 a["out_earn_low" if f < low else "out_earn_notlow"] += fee
         if i in acc:
             a = acc[i]
             a["in_fwd"] += msat(fwd.get("in_msat"))
-            a["in_earn"] += fee
             f = state(i, t)
             if f is not None:
                 a["in_earn_high" if f > high else "in_earn_nothigh"] += fee
@@ -667,9 +671,9 @@ def main():
         in_high = a["in_earn_high"] / h["high"] if h["high"] else 0.0
         gain_out = max(0.0, out_int - out_low) * h["low"]
         gain_in = max(0.0, in_int - in_high) * h["high"]
-        earned = a["in_earn"] + a["out_earn"]
         gross = a["in_fwd"] + a["out_fwd"]
         rec = recent.get(peer_id, {})
+        earned = rec.get("in_earnings", 0) + rec.get("out_earnings", 0)
         spent = rec.get("in_expenditures", 0) + rec.get("out_expenditures", 0)
         net_earned = earned - spent
         row = {
@@ -925,8 +929,9 @@ def main():
          ("GainIn", "foregone inbound fees, sat: high hours at the "
           "interior rate; a drain or the peer's funds recover it, our "
           "splice does not", False)],
-        [("NetEarn", "forwarding fees less the rebalance spend CLBOSS "
-          "attributes to the peer, sat over the window", False),
+        [("NetEarn", "forwarding fees less the rebalance spend, both as "
+          "CLBOSS attributes them to the peer, sat over the window; the "
+          "clboss-forwarding-stats figure", False),
          ("Turns", "forwarded volume over capacity", False),
          ("Fill", "rebalanced into our side by CLBOSS, M sat", False),
          ("Drain", "rebalanced out of our side by CLBOSS, M sat", False),
