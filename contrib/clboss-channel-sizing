@@ -83,10 +83,12 @@
 # Balance samples are per peer, so a peer with several channels shares one
 # state across them.
 #
-# A splice keeps the channel and its history.  Forwards recorded under the
-# pre-splice short channel id are attributed through CLN's own lookup of
-# old ids, Turns is measured over the window's mean sampled capacity, and
-# a channel awaiting splice lock-in stays in the table.
+# A splice keeps the channel and its history.  Every short channel id a
+# channel has had is read from the bookkeeper, which accounts by channel
+# id across splices and keeps closed channels (funding_scids), so forwards
+# recorded under a former id are attributed; Turns is measured over the
+# window's mean sampled capacity, and a channel awaiting splice lock-in
+# stays in the table.
 #
 # A closed channel's forwards are credited to the peer's current channel:
 # the balance samples are per peer, so a reopened channel is already read
@@ -129,7 +131,7 @@ GROUPS = [
 
 
 def run_lightning_cli_command(lightning_dir, network_option, command, *args,
-                              keyword=False):
+                              keyword=False, quiet=False):
     argv = ["lightning-cli", network_option]
     if lightning_dir:
         argv.append(f"--lightning-dir={lightning_dir}")
@@ -141,8 +143,9 @@ def run_lightning_cli_command(lightning_dir, network_option, command, *args,
                                 check=True)
         return json.loads(result.stdout)
     except subprocess.CalledProcessError as e:
-        print(f"Command '{argv}' failed with error: {e}", file=sys.stderr)
-        print(e.stderr, file=sys.stderr)
+        if not quiet:
+            print(f"Command '{argv}' failed with error: {e}", file=sys.stderr)
+            print(e.stderr, file=sys.stderr)
     except json.JSONDecodeError as e:
         print(f"Failed to parse JSON from command '{argv}': {e}",
               file=sys.stderr)
@@ -176,10 +179,10 @@ class Cli:
         self.lightning_dir = lightning_dir
         self.network_option = network_option
 
-    def __call__(self, command, *args, keyword=False):
+    def __call__(self, command, *args, keyword=False, quiet=False):
         return run_lightning_cli_command(self.lightning_dir,
                                          self.network_option, command, *args,
-                                         keyword=keyword)
+                                         keyword=keyword, quiet=quiet)
 
 
 def forwards_last_index(cli):
@@ -212,6 +215,44 @@ def first_index_since(cli, since, last_index):
         else:
             lo = mid + 1
     return lo
+
+
+def funding_scids(cli, peers):
+    """Short channel ids of every funding output the peers' channels have
+    had, as {short channel id: peer id}.
+
+    The bookkeeper keeps one account per channel, named by the channel
+    id, which a splice does not change, records each funding output the
+    channel had as a channel_open event, and keeps closed accounts.  The
+    wallet's transactions (listtransactions) supply the position of the
+    funding transaction in its block, the part of a short channel id the
+    bookkeeper does not store.  Without the bookkeeper the result is
+    empty."""
+    balances = cli("bkpr-listbalances", quiet=True)
+    if not balances:
+        return {}
+    wallet = None
+    found = {}
+    for acct in balances.get("accounts", []):
+        peer_id = acct.get("peer_id")
+        if peer_id not in peers:
+            continue
+        inspect = cli("bkpr-inspect", acct["account"], quiet=True) or {}
+        for tx in inspect.get("txs", []):
+            for out in tx.get("outputs", []):
+                if out.get("output_tag") != "channel_open":
+                    continue
+                if wallet is None:
+                    txs = (cli("listtransactions") or {}).get("transactions",
+                                                              [])
+                    wallet = {wtx["hash"]: wtx for wtx in txs}
+                wtx = wallet.get(tx["txid"])
+                height = tx.get("blockheight") or (wtx or {}).get("blockheight")
+                if not wtx or not wtx.get("txindex") or not height:
+                    continue  # a funding the wallet saw only unconfirmed
+                scid = f"{height}x{wtx['txindex']}x{out['outnum']}"
+                found.setdefault(scid, peer_id)
+    return found
 
 
 def iter_forwards(cli, status, start, before, page):
@@ -502,14 +543,14 @@ def main():
     if not data:
         return 1
     channels = {}
-    closed_peer = {}  # short channel id -> peer of a channel not open
+    former_peer = {}  # former short channel id -> its peer
     for ch in data.get("channels", []):
         scid = ch.get("short_channel_id")
         if not scid:
             continue
         if ch.get("state") not in ("CHANNELD_NORMAL",
                                    "CHANNELD_AWAITING_SPLICE"):
-            closed_peer[scid] = ch["peer_id"]
+            former_peer[scid] = ch["peer_id"]
             continue
         channels[scid] = {
             "peer_id": ch["peer_id"],
@@ -528,11 +569,15 @@ def main():
     for ch in closed.get("closedchannels", []):
         scid = ch.get("short_channel_id")
         if scid and ch.get("peer_id") and scid not in channels:
-            closed_peer.setdefault(scid, ch["peer_id"])
+            former_peer.setdefault(scid, ch["peer_id"])
+    for scid, peer_id in funding_scids(cli, set(peers)).items():
+        if scid not in channels:
+            former_peer.setdefault(scid, peer_id)
 
     # A splice gives a channel a new short channel id; its forwards keep
-    # the id they happened under.  listpeerchannels does not print the old
-    # ids, but its short_channel_id filter resolves them, so ask once per
+    # the id they happened under.  Former ids come from the bookkeeper;
+    # for one it does not know, listpeerchannels does not print old ids,
+    # but its short_channel_id filter resolves them, so ask once per
     # unknown id and remember the answer.  A closed channel's forwards go
     # to the peer's current channel, the largest if there are several (a
     # peer with no open channel has no row, and they stay unattributed).
@@ -543,8 +588,8 @@ def main():
             return scid
         if scid not in resolved:
             hit = None
-            if scid in closed_peer:
-                now = peer_channels.get(closed_peer[scid], [])
+            if scid in former_peer:
+                now = peer_channels.get(former_peer[scid], [])
                 if now:
                     hit = max(now, key=lambda s: channels[s]["cap"])
             else:
