@@ -87,6 +87,10 @@
 # pre-splice short channel id are attributed through CLN's own lookup of
 # old ids, Turns is measured over the window's mean sampled capacity, and
 # a channel awaiting splice lock-in stays in the table.
+#
+# A closed channel's forwards are credited to the peer's current channel:
+# the balance samples are per peer, so a reopened channel is already read
+# against the closed one's balance history.
 
 import argparse
 import bisect
@@ -493,10 +497,14 @@ def main():
     if not data:
         return 1
     channels = {}
+    closed_peer = {}  # short channel id -> peer of a channel not open
     for ch in data.get("channels", []):
         scid = ch.get("short_channel_id")
-        if not scid or ch.get("state") not in ("CHANNELD_NORMAL",
-                                                "CHANNELD_AWAITING_SPLICE"):
+        if not scid:
+            continue
+        if ch.get("state") not in ("CHANNELD_NORMAL",
+                                   "CHANNELD_AWAITING_SPLICE"):
+            closed_peer[scid] = ch["peer_id"]
             continue
         channels[scid] = {
             "peer_id": ch["peer_id"],
@@ -507,27 +515,40 @@ def main():
     scid2peer = {scid: c["peer_id"] for scid, c in channels.items()}
     peers = sorted({c["peer_id"] for c in channels.values()})
     peer_cap = {}
-    for c in channels.values():
+    peer_channels = {}
+    for scid, c in channels.items():
         peer_cap[c["peer_id"]] = peer_cap.get(c["peer_id"], 0) + c["cap"]
+        peer_channels.setdefault(c["peer_id"], []).append(scid)
+    closed = cli("listclosedchannels") or {}
+    for ch in closed.get("closedchannels", []):
+        scid = ch.get("short_channel_id")
+        if scid and ch.get("peer_id") and scid not in channels:
+            closed_peer.setdefault(scid, ch["peer_id"])
 
     # A splice gives a channel a new short channel id; its forwards keep
     # the id they happened under.  listpeerchannels does not print the old
     # ids, but its short_channel_id filter resolves them, so ask once per
-    # unknown id and remember the answer (a closed channel resolves to
-    # nothing and its forwards stay unattributed, as before).
+    # unknown id and remember the answer.  A closed channel's forwards go
+    # to the peer's current channel, the largest if there are several (a
+    # peer with no open channel has no row, and they stay unattributed).
     resolved = {}
 
     def current_scid(scid):
         if scid is None or scid in channels:
             return scid
         if scid not in resolved:
-            found = cli("listpeerchannels", f"short_channel_id={scid}",
-                        keyword=True)
             hit = None
-            for ch in (found or {}).get("channels", []):
-                if ch.get("short_channel_id") in channels:
-                    hit = ch["short_channel_id"]
-                    break
+            if scid in closed_peer:
+                now = peer_channels.get(closed_peer[scid], [])
+                if now:
+                    hit = max(now, key=lambda s: channels[s]["cap"])
+            else:
+                found = cli("listpeerchannels", f"short_channel_id={scid}",
+                            keyword=True)
+                for ch in (found or {}).get("channels", []):
+                    if ch.get("short_channel_id") in channels:
+                        hit = ch["short_channel_id"]
+                        break
             resolved[scid] = hit
         return resolved[scid]
 
