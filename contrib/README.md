@@ -75,6 +75,14 @@ how many days of earnings history are considered when ranking channels.
   - `--csv-file <file>` writes the raw earnings data as CSV.
   - `--graph-file <file>` generates a PNG plot of net earnings.
   - `--bucket` lets you aggregate by `day`, `week`, `fortnight`, `month`, or `quarter`.
+- **`clboss-recent-earnings`** accepts `--group`, which arranges the
+  rows in three groups, each sorted by net earnings.  *Balanced*: peers
+  with no rebalance, or rebalance volume at most a tenth of the
+  round-trip volume (the smaller of in and out forwarded).  *Fills*:
+  peers the rebalancer mostly topped up (`Out Rebal`).  *Sources*: peers
+  it mostly drew from (`In Rebal`).  A peer rebalanced both ways goes
+  with the larger; the smaller shows as the only nonzero value in that
+  column within its group.
 - **`clboss-forwarding-stats`** summarizes channel forwarding data and can be
   restricted with `--days`.
 - **`clboss-channel-sizing`** shows which channels want more capacity on
