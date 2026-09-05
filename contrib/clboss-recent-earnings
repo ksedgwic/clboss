@@ -37,8 +37,33 @@ headers = [
     "Net Earn",
 ]
 
-def calculate_net_earnings(data, lightning_dir, network_option):
+# Rows can be arranged in three groups by what the rebalancer did with
+# the channel.  A peer is "balanced" when its rebalance volume is at most
+# this share of its round-trip volume (the smaller of in and out
+# forwarded): the channel balanced itself, or nearly so.
+BALANCED_MAX_REBALANCE_SHARE = 0.1
+
+GROUP_ORDER = ["balanced", "fills", "sources"]
+
+def classify_peer(in_forwarded, out_forwarded, in_rebalanced, out_rebalanced):
+    """Name the group a peer belongs to.
+
+    balanced: no rebalance, or too little relative to the round-trip
+              volume to matter
+    fills:    the rebalancer mostly topped it up (out_rebalanced larger)
+    sources:  the rebalancer mostly drew from it (in_rebalanced larger)
+    """
+    rebalanced = in_rebalanced + out_rebalanced
+    round_trip = min(in_forwarded, out_forwarded)
+    if rebalanced <= round_trip * BALANCED_MAX_REBALANCE_SHARE:
+        return "balanced"
+    if in_rebalanced > out_rebalanced:
+        return "sources"
+    return "fills"
+
+def calculate_net_earnings(data, lightning_dir, network_option, group=False):
     rows = []
+    entries = []  # (group name, net earnings, formatted row)
 
     # Initialize totals
     total_net_earnings = 0
@@ -89,7 +114,7 @@ def calculate_net_earnings(data, lightning_dir, network_option):
         total_out_expenditures += out_expenditures
         total_out_rebalanced += out_rebalanced
 
-        rows.append([
+        row = [
             alias,
             f"{in_forwarded:,}".replace(',', '_'),
             f"{in_forwarded_rate:,.0f}",
@@ -104,7 +129,23 @@ def calculate_net_earnings(data, lightning_dir, network_option):
             f"{out_rebalance_rate:,.0f}",
             f"{out_expenditures:,}".replace(',', '_'),
             f"{net_earnings:,}".replace(',', '_'),
-        ])
+        ]
+        entries.append((
+            classify_peer(in_forwarded, out_forwarded, in_rebalanced, out_rebalanced),
+            net_earnings,
+            row,
+        ))
+
+    if group:
+        for name in GROUP_ORDER:
+            members = [e for e in entries if e[0] == name]
+            if not members:
+                continue
+            members.sort(key=lambda e: e[1], reverse=True)
+            rows.append([name] + ["-" * len(header) for header in headers[1:]])
+            rows.extend(row for _, _, row in members)
+    else:
+        rows.extend(row for _, _, row in entries)
 
     avg_in_earnings_rate = (total_in_earnings / total_in_forwarded) * 1_000_000 if total_in_forwarded != 0 else 0
     avg_out_earnings_rate = (total_out_earnings / total_out_forwarded) * 1_000_000 if total_out_forwarded != 0 else 0
@@ -149,6 +190,9 @@ def main():
 
     parser.add_argument('--lightning-dir', help='lightning data location')
 
+    parser.add_argument('--group', action='store_true',
+                        help='arrange rows in three groups, balanced / fills / sources, each sorted by net earnings')
+
     args = parser.parse_args()
 
     # Reconcile network option
@@ -175,7 +219,7 @@ def main():
         earnings_data = run_lightning_cli_command(lightning_dir, network_option, 'clboss-recent-earnings')
 
     if earnings_data:
-        rows = calculate_net_earnings(earnings_data, lightning_dir, network_option)
+        rows = calculate_net_earnings(earnings_data, lightning_dir, network_option, args.group)
         print(tabulate(rows, headers=headers, tablefmt="pretty", stralign="right", numalign="right"))
 
 if __name__ == "__main__":
