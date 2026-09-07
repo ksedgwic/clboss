@@ -154,7 +154,10 @@ how many days of earnings history are considered when ranking channels.
   short channel id are attributed through CLN's lookup of old ids, and a
   channel awaiting splice lock-in stays in the table.  `Inb` is the
   peer's side of the channel now, in M sat: the inbound liquidity a
-  close-and-reopen gives up and a splice keeps.  `Up`/`Up3d` show whether
+  close-and-reopen gives up and a splice keeps.  `PeerPpm` is the peer's
+  fee rate toward us from its channel update: what a fill, or moving
+  `Inb` to a replacement channel, pays on the peer's hop (base fee left
+  out; under 1 ppm at these sizes).  `Up`/`Up3d` show whether
   the peer is connected now and its 3-day connect rate, `Splice` whether
   it negotiates or announces splicing (feature bit 62/63), so a candidate
   can be resized in place instead of closed and reopened.  `--days` sets

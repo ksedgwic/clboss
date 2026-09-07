@@ -75,7 +75,10 @@
 # within the hour).  Turns is forwarded volume over capacity for the window.
 #
 # Inb is the peer's side of the channel now, the inbound liquidity a close
-# would give up (a splice keeps it).  Up is whether the peer is connected now, Up3d its 3-day connect rate from
+# would give up (a splice keeps it).  PeerPpm is the peer's fee rate toward
+# us: a fill, or a move of Inb to a replacement channel, pays that rate on
+# the peer's hop (the base fee is left out; at the sizes involved it is
+# under 1 ppm).  Up is whether the peer is connected now, Up3d its 3-day connect rate from
 # clboss-status, and Splice whether it negotiates or announces splicing
 # (BOLT 9 feature bit 62/63): a channel that can be spliced is resized
 # without a close.
@@ -592,10 +595,12 @@ def main():
             if ch.get("channel_id"):
                 not_open[ch["channel_id"]] = (ch["peer_id"], funding_of(ch))
             continue
+        remote = (ch.get("updates") or {}).get("remote") or {}
         channels[scid] = {
             "peer_id": ch["peer_id"],
             "cap": msat(ch.get("total_msat")),
             "inbound": msat(ch.get("total_msat")) - msat(ch.get("to_us_msat")),
+            "peer_ppm": remote.get("fee_proportional_millionths"),
             "connected": bool(ch.get("peer_connected")),
         }
     scid2peer = {scid: c["peer_id"] for scid, c in channels.items()}
@@ -767,6 +772,7 @@ def main():
             "scid": scid,
             "cap_sat": ch["cap"] / 1000.0,
             "inbound_sat": ch["inbound"] / 1000.0,
+            "peer_ppm": ch["peer_ppm"],
             "days": total_h / 24.0,
             "low_pct": h["low"] / total_h * 100.0,
             "mid_pct": h["mid"] / total_h * 100.0,
@@ -901,6 +907,8 @@ def main():
         ("SCID", lambda r: r["scid"], False, True, None),
         ("Cap", lambda r: m(r["cap_sat"]), False, False, "cap_sat"),
         ("Inb", lambda r: m(r["inbound_sat"]), False, False, "inbound_sat"),
+        ("PeerPpm", lambda r: "?" if r["peer_ppm"] is None
+         else f"{r['peer_ppm']}", False, False, None),
         ("Change", change, False, False, None),
         ("Days", lambda r: f"{r['days']:.0f}", False, False, "days"),
         ("%Low", lambda r: f"{r['low_pct']:.0f}", False, False, None),
@@ -992,6 +1000,10 @@ def main():
          ("Cap", "capacity, M sat", False),
          ("Inb", "the peer's side now, M sat: the inbound liquidity a "
           "close gives up and a splice keeps", False),
+         ("PeerPpm", "the peer's fee rate toward us, ppm, from its channel "
+          "update: what pulling liquidity in through this channel costs, "
+          "so what moving Inb to a replacement channel would pay; "
+          "? = no update seen", False),
          ("Change", "proposed splice, M sat; in parentheses when under 1M "
           "sat would remain, so consider closing instead "
           "(clboss-forwarding-stats --days 90 --sort tral)", False),
