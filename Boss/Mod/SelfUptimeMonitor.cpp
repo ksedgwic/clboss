@@ -1,6 +1,7 @@
 #include"Boss/Mod/SelfUptimeMonitor.hpp"
 #include"Boss/Msg/DbResource.hpp"
 #include"Boss/Msg/InternetOnline.hpp"
+#include"Boss/Msg/ListpeersAnalyzedResult.hpp"
 #include"Boss/Msg/ProvideStatus.hpp"
 #include"Boss/Msg/RequestSelfUptime.hpp"
 #include"Boss/Msg/ResponseSelfUptime.hpp"
@@ -46,9 +47,22 @@ private:
 	Sqlite3::Db db;
 
 	bool online;
+	/* Whether the 10-minute listpeers poll has reported at
+	 * least once since we started.  Until then we do not know
+	 * whether our peers are reachable and write no uptime row
+	 * (#346).  */
+	bool peers_polled;
+	/* From the last poll: we have channeled peers and no
+	 * connection of any kind, our own outage (lightningd
+	 * --offline, a Tor or firewall failure) even when the
+	 * internet probe reads online.  Such time does not count as
+	 * uptime (#346).  */
+	bool all_peers_disconnected;
 
 	void start() {
 		online = false;
+		peers_polled = false;
+		all_peers_disconnected = false;
 		bus.subscribe<Msg::DbResource
 			     >([this](Msg::DbResource const& m) {
 			db = m.db;
@@ -66,6 +80,16 @@ private:
 		bus.subscribe<Msg::InternetOnline
 			     >([this](Msg::InternetOnline const& m) {
 			online = m.online;
+			return Ev::lift();
+		});
+		bus.subscribe<Msg::ListpeersAnalyzedResult
+			     >([this](Msg::ListpeersAnalyzedResult const& r) {
+			/* At init the peers have not reconnected yet;
+			 * wait for the 10-minute poll.  */
+			if (r.initial)
+				return Ev::lift();
+			peers_polled = true;
+			all_peers_disconnected = r.all_peers_disconnected;
 			return Ev::lift();
 		});
 		bus.subscribe<Msg::Timer10Minutes
@@ -106,7 +130,7 @@ private:
 			return db.transact();
 		}).then([this](Sqlite3::Tx tx) {
 			auto now = Ev::now();
-			if (online) {
+			if (online && peers_polled && !all_peers_disconnected) {
 				tx.query(R"QRY(
 				INSERT OR IGNORE INTO "SelfUptimeMonitor"
 				VALUES(:time);

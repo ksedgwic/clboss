@@ -17,6 +17,7 @@
 namespace {
 
 auto const A = Ln::NodeId("020000000000000000000000000000000000000000000000000000000000000000");
+auto const B = Ln::NodeId("020000000000000000000000000000000000000000000000000000000000000001");
 
 }
 
@@ -64,18 +65,76 @@ int main() {
 	}).then([&](Statistics stats) {
 		/* A should have an entry now.  */
 		assert(stats.find(A) != stats.end());
+		assert(stats[A].connect_checks == 1);
+		assert(stats[A].connects == 1);
 
-		/* Tell the statistician that A no longer exists.  */
+		/* Every channeled peer disconnected and no other
+		 * connection: our own outage (lightningd --offline, Tor
+		 * or firewall failure), so nothing is recorded against
+		 * the peers.  */
 		return bus.raise(Boss::Msg::ListpeersAnalyzedResult{
-			{}, {}, {}, {}, false
+			{}, {A}, {}, {}, false, true
+		});
+	}).then([&]() {
+		return get_stats();
+	}).then([&](Statistics stats) {
+		/* A keeps its entry, and the blackout sample was not
+		 * recorded.  */
+		assert(stats.find(A) != stats.end());
+		assert(stats[A].connect_checks == 1);
+		assert(stats[A].connects == 1);
+
+		/* An unchanneled connection means we are reachable,
+		 * so the analyzer does not flag a blackout and A's
+		 * disconnection is A's own.  */
+		return bus.raise(Boss::Msg::ListpeersAnalyzedResult{
+			{}, {A}, {B}, {}, false, false
+		});
+	}).then([&]() {
+		return get_stats();
+	}).then([&](Statistics stats) {
+		assert(stats[A].connect_checks == 2);
+		assert(stats[A].connects == 1);
+		/* B has no channel, so no statistics.  */
+		assert(stats.find(B) == stats.end());
+
+		/* With another channeled peer connected, a
+		 * disconnection is the peer's own and is recorded.  */
+		return bus.raise(Boss::Msg::ListpeersAnalyzedResult{
+			{B}, {A}, {}, {}, false, false
+		});
+	}).then([&]() {
+		return get_stats();
+	}).then([&](Statistics stats) {
+		assert(stats[A].connect_checks == 3);
+		assert(stats[A].connects == 1);
+		assert(stats[B].connect_checks == 1);
+		assert(stats[B].connects == 1);
+
+		/* A blackout sample still drops peers that no longer
+		 * have channels: A is gone from the sample, B is
+		 * disconnected but not demerited.  */
+		return bus.raise(Boss::Msg::ListpeersAnalyzedResult{
+			{}, {B}, {}, {}, false, true
+		});
+	}).then([&]() {
+		return get_stats();
+	}).then([&](Statistics stats) {
+		assert(stats.find(A) == stats.end());
+		assert(stats[B].connect_checks == 1);
+		assert(stats[B].connects == 1);
+
+		/* Tell the statistician that B no longer exists.  */
+		return bus.raise(Boss::Msg::ListpeersAnalyzedResult{
+			{}, {}, {}, {}, false, false
 		});
 	}).then([&]() {
 
 		/* Check the statistics.  */
 		return get_stats();
 	}).then([&](Statistics stats) {
-		/* The entry of A should now be gone.  */
-		assert(stats.find(A) == stats.end());
+		/* The entry of B should now be gone.  */
+		assert(stats.find(B) == stats.end());
 
 		return Ev::lift(0);
 	});
