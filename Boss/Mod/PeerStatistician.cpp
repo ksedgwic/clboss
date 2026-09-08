@@ -179,6 +179,15 @@ private:
 			 * our peers!  */
 			if (!online)
 				return Ev::lift();
+			/* Likewise when we have channeled peers and not
+			 * one of them is connected: a total blackout is
+			 * our own outage (lightningd --offline, a Tor or
+			 * firewall failure), not every peer failing at
+			 * once, and the internet probe behind `online`
+			 * cannot see it (#346).  */
+			if (r.connected_channeled.empty()
+			 && !r.disconnected_channeled.empty())
+				return Ev::lift();
 
 			return db.transact().then([this, r](Sqlite3::Tx tx) {
 				/* We also gather all channeled peers to a

@@ -1,6 +1,7 @@
 #include"Boss/Mod/SelfUptimeMonitor.hpp"
 #include"Boss/Msg/DbResource.hpp"
 #include"Boss/Msg/InternetOnline.hpp"
+#include"Boss/Msg/ListpeersAnalyzedResult.hpp"
 #include"Boss/Msg/ProvideStatus.hpp"
 #include"Boss/Msg/RequestSelfUptime.hpp"
 #include"Boss/Msg/ResponseSelfUptime.hpp"
@@ -46,9 +47,15 @@ private:
 	Sqlite3::Db db;
 
 	bool online;
+	/* We have channeled peers and not one of them is connected:
+	 * our own outage (lightningd --offline, a Tor or firewall
+	 * failure) even when the internet probe reads online.  Such
+	 * time does not count as uptime (#346).  */
+	bool all_peers_disconnected;
 
 	void start() {
 		online = false;
+		all_peers_disconnected = false;
 		bus.subscribe<Msg::DbResource
 			     >([this](Msg::DbResource const& m) {
 			db = m.db;
@@ -66,6 +73,16 @@ private:
 		bus.subscribe<Msg::InternetOnline
 			     >([this](Msg::InternetOnline const& m) {
 			online = m.online;
+			return Ev::lift();
+		});
+		bus.subscribe<Msg::ListpeersAnalyzedResult
+			     >([this](Msg::ListpeersAnalyzedResult const& r) {
+			/* At init the peers have not reconnected yet;
+			 * keep the previous state.  */
+			if (!r.initial)
+				all_peers_disconnected =
+					r.connected_channeled.empty()
+				     && !r.disconnected_channeled.empty();
 			return Ev::lift();
 		});
 		bus.subscribe<Msg::Timer10Minutes
@@ -106,7 +123,7 @@ private:
 			return db.transact();
 		}).then([this](Sqlite3::Tx tx) {
 			auto now = Ev::now();
-			if (online) {
+			if (online && !all_peers_disconnected) {
 				tx.query(R"QRY(
 				INSERT OR IGNORE INTO "SelfUptimeMonitor"
 				VALUES(:time);
