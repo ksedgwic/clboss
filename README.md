@@ -33,10 +33,10 @@ So far CLBOSS can do the following automatically:
 * Rebalance open channels, via the external `xrebalance` plugin.
 * Set forwarding fees so that they're competitive to other nodes
 
-You can read more information about CLBOSS here:
-https://zmnscpxj.github.io/clboss/index.html
-As of this release, this page is a work in progress, stay tuned
-for updates!
+Dated writeups on releases, operation, and design are in
+[`docs/posts/`](docs/posts/README.md).  ZmnSCPxj's 2022 design
+series on the original CLBOSS is at
+https://zmnscpxj.github.io/clboss/index.html.
 
 ## Project ownership and maintenance
 
