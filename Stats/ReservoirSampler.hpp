@@ -60,7 +60,11 @@ public:
 		auto distw = std::uniform_real_distribution<Weight>(
 			0, 1
 		);
-		auto p = w / wsum;
+		/* Chao's algorithm requires the reservoir size factor:
+		* p = m * w_i / wsum.  Without m, late arrivals are
+		* under-sampled by a factor of m and inclusion is
+		* dominated by arrival order.  */
+		auto p = (w * max_selected) / wsum;
 		auto j = distw(r);
 		if (j <= p) {
 			/* Randomly replace an existing selection.  */

@@ -526,7 +526,11 @@ private:
 			auto dist = std::uniform_real_distribution<double>(
 				0, 1
 			);
-			auto p = double(entry.peers.size()) / wsum;
+			/* Chao: p = m * w / wsum (see ReservoirSampler).  */
+			auto p = ( double(entry.peers.size())
+		     * selected.size()
+		     ) / wsum
+			     ;
 			auto j = dist(Boss::random_engine);
 			if (j <= p) {
 				/* Randomly replace an existing selection.  */
