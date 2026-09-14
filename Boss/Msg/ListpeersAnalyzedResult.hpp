@@ -25,6 +25,12 @@ struct ListpeersAnalyzedResult {
 	/* Whether this `listpeers` was performed during `init`
 	 * or on the 10-minute timer.  */
 	bool initial;
+	/* We have channeled peers and no connection of any kind,
+	 * channeled or not.  That is our own outage (lightningd
+	 * --offline, a Tor or firewall failure), not every peer
+	 * failing at once, and the internet probe cannot see it
+	 * (#346).  Filled by `Boss::Mod::ListpeersAnalyzer`.  */
+	bool all_peers_disconnected;
 };
 
 }}

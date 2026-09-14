@@ -626,6 +626,7 @@ TESTS = \
 	tests/boss/test_getmanifest \
 	tests/boss/test_getroutesfirsthop \
 	tests/boss/test_invoicepayer_decodepay \
+	tests/boss/test_listpeersanalyzer \
 	tests/boss/test_initiator_clnversion \
 	tests/boss/test_initiator_listconfigs_proxy \
 	tests/boss/test_needsconnectsolicitor \
@@ -635,6 +636,7 @@ TESTS = \
 	tests/boss/test_recentearnings \
 	tests/boss/test_earningshistory \
 	tests/boss/test_xrebalancecensus \
+	tests/boss/test_selfuptimemonitor \
 	tests/boss/test_setconfighandler \
 	tests/boss/test_xrebalancepartmonitor \
 	tests/boss/test_xrebalancer \

@@ -139,9 +139,14 @@ private:
 	Sqlite3::Db db;
 
 	bool online;
+	/* The last non-initial sample had channeled peers and no
+	 * connection at all (#346).  Kept only to log the
+	 * transitions.  */
+	bool all_peers_disconnected;
 
 	void start() {
 		online = false;
+		all_peers_disconnected = false;
 		bus.subscribe<Msg::InternetOnline
 			     >([this](Msg::InternetOnline const& m) {
 			online = m.online;
@@ -180,7 +185,9 @@ private:
 			if (!online)
 				return Ev::lift();
 
-			return db.transact().then([this, r](Sqlite3::Tx tx) {
+			return note_blackout(r).then([this]() {
+				return db.transact();
+			}).then([this, r](Sqlite3::Tx tx) {
 				/* We also gather all channeled peers to a
 				 * new set.  */
 				auto all_channeled = std::set<Ln::NodeId>();
@@ -190,7 +197,17 @@ private:
 				}
 				for (auto const& n : r.disconnected_channeled
 				    ) {
-					add_connection(tx, n, false);
+					/* With no connection of any kind
+					 * the outage is ours (lightningd
+					 * --offline, a Tor or firewall
+					 * failure), which the internet
+					 * probe behind `online` cannot
+					 * see: record nothing against the
+					 * peer, but keep it in the
+					 * channeled set so the cleanup
+					 * below stays current (#346).  */
+					if (!r.all_peers_disconnected)
+						add_connection(tx, n, false);
 					all_channeled.insert(n);
 				}
 
@@ -535,6 +552,27 @@ private:
 		});
 	}
 
+	/* Log once when a blackout starts and once when it ends.  */
+	Ev::Io<void> note_blackout(Msg::ListpeersAnalyzedResult const& r) {
+		if (r.all_peers_disconnected == all_peers_disconnected)
+			return Ev::lift();
+		all_peers_disconnected = r.all_peers_disconnected;
+		if (all_peers_disconnected)
+			return Boss::log( bus, Info
+					, "PeerStatistician: all %zu channeled "
+					  "peers disconnected: our own outage, "
+					  "not counted against them."
+					, r.disconnected_channeled.size()
+					);
+		return Boss::log( bus, Info
+				, "PeerStatistician: %zu of %zu channeled "
+				  "peers connected again, counting "
+				  "connection samples again."
+				, r.connected_channeled.size()
+				, r.connected_channeled.size()
+				+ r.disconnected_channeled.size()
+				);
+	}
 	void add_connection( Sqlite3::Tx& tx
 			   , Ln::NodeId const& id
 			   , bool connected
