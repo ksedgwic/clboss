@@ -94,7 +94,7 @@ void ChannelCreateDestroyMonitor::start() {
 				   , channeled.end()
 				   , curr_channeled.begin()
 				   , curr_channeled.end()
-				   , std::back_inserter(creations)
+				   , std::back_inserter(destructions)
 				   );
 
 		/* Combine.  */
@@ -194,13 +194,22 @@ void ChannelCreateDestroyMonitor::start() {
 					, err.what()
 					);
 		}
-		/* Only continue if we are leaving the CHANNELD_NORMAL
-		 * state, or leaving from CHANNELD_AWAITING_LOCKIN to
-		 * any state that is not CHANNELD_NORMAL.
+		/* A channel is live in CHANNELD_NORMAL and in
+		 * CHANNELD_AWAITING_SPLICE: a splice keeps the channel
+		 * open and forwarding until the new funding locks in,
+		 * and it returns to CHANNELD_NORMAL with a new short
+		 * channel id.  Only continue if we are leaving the live
+		 * states for some other state, or leaving
+		 * CHANNELD_AWAITING_LOCKIN for a state that is not live.
 		 */
-		if ( !( old_state == "CHANNELD_NORMAL"
+		auto live = [](std::string const& state) {
+			return state == "CHANNELD_NORMAL"
+			    || state == "CHANNELD_AWAITING_SPLICE"
+			     ;
+		};
+		if ( !( ( live(old_state) && !live(new_state) )
 		     || ( old_state == "CHANNELD_AWAITING_LOCKIN"
-		       && new_state != "CHANNELD_NORMAL"
+		       && !live(new_state)
 			)
 		      ))
 			return Ev::lift();
