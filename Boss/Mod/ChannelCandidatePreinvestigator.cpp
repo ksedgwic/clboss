@@ -127,11 +127,16 @@ private:
 		}
 	};
 
-	std::map<std::string, std::shared_ptr<Case>> cases;
+	/* Several finders can concurrently preinvestigate batches
+	 * that share a proposal node (e.g. multiple patrons of the
+	 * same popular hub); queue the concurrent Cases per node
+	 * instead of overwriting, so every Case survives to receive
+	 * its own ResponseConnect (clboss#11).  */
+	std::map<std::string, std::queue<std::shared_ptr<Case>>> cases;
 	void add_case( std::string const& node
 		     , std::shared_ptr<Case> c
 		     ) {
-		cases[node] = std::move(c);
+		cases[node].push(std::move(c));
 	}
 
 	Ev::Io<void> on_preinv(Msg::PreinvestigateChannelCandidates const& p) {
@@ -144,9 +149,18 @@ private:
 		if (it == cases.end())
 			return Ev::lift();
 
-		/* Remove it from cases.  */
-		auto c = std::move(it->second);
-		cases.erase(it);
+		auto& queued = it->second;
+		if (queued.empty())
+			return Ev::lift();
+
+		/* Remove it from cases, erasing the entry before
+		 * executing so that a Case re-registering the same
+		 * node from within the execution lands in a fresh
+		 * entry.  */
+		auto c = std::move(queued.front());
+		queued.pop();
+		if (queued.empty())
+			cases.erase(it);
 
 		/* Execute it.  */
 		return c->on_connect_response(r.success).then([c]() {
