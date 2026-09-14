@@ -638,6 +638,7 @@ TESTS = \
 	tests/boss/test_setconfighandler \
 	tests/boss/test_xrebalancepartmonitor \
 	tests/boss/test_xrebalancer \
+	tests/boss/test_xrebalancer_grant \
 	tests/boss/test_xrebalancer_plugin \
 	tests/boss/test_peerjudge_algo \
 	tests/boss/test_peerjudge_datagatherer \
