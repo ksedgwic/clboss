@@ -76,7 +76,9 @@ private:
 						auto state = std::string(
 							c["state"]
 						);
-						if (state != "CHANNELD_NORMAL")
+						if ( state != "CHANNELD_NORMAL"
+						  && state != "CHANNELD_AWAITING_SPLICE"
+						   )
 							continue;
 						total += Ln::Amount::object(
 							c["total_msat"]
