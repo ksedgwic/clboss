@@ -1,4 +1,5 @@
 #include"Boss/Mod/XRebalancer.hpp"
+#include"Boss/Mod/ChannelBalance.hpp"
 #include"Boss/Mod/Waiter.hpp"
 #include"Boss/Mod/XRebalanceCensus.hpp"
 #include"Boss/Mod/Rpc.hpp"
@@ -137,7 +138,8 @@ private:
 	std::size_t absent_cycles;      /* consecutive cycles that found it missing */
 	double last_absent_warn;        /* get_now() of the last not-loaded Warn */
 
-	/* One row per CHANNELD_NORMAL channel, built live from
+	/* One row per open channel (CHANNELD_NORMAL, or
+	 * CHANNELD_AWAITING_SPLICE while a splice locks in), built live from
 	 * listpeerchannels each cycle (balances and online status must be
 	 * current, not a cached snapshot).  NetPpm is joined per-node from
 	 * the EarningsTracker table.  Amounts in sat (the view works in sat).
@@ -387,20 +389,25 @@ private:
 				return out;
 			for (auto i = std::size_t(0); i < channels.size(); ++i) {
 				auto c = channels[i];
-				if (!c.has("state")
-				 || std::string(c["state"]) != "CHANNELD_NORMAL")
+				if (!c.has("state"))
+					continue;
+				auto state = std::string(c["state"]);
+				if ( state != "CHANNELD_NORMAL"
+				  && state != "CHANNELD_AWAITING_SPLICE"
+				   )
 					continue;
 				if (!c.has("short_channel_id")
 				 || !c.has("peer_id")
 				 || !c.has("to_us_msat")
 				 || !c.has("total_msat"))
 					continue;
+				/* A pending splice-out is deducted: see
+				 * ChannelBalance.  */
+				auto bal = channel_balance(c);
 				auto cap = std::int64_t(
-				    Ln::Amount::object(c["total_msat"])
-				    .to_msat() / 1000);
+				    bal.total.to_msat() / 1000);
 				auto loc = std::int64_t(
-				    Ln::Amount::object(c["to_us_msat"])
-				    .to_msat() / 1000);
+				    bal.to_us.to_msat() / 1000);
 				if (cap <= 0)
 					continue;
 				auto online = c.has("peer_connected")

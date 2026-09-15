@@ -1,4 +1,5 @@
 #include"Boss/Mod/NodeBalanceSwapper.hpp"
+#include"Boss/Mod/ChannelBalance.hpp"
 #include"Boss/ModG/Swapper.hpp"
 #include"Boss/Msg/ListpeersResult.hpp"
 #include"Boss/Msg/OnchainFee.hpp"
@@ -54,8 +55,11 @@ private:
 					for (auto chan : channels) {
 						/* Skip non-active channels.
 						 */
-						if ( std::string(chan["state"])
-						  != "CHANNELD_NORMAL"
+						auto state = std::string(
+							chan["state"]
+						);
+						if ( state != "CHANNELD_NORMAL"
+						  && state != "CHANNELD_AWAITING_SPLICE"
 						   )
 							continue;
 						auto recv = Ln::Amount();
@@ -135,8 +139,10 @@ private:
 				   , Ln::Amount& recv
 				   , Jsmn::Object const& c
 				   ) {
-		auto to_us = Ln::Amount::object(c["to_us_msat"]);
-		auto total = Ln::Amount::object(c["total_msat"]);
+		/* A pending splice-out is deducted: see ChannelBalance.  */
+		auto bal = channel_balance(c);
+		auto to_us = bal.to_us;
+		auto total = bal.total;
 		auto their = total - to_us;
 		for (auto h : c["htlcs"])
 			their -= Ln::Amount::object(h["amount_msat"]);

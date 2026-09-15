@@ -89,6 +89,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/ChannelFeeManager.hpp \
 	Boss/Mod/CommandReceiver.cpp \
 	Boss/Mod/CommandReceiver.hpp \
+	Boss/Mod/ChannelBalance.cpp \
+	Boss/Mod/ChannelBalance.hpp \
 	Boss/Mod/ChannelCandidateInvestigator/EvictionPolicy.cpp \
 	Boss/Mod/ChannelCandidateInvestigator/EvictionPolicy.hpp \
 	Boss/Mod/ChannelCandidateInvestigator/Gumshoe.cpp \
@@ -614,6 +616,7 @@ TESTS = \
 	tests/boss/test_amountsettingshandler \
 	tests/boss/test_askrene_layer \
 	tests/boss/test_availablerpccommandsannouncer \
+	tests/boss/test_channelbalance \
 	tests/boss/test_channel_create_destroy_monitor_missing_old_state \
 	tests/boss/test_channelcreationdecider \
 	tests/boss/test_channelcreator_planner \
