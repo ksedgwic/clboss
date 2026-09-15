@@ -219,17 +219,6 @@ libclboss_la_SOURCES = \
 	Boss/Mod/PeerComplaintsDesk/Unmanager.hpp \
 	Boss/Mod/PeerFromScidMapper.cpp \
 	Boss/Mod/PeerFromScidMapper.hpp \
-	Boss/Mod/PeerJudge/AgeTracker.cpp \
-	Boss/Mod/PeerJudge/AgeTracker.hpp \
-	Boss/Mod/PeerJudge/Algo.cpp \
-	Boss/Mod/PeerJudge/Algo.hpp \
-	Boss/Mod/PeerJudge/DataGatherer.cpp \
-	Boss/Mod/PeerJudge/DataGatherer.hpp \
-	Boss/Mod/PeerJudge/Executioner.cpp \
-	Boss/Mod/PeerJudge/Executioner.hpp \
-	Boss/Mod/PeerJudge/Info.hpp \
-	Boss/Mod/PeerJudge/Unmanager.cpp \
-	Boss/Mod/PeerJudge/Unmanager.hpp \
 	Boss/Mod/PeerMetrician.cpp \
 	Boss/Mod/PeerMetrician.hpp \
 	Boss/Mod/PeerStatistician.cpp \
@@ -637,7 +626,6 @@ TESTS = \
 	tests/boss/test_offline_mode \
 	tests/boss/test_onchainfeemonitor_samples_init \
 	tests/boss/test_peerfromscidmapper \
-	tests/boss/test_peerjudge_agetracker \
 	tests/boss/test_recentearnings \
 	tests/boss/test_earningshistory \
 	tests/boss/test_xrebalancecensus \
@@ -647,8 +635,6 @@ TESTS = \
 	tests/boss/test_xrebalancer \
 	tests/boss/test_xrebalancer_grant \
 	tests/boss/test_xrebalancer_plugin \
-	tests/boss/test_peerjudge_algo \
-	tests/boss/test_peerjudge_datagatherer \
 	tests/boss/test_peerstatistician \
 	tests/boss/test_peercomplaintsdesk_main \
 	tests/boss/test_peertrackrecord \

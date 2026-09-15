@@ -57,6 +57,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   too, and no longer reads past the end of the shorter `ONCHAIN`
   (#332).
 
+### Removed
+
+- The `PeerJudge` modules (`Boss/Mod/PeerJudge/`), an earnings-based
+  channel closer that was compiled in but never instantiated.  Its
+  close path issued a unilateral close after 180 seconds regardless
+  of whether the peer was connected, the pattern 0.16.3 removed from
+  the complaints desk (#324), so wiring it up as it stood would have
+  force-closed offline peers as a matter of course.  Nothing in the
+  running plugin changes; the code stays in history should an
+  earnings-based closer be wanted again (#336).
+
 ## [0.17.0] - 2026-09-11: "Reason to Rebalance"
 
 ### Upgrading from 0.16.x
