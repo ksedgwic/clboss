@@ -18,7 +18,7 @@ private:
 	std::queue<std::function<void(Sqlite3::Tx)>> blocked;
 
 public:
-	Impl(std::string const& filename) {
+	Impl(std::string const& filename, unsigned int busy_timeout_ms) {
 		in_transaction = false;
 		auto res = sqlite3_open(filename.c_str(), &connection);
 		if (res != SQLITE_OK) {
@@ -41,6 +41,16 @@ public:
 			connection = nullptr;
 			throw Util::BacktraceException<std::runtime_error>(
 				std::string("Sqlite3::Db: sqlite3_extended_result_codes: ") +
+				msg
+			);
+		}
+		res = sqlite3_busy_timeout(connection, int(busy_timeout_ms));
+		if (res != SQLITE_OK) {
+			auto msg = std::string(sqlite3_errmsg(connection));
+			sqlite3_close_v2(connection);
+			connection = nullptr;
+			throw Util::BacktraceException<std::runtime_error>(
+				std::string("Sqlite3::Db: sqlite3_busy_timeout: ") +
 				msg
 			);
 		}
@@ -106,6 +116,7 @@ Ev::Io<Sqlite3::Tx> Db::transact() {
 }
 
 Db::Db( std::string const& filename
-      ) : pimpl(std::make_shared<Impl>(filename)) { }
+      , unsigned int busy_timeout_ms
+      ) : pimpl(std::make_shared<Impl>(filename, busy_timeout_ms)) { }
 
 }
