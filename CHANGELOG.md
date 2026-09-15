@@ -34,6 +34,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   evicted by later arrivals.  The popularity finder now shares
   `Stats::ReservoirSampler` with the other finders instead of a
   drifted inline copy.
+- Backing up a live `data.clboss` with `sqlite3 .backup` or `.dump`
+  could kill CLBOSS, and `lightningd` with it when CLBOSS is an
+  important plugin: a write that found the file read-locked failed
+  at commit, and that failure was thrown from a destructor, which
+  ends the process.  The connection now waits up to ten seconds for
+  a lock, as `lightningd` does for its own database; a commit that
+  still fails is reported to the caller as an error, and the sendpay
+  hook path logs it and carries on.  The README gains a backup note
+  (#335).
 
 ## [0.17.0] - 2026-09-11: "Reason to Rebalance"
 

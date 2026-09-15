@@ -30,13 +30,22 @@ private:
 	void transaction_finish();
 
 public:
+	/* How long a statement waits for a lock held by another
+	 * process (a backup tool reading the file) before it fails.
+	 * lightningd waits 60 seconds on its own database; we wait
+	 * less because the plugin's event loop stops while sqlite
+	 * waits, and lightningd's hooked RPC commands with it.
+	 */
+	static constexpr unsigned int default_busy_timeout_ms = 10000;
 	/* Opens a database, creating it
 	 * if absent.
 	 * As typical for SQLITE3, ":memory:" creates an in-memory
 	 * db, "" creates a new temporary db.
 	 */
 	explicit
-	Db(std::string const& filename);
+	Db( std::string const& filename
+	  , unsigned int busy_timeout_ms = default_busy_timeout_ms
+	  );
 
 	/* Creates an empty/invalid db object.  */
 	Db() =default;
