@@ -172,6 +172,17 @@ You can then add a `plugin=/path/to/clboss` or
 `important-plugin=/path/to/clboss` setting to your Core Lightning
 configuration file.
 
+### Backing up the CLBOSS database
+
+CLBOSS keeps its state in `data.clboss` in the Core Lightning
+network directory, next to `lightningd.sqlite3`.  Back it up by
+copying the file (`cp`, or a filesystem snapshot); for a copy that
+is certain to be consistent, stop CLBOSS first (`lightning-cli
+plugin stop clboss`, then `plugin start`).  Do not run `sqlite3
+.backup` or `.dump` against the live file: both hold a read lock
+for the whole copy, and a CLBOSS write that waits more than ten
+seconds for it fails and is logged as an error.
+
 ### The xrebalance plugin
 
 Rebalancing runs through the external `xrebalance` plugin

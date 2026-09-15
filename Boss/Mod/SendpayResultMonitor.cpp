@@ -158,6 +158,18 @@ private:
 						);
 			}
 			return Ev::lift();
+		}).catching<std::runtime_error>([this
+					       ](std::runtime_error const& e) {
+			/* A database error, typically the file locked
+			 * by another process reading it (a backup) for
+			 * longer than the busy timeout.  The sendpay goes
+			 * unrecorded and its result will be ignored; the
+			 * plugin carries on (#335).  */
+			return Boss::log( bus, Error
+					, "SendpayResultMonitor: sendpay not "
+					  "recorded, database error: %s"
+					, e.what()
+					);
 		});
 	}
 	Ev::Io<void>
