@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.1] - Unreleased
+
+### Fixed
+
+- The channel creator could open a second channel to a peer we
+  already had one with.  Three of the four candidate finders do not
+  check for an existing channel, the candidate table is swept of
+  channeled peers only on the 10-minute listpeers poll, and the
+  creator runs about every two minutes without a check of its own,
+  so a proposal naming an existing peer could reach the planner in
+  the window between sweeps.  The creator now drops such proposals
+  against a fresh `listpeerchannels` before any funds are planned.
+  The channel-state test the sweep relies on also counted only
+  `OPENINGD` and `CHANNELD` states, so a dual-funded open in
+  progress looked unchanneled; it now counts `DUALOPEND` states
+  too, and no longer reads past the end of the shorter `ONCHAIN`
+  (#332).
+
 ## [0.17.0] - 2026-09-11: "Reason to Rebalance"
 
 ### Upgrading from 0.16.x

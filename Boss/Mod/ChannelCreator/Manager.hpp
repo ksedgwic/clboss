@@ -62,6 +62,10 @@ private:
 	/* Needed by reprioritizer.  */
 	Ev::Io<std::unique_ptr<Net::IPAddrOrOnion>> get_node_addr(Ln::NodeId);
 	Ev::Io<std::vector<Ln::NodeId>> get_peers();
+	/* Drop proposals for nodes we already have a channel with,
+	 * from a fresh listpeerchannels.  */
+	Ev::Io<std::vector<std::pair<Ln::NodeId, Ln::NodeId>>>
+	drop_channeled(std::vector<std::pair<Ln::NodeId, Ln::NodeId>>);
 	/* Perform reprioritization and log it.  */
 	Ev::Io<std::vector<std::pair<Ln::NodeId, Ln::NodeId>>>
 	reprioritize(std::vector<std::pair<Ln::NodeId, Ln::NodeId>>);
