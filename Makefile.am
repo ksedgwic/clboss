@@ -135,6 +135,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/ChannelFinderByPopularity.hpp \
 	Boss/Mod/ChannelFundsComputer.cpp \
 	Boss/Mod/ChannelFundsComputer.hpp \
+	Boss/Mod/ChanneledPeers.cpp \
+	Boss/Mod/ChanneledPeers.hpp \
 	Boss/Mod/ComplainerByLowConnectRate.cpp \
 	Boss/Mod/ComplainerByLowConnectRate.hpp \
 	Boss/Mod/ComplainerByLowSuccessPerDay.cpp \
@@ -622,6 +624,7 @@ TESTS = \
 	tests/boss/test_channelcreator_planner \
 	tests/boss/test_channelcreator_rearrangerbysize \
 	tests/boss/test_channelcreator_reprioritizer \
+	tests/boss/test_channeledpeers \
 	tests/boss/test_earningstracker \
 	tests/boss/test_feemon_history \
 	tests/boss/test_feemodderbypricetheory \

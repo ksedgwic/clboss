@@ -1,3 +1,4 @@
+#include"Boss/Mod/ChanneledPeers.hpp"
 #include"Boss/Mod/ListpeersAnalyzer.hpp"
 #include"Boss/Msg/ListpeersAnalyzedResult.hpp"
 #include"Boss/Msg/ListpeersResult.hpp"
@@ -29,14 +30,7 @@ ListpeersAnalyzer::ListpeersAnalyzer(S::Bus& bus) {
 				auto state_j = chan["state"];
 				if (!state_j.is_string())
 					continue;
-				auto state = std::string(state_j);
-				auto prefix = std::string( state.begin()
-							 , state.begin() + 8
-							 );
-
-				if ( prefix == "OPENINGD"
-				  || prefix == "CHANNELD"
-				   ) {
+				if (channeled_state(std::string(state_j))) {
 					has_chan = true;
 					break;
 				}
