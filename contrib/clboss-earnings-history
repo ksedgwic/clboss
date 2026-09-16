@@ -15,7 +15,14 @@ from calendar import monthrange
 
 from tabulate import tabulate
 
-from clboss.alias_cache import is_nodeid, lookup_alias, lookup_nodeid_by_alias
+from clboss.alias_cache import (
+    is_nodeid,
+    is_scid,
+    lookup_alias,
+    lookup_nodeid_by_alias,
+    lookup_nodeid_by_scid,
+    lookup_recent_scid,
+)
 
 
 def run_lightning_cli_command(lightning_dir, network_option, command, *args):
@@ -95,9 +102,9 @@ def main():
     parser.add_argument("--network", help="Set the network explicitly")
 
     parser.add_argument(
-        "nodeid_or_alias",
+        "peer",
         nargs="?",
-        help="The node ID (or alias) to pass to clboss-earnings-history (optional)",
+        help="Node ID, alias, or short channel id of the peer (optional)",
     )
 
     parser.add_argument("--lightning-dir", help="lightning data location")
@@ -138,21 +145,30 @@ def main():
 
     alias = None
     nodeid = None
-    if args.nodeid_or_alias:
-        # Determine if input is a nodeid or alias
-        if is_nodeid(args.nodeid_or_alias):  # Check if it's a node ID
-            nodeid = args.nodeid_or_alias
-            alias = lookup_alias(
-                run_lightning_cli_command, lightning_dir, network_option, nodeid
-            )
-        else:  # It's an alias, so look it up
-            alias = args.nodeid_or_alias
-            nodeid = lookup_nodeid_by_alias(
-                run_lightning_cli_command, lightning_dir, network_option, alias
+    scid = None
+    if args.peer:
+        if is_nodeid(args.peer):
+            nodeid = args.peer
+        elif is_scid(args.peer):
+            nodeid = lookup_nodeid_by_scid(
+                run_lightning_cli_command, lightning_dir, network_option, args.peer
             )
             if not nodeid:
-                print(f"Error: Alias '{alias}' not found.")
+                print(f"Error: no channel '{args.peer}', open or closed.")
                 return
+        else:
+            nodeid = lookup_nodeid_by_alias(
+                run_lightning_cli_command, lightning_dir, network_option, args.peer
+            )
+            if not nodeid:
+                print(f"Error: Alias '{args.peer}' not found.")
+                return
+        alias = lookup_alias(
+            run_lightning_cli_command, lightning_dir, network_option, nodeid
+        )
+        scid = lookup_recent_scid(
+            run_lightning_cli_command, lightning_dir, network_option, nodeid
+        )
 
     earnings_data = run_lightning_cli_command(
         lightning_dir, network_option, "clboss-earnings-history", nodeid or ""
@@ -224,7 +240,7 @@ def main():
         total_out_expenditures += out_expenditures
         total_out_rebalanced += out_rebalanced
 
-        if args.nodeid_or_alias:
+        if args.peer:
             net_earnings = (in_earnings + out_earnings) - (
                 in_expenditures + out_expenditures
             )
@@ -287,7 +303,7 @@ def main():
             else 0
         )
 
-        if args.nodeid_or_alias:
+        if args.peer:
             net_earnings = (in_earnings + out_earnings) - (
                 in_expenditures + out_expenditures
             )
@@ -299,7 +315,7 @@ def main():
             estimated_last = True
             date_str = f"{date_str}*"
 
-        if args.nodeid_or_alias:
+        if args.peer:
             rows.append(
                 [
                     date_str,
@@ -363,7 +379,7 @@ def main():
             )
 
     # Add a header (separator) row
-    if args.nodeid_or_alias:
+    if args.peer:
         # Show both the incoming and outgoing statistics
         headers = [
             "Date",
@@ -398,7 +414,7 @@ def main():
     rows.append(["-" * len(header) for header in headers])
 
     # Append the total row
-    if args.nodeid_or_alias:
+    if args.peer:
         # Show both the incoming and outgoing statistics
         rows.append(
             [
@@ -469,8 +485,12 @@ def main():
             ]
         )
 
-    if args.nodeid_or_alias:
-        print(f"Showing history for {nodeid} aka {alias}")
+    if args.peer:
+        # lookup_alias falls back to the scid, then the node id; name
+        # the alias only when the peer has one.
+        label = f" aka {alias}" if alias not in (nodeid, scid) else ""
+        channel = f", newest channel {scid}" if scid else ""
+        print(f"Showing history for {nodeid}{label}{channel}")
 
     print(
         tabulate(
@@ -508,7 +528,7 @@ def main():
                 if pkey is None:
                     continue
                 data = bucket_data[key]
-                if args.nodeid_or_alias:
+                if args.peer:
                     net = (data["in_earnings"] + data["out_earnings"]) - (
                         data["in_expenditures"] + data["out_expenditures"]
                     )
