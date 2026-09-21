@@ -185,10 +185,12 @@ def safe_ppm(numerator_msat, denominator_msat):
 def adjusted_net_ppm(net_msat, fwd_msat, grant_msat, grant, gain):
     """The AdjPpm the driver joins for one side: strict (net / fwd) when
     grant is 0, else the peer credited an assumed prior of grant ppm on
-    grant_msat, the grant's notional volume (cap * grant-weight / 100)
-    -- (net + w*grant/1e6) / (fwd + w) -- and gain scales the result
-    either way.  Mirrors XRebalancer's joined()."""
-    g_vol = grant_msat if grant > 0 else 0
+    grant_msat, the grant's notional volume (cap * grant-weight / 100),
+    less what the side has really forwarded: g = max(0, w - fwd),
+    (net + g*grant/1e6) / (fwd + g).  A fresh side reads grant, at
+    fwd = w/2 half grant and half measured, from fwd = w its own rate.
+    gain scales the result either way.  Mirrors XRebalancer's joined()."""
+    g_vol = max(0.0, grant_msat - fwd_msat) if grant > 0 else 0
     denom = fwd_msat + g_vol
     if denom <= 0:
         return None
@@ -498,15 +500,17 @@ def main():
         "--grant", type=float, default=None, metavar="PPM",
         help="Assumed prior earnings rate (ppm) credited to every peer on "
              "both sides, as if it had already earned that rate on "
-             "--grant-weight percent of its capacity, w: "
-             "(net + w*grant/1e6) / (fwd + w).  Peers with no record read "
+             "--grant-weight percent of its capacity, w, less what the "
+             "side has really forwarded: g = max(0, w - fwd), "
+             "(net + g*grant/1e6) / (fwd + g).  Peers with no record read "
              "exactly PPM.  Default: live clboss-xrebalance-grant, else 0 "
              "(record-only)."
     )
     parser.add_argument(
         "--grant-weight", type=float, default=None, metavar="PCT",
         help="Volume the grant is assumed earned on, as a percent of the "
-             "peer's capacity, both sides.  Default: live "
+             "peer's capacity, both sides; a side that has forwarded this "
+             "much reads its own rate alone.  Default: live "
              "clboss-xrebalance-grant-weight, else 25."
     )
     parser.add_argument(
