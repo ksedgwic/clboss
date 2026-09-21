@@ -167,7 +167,7 @@ earned what a transfer costs.
 
       w = capacity * grant-weight / 100
       g = max(0, w - forwarded)
-      adjusted rate = (net + g * grant / 1e6) / (forwarded + g)
+      adjusted rate = (net + g * grant / 1e6) / (forwarded + g) * gain
 
   A side with no record reads exactly `grant`.  Real volume
   replaces the credit one for one: at half of `w` forwarded the
@@ -190,8 +190,8 @@ raw and `InAdjPpm` / `OutAdjPpm` adjusted, so the effect of the two
 settings is visible per peer.  A node with no record cannot
 rebalance under the strict rule at all, since no side has earned
 anything; `grant` is what admits it, and the credit is gone on its
-own once a side has forwarded `grant-weight` percent of the
-channel.  One production node runs `grant` 100 and `gain` 1.2 on a
+own once a side has forwarded `grant-weight` percent of the peer's
+capacity.  One production node runs `grant` 100 and `gain` 1.2 on a
 mature record.
 
 What to watch:
