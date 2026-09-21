@@ -41,13 +41,16 @@
 
 /* Checks the weight of clboss-xrebalance-grant: the credit is
  * assumed earned on clboss-xrebalance-grant-weight percent of the
- * peer's capacity, both sides.  Both peers have a 1_000_000_000
- * msat channel and 1_000_000_000 msat forwarded on their candidate
- * side.  With grant 100 and grant-weight 30 the prior weighs
- * 300_000_000 msat: A out, (1_000_000 + 30_000) / 1.3e9 = 792.3
- * ppm; B in, (500_000 + 30_000) / 1.3e9 = 407.7 ppm; the demand
- * cycle prices at 1200 ppm.  The default weight 25 would give
- * 820 + 420 = 1240; a whole capacity-turn, 550 + 300 = 850.  */
+ * peer's capacity, both sides, and each side's real forwarded
+ * volume replaces it one for one.  Both peers have a 1_000_000_000
+ * msat channel; with grant 100 and grant-weight 30 the credit
+ * starts at 300_000_000 msat.  A out has forwarded 150_000_000 at
+ * 1000 ppm, half the weight, so 150_000_000 of credit is left:
+ * (150_000 + 15_000) / 3e8 = 550 ppm, half grant and half record.
+ * B in has forwarded 1_000_000_000 at 500 ppm, past the weight, so
+ * no credit is left and it reads its own 500 ppm.  The demand cycle
+ * prices at 1050 ppm.  A credit that did not fade would give
+ * 400 + 407.7 = 807.7.  */
 
 namespace {
 
@@ -233,8 +236,8 @@ int main() {
 				.bind(":out_f", out_f)
 				.execute();
 		};
-		insert(node_a, 0, 0, 1000000, 1000000000); /* out 1000ppm */
-		insert(node_b, 500000, 1000000000, 0, 0);  /* in 500ppm */
+		insert(node_a, 0, 0, 150000, 150000000);  /* out 1000ppm, f = w/2 */
+		insert(node_b, 500000, 1000000000, 0, 0); /* in 500ppm, f > w */
 		tx.commit();
 
 		/* Pause the Poisson loop so only the demand trigger
@@ -273,7 +276,7 @@ int main() {
 
 		/* The fee ceiling is the sum of the two adjusted rates.  */
 		assert(log_lines.find(
-			"maxfee=1200 ppm (target 792.3 + min offered 407.7)")
+			"maxfee=1050 ppm (target 550.0 + min offered 500.0)")
 			!= std::string::npos);
 
 		return bus.raise(Boss::Shutdown{});

@@ -72,9 +72,12 @@ auto constexpr default_maxparts = double(80.0);
 
 /* Strictness benders, both neutral by default.  grant credits every
  * channeled peer an assumed prior of grant ppm on grant_weight
- * percent of its capacity, both sides; gain multiplies the joined
- * net rate.  The result is what clboss-xrebalance-view shows as
- * InAdjPpm/OutAdjPpm, beside the raw InNetPpm/OutNetPpm.  */
+ * percent of its capacity, both sides; each side's real forwarded
+ * volume replaces the credit one for one, so a side that has
+ * forwarded grant_weight percent of capacity reads its own rate.
+ * gain multiplies the joined net rate.  The result is what
+ * clboss-xrebalance-view shows as InAdjPpm/OutAdjPpm, beside the
+ * raw InNetPpm/OutNetPpm.  */
 auto constexpr default_grant = double(0.0);
 auto constexpr default_grant_weight = double(25.0);
 auto constexpr default_gain = double(1.0);
@@ -226,14 +229,17 @@ private:
 				"grant-weight percent of its capacity.  Admits "
 				"peers with no track record at exactly this "
 				"rate; expenditures spend the credit down and "
-				"real volume dilutes it toward the measured "
-				"rate.  0 = record-only (default).")
+				"real forwarded volume replaces it one for one "
+				"until the side reads its measured rate alone.  "
+				"0 = record-only (default).")
 			     + manifest_option(opt_grant_weight,
 				default_grant_weight,
 				"Volume the grant is assumed earned on, as a "
 				"percent of the peer's capacity, both sides.  "
-				"Sets how much record a peer needs before its "
-				"own rate outweighs the grant.  Default 25.")
+				"A side that has forwarded this much in the "
+				"window reads its own rate alone; below it the "
+				"grant and the record blend by volume.  "
+				"Default 25.")
 			     + manifest_option(opt_gain, default_gain,
 				"Multiplier (> 0) on each side's net earnings "
 				"rate, before candidacy, floor, and maxfee "
@@ -551,17 +557,22 @@ private:
 			/* Join one side.  Strict form is (e - x) / f over
 			 * f > 0.  With grant, credit the peer as if it had
 			 * already earned grant ppm on w = cap * grant_weight
-			 * / 100: (e - x + w*grant/1e6) / (f + w) -- a fresh
-			 * peer reads exactly grant, expenditures spend the
-			 * credit down, and real volume dilutes it toward
-			 * the measured rate.  gain scales the result either
-			 * way.  */
+			 * / 100, less what it has really forwarded: g =
+			 * max(0, w - f), (e - x + g*grant/1e6) / (f + g).
+			 * A fresh side reads exactly grant, expenditures
+			 * spend the credit down, and at f = w/2 the result
+			 * is half grant, half measured; from f = w on the
+			 * credit is gone and the side reads its own rate.
+			 * gain scales the result either way.  */
 			auto joined = [this]( double e, double x, double f
 					    , double cm
 					    , bool& has, double& ppm
 					    ) {
-				auto g = grant_ppm > 0.0
-				       ? cm * grant_weight / 100.0 : 0.0;
+				auto g = 0.0;
+				if (grant_ppm > 0.0) {
+					auto w = cm * grant_weight / 100.0;
+					g = w > f ? w - f : 0.0;
+				}
 				if (!(f + g > 0.0))
 					return;
 				has = true;
@@ -709,7 +720,7 @@ private:
 		auto os = std::ostringstream();
 		if (grant_ppm > 0.0)
 			os << ", grant " << grant_ppm
-			   << " on " << grant_weight << "%";
+			   << " over " << grant_weight << "%";
 		if (gain != 1.0)
 			os << ", gain " << gain;
 		return os.str();
