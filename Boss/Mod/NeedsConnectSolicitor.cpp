@@ -1,4 +1,5 @@
 #include"Boss/Mod/NeedsConnectSolicitor.hpp"
+#include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/NeedsConnect.hpp"
 #include"Boss/Msg/ProposeConnectCandidates.hpp"
 #include"Boss/Msg/RequestConnect.hpp"
@@ -38,6 +39,8 @@ private:
 	std::queue<std::string> connects2;
 
 	bool connects_running;
+	/* lightningd runs with --offline: nothing to solicit.  */
+	bool offline = false;
 
 	Ev::Io<void> solicit() {
 		return Ev::lift().then([this]() {
@@ -171,7 +174,17 @@ private:
 	}
 
 	void start() {
+		bus.subscribe<Msg::Init>([this](Msg::Init const& init) {
+			offline = init.offline;
+			return Ev::lift();
+		});
 		bus.subscribe<Msg::NeedsConnect>([this](Msg::NeedsConnect const& _) {
+			if (offline)
+				return Boss::log( bus, Debug
+						, "NeedsConnectSolicitor: "
+						  "offline mode, not "
+						  "soliciting connections."
+						);
 			if (connects_running)
 				return Ev::lift();
 			connects_running = true;

@@ -81,6 +81,7 @@ void Manager::start() {
 	bus.subscribe<Msg::Init>([this](Msg::Init const& init) {
 		db = init.db;
 		rpc = &init.rpc;
+		offline = init.offline;
 
 		/* Initialize the database.  */
 		return db.transact().then([this](Sqlite3::Tx tx) {
@@ -211,6 +212,11 @@ void Manager::start() {
 
 	bus.subscribe<Msg::TimerRandomHourly
 		     >([this](Msg::TimerRandomHourly const& _) {
+		if (offline)
+			return Boss::log( bus, Debug
+					, "ChannelCandidateInvestigator: "
+					  "offline mode, not investigating."
+					);
 		/* Construct shared variables.  */
 		/* Number of good candidates.  */
 		auto good_candidates = std::make_shared<std::size_t>();
