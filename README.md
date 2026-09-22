@@ -543,6 +543,19 @@ Earlier versions do not record, so if you have been using CLBOSS
 before 0.11D, then historical offchain-to-onchain swaps are not
 reported.
 
+### Running `lightningd` with `--offline`
+
+`lightningd --offline` stops automatic reconnection to peers and
+refuses incoming connections, but an explicit `connect` still goes
+through.
+CLBOSS reads the flag at startup and does not connect to peers,
+test channel candidates, or open channels while it is set, so the
+node stays without peers as intended.
+With every peer disconnected, the time is not counted against the
+peers or as CLBOSS's own uptime (see `--clboss-auto-close`).
+The flag is read once, at startup; a restart without it resumes
+normal operation.
+
 ### `--clboss-min-onchain=<satoshis>`
 
 Pass this option to `lightningd` in order to specify a target

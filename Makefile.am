@@ -628,8 +628,9 @@ TESTS = \
 	tests/boss/test_invoicepayer_decodepay \
 	tests/boss/test_listpeersanalyzer \
 	tests/boss/test_initiator_clnversion \
-	tests/boss/test_initiator_listconfigs_proxy \
+	tests/boss/test_initiator_listconfigs \
 	tests/boss/test_needsconnectsolicitor \
+	tests/boss/test_offline_mode \
 	tests/boss/test_onchainfeemonitor_samples_init \
 	tests/boss/test_peerfromscidmapper \
 	tests/boss/test_peerjudge_agetracker \
