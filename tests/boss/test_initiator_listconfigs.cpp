@@ -175,12 +175,13 @@ public:
 	}
 };
 
-struct ProxyConfig {
+struct InitConfig {
 	std::string proxy;
 	bool always_use_proxy;
+	bool offline;
 };
 
-ProxyConfig run_initiator_case(std::string listconfigs_result) {
+InitConfig run_initiator_case(std::string listconfigs_result) {
 	auto guard = TempDirGuard();
 
 	int socks[2];
@@ -211,13 +212,14 @@ ProxyConfig run_initiator_case(std::string listconfigs_result) {
 	auto received_init = false;
 	auto received_response = false;
 	auto received_fail = false;
-	auto got = ProxyConfig();
+	auto got = InitConfig();
 
 	bus.subscribe<Boss::Msg::Init>([&](Boss::Msg::Init const& m) {
 		assert(!received_init);
 		received_init = true;
 		got.proxy = m.proxy;
 		got.always_use_proxy = m.always_use_proxy;
+		got.offline = m.offline;
 		return Ev::lift();
 	});
 	bus.subscribe<Boss::Msg::CommandResponse>([&](Boss::Msg::CommandResponse const& m) {
@@ -293,8 +295,25 @@ int main() {
 	}
 	)JSON");
 
+	/* --offline is a flag: modern listconfigs reports it as
+	 * {"set": true}, the legacy raw form as a bare boolean.  */
+	auto const modern_offline = std::string(R"JSON(
+	{
+	  "configs": {
+	    "offline": { "set": true, "source": "cmdline" }
+	  }
+	}
+	)JSON");
+	auto const legacy_offline = std::string(R"JSON(
+	{
+	  "offline": true
+	}
+	)JSON");
+
 	auto legacy_cfg = run_initiator_case(legacy);
 	auto modern_cfg = run_initiator_case(modern);
+	auto modern_offline_cfg = run_initiator_case(modern_offline);
+	auto legacy_offline_cfg = run_initiator_case(legacy_offline);
 
 	assert(legacy_cfg.proxy == "127.0.0.1:9050");
 	assert(modern_cfg.proxy == "127.0.0.1:9050");
@@ -303,6 +322,14 @@ int main() {
 
 	assert(legacy_cfg.proxy == modern_cfg.proxy);
 	assert(legacy_cfg.always_use_proxy == modern_cfg.always_use_proxy);
+
+	/* Not mentioned means not offline.  */
+	assert(!legacy_cfg.offline);
+	assert(!modern_cfg.offline);
+	assert(modern_offline_cfg.offline);
+	assert(legacy_offline_cfg.offline);
+	assert(modern_offline_cfg.proxy == "");
+	assert(!modern_offline_cfg.always_use_proxy);
 
 	return 0;
 }

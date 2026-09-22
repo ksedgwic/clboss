@@ -70,6 +70,8 @@ private:
 
 	std::string proxy;
 	bool always_use_proxy;
+	/* lightningd started with --offline.  */
+	bool offline;
 	/* Set from the clboss-skip-cln-version-check flag at init;
 	 * see check_cln_version() below.  */
 	bool skip_version_check;
@@ -440,6 +442,21 @@ public:
 				if (cfg.has("configs"))
 					cfg = cfg["configs"];
 
+				/* --offline is a flag: the modern form
+				 * reports {"set": true}, the raw form a
+				 * bare boolean.  */
+				offline = false;
+				if (cfg.has("offline")) {
+					auto flag = cfg["offline"];
+					if (flag.is_object() && flag.has("set"))
+						flag = flag["set"];
+					else if ( flag.is_object()
+					       && flag.has("value_bool")
+						)
+						flag = flag["value_bool"];
+					offline = flag.is_boolean() && !!flag;
+				}
+
 				if (cfg.has("proxy")) {
 					if (cfg["proxy"].is_string())
 						proxy = std::string(cfg["proxy"]);
@@ -488,11 +505,22 @@ public:
 							);
 				}
 
+				if (offline)
+					act += Boss::log( bus, Info
+							, "Initiator: lightningd "
+							  "is in offline mode; "
+							  "CLBOSS will not connect "
+							  "to peers, investigate "
+							  "candidates, or open "
+							  "channels."
+							);
+
 				return std::move(act)
 				     + bus.raise(Boss::Msg::Init{
 					network, *rpc, self_id, db,
 					*connector, *signer,
-					proxy, always_use_proxy
+					proxy, always_use_proxy,
+					offline
 				});
 			}).then([this]() {
 				return Boss::log( bus, Debug

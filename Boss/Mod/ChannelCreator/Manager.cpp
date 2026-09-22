@@ -124,6 +124,7 @@ void Manager::start() {
 		     >([this](Msg::Init const& init) {
 		rpc = &init.rpc;
 		self = init.self_id;
+		offline = init.offline;
 		reprioritizer = Util::make_unique<Reprioritizer>
 			( init.signer
 			, Util::make_unique<Net::IPBinnerBySubnet>()
@@ -144,6 +145,11 @@ void Manager::start() {
 
 Ev::Io<void>
 Manager::on_request_channel_creation(Ln::Amount amt) {
+	if (offline)
+		return Boss::log( bus, Debug
+				, "ChannelCreator: offline mode, not "
+				  "creating channels."
+				);
 	/* The Planner asserts both of these at construction; check
 	 * here and skip the cycle instead of aborting.  The first
 	 * can fail if onchain funds changed between the decider's

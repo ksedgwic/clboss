@@ -17,6 +17,8 @@ class Reconnector::Impl {
 private:
 	S::Bus& bus;
 	Boss::Mod::Rpc *rpc;
+	/* lightningd runs with --offline: peers stay disconnected.  */
+	bool offline = false;
 
 	void start() {
 		bus.subscribe<Msg::Manifestation>([this](Msg::Manifestation const& _) {
@@ -26,10 +28,13 @@ private:
 		});
 		bus.subscribe<Msg::Init>([this](Msg::Init const& init) {
 			rpc = &init.rpc;
+			offline = init.offline;
 			return Ev::lift();
 		});
 		bus.subscribe<Msg::Notification>([this](Msg::Notification const& n) {
 			if (n.notification != "disconnect")
+				return Ev::lift();
+			if (offline)
 				return Ev::lift();
 			return on_disconnect();
 		});

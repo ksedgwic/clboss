@@ -17,12 +17,15 @@ class Connector {
 private:
 	S::Bus& bus;
 	Boss::Mod::Rpc *rpc;
+	/* lightningd runs with --offline: refuse every request.  */
+	bool offline;
 
 	Ev::Io<void> connect(std::string const& node);
 	void start();
 
 public:
-	Connector(S::Bus& bus_) : bus(bus_) { start(); }
+	Connector(S::Bus& bus_
+		 ) : bus(bus_), rpc(nullptr), offline(false) { start(); }
 	Connector(Connector&&) =delete;
 };
 

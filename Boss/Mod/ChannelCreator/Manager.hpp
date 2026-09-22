@@ -38,6 +38,8 @@ class Manager {
 private:
 	S::Bus& bus;
 	Boss::Mod::Rpc* rpc;
+	/* lightningd runs with --offline: opening needs a peer.  */
+	bool offline = false;
 	Boss::Mod::ChannelCandidateInvestigator::Main& investigator;
 	Boss::Mod::ChannelCreator::Carpenter& carpenter;
 	Ln::NodeId self;
