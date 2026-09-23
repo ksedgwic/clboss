@@ -98,7 +98,9 @@ void Manager::start() {
 				secretary.get_nonnegative_candidates_count(tx);
 			tx.commit();
 
-			if (good_candidates < min_good_candidates)
+			/* The finders' proposals would only be dropped by
+			 * the preinvestigator in offline mode.  */
+			if (!offline && good_candidates < min_good_candidates)
 				return Boss::concurrent(
 					solicit_candidates(good_candidates)
 				);
