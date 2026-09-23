@@ -405,20 +405,22 @@ private:
 				return out;
 			for (auto i = std::size_t(0); i < channels.size(); ++i) {
 				auto c = channels[i];
-				if (!c.has("state"))
-					continue;
-				auto state = std::string(c["state"]);
-				if ( state != "CHANNELD_NORMAL"
-				  && state != "CHANNELD_AWAITING_SPLICE"
-				   )
+				/* CHANNELD_NORMAL only.  The xrebalance plugin
+				 * keeps its own map of usable channels, of that
+				 * state alone, and rejects a request naming any
+				 * other channel whole, so a channel awaiting
+				 * splice lock-in sits the cycles out until the
+				 * new funding confirms.  */
+				if (!c.has("state")
+				 || std::string(c["state"]) != "CHANNELD_NORMAL")
 					continue;
 				if (!c.has("short_channel_id")
 				 || !c.has("peer_id")
 				 || !c.has("to_us_msat")
 				 || !c.has("total_msat"))
 					continue;
-				/* A pending splice-out is deducted: see
-				 * ChannelBalance.  */
+				/* Balance and capacity as every consumer reads
+				 * them: see ChannelBalance.  */
 				auto bal = channel_balance(c);
 				auto cap = std::int64_t(
 				    bal.total.to_msat() / 1000);
