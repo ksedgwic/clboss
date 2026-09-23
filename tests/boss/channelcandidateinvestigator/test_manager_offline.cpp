@@ -10,7 +10,9 @@
 #include"Boss/Shutdown.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/ThreadPool.hpp"
+#include"Ev/now.hpp"
 #include"Ev/start.hpp"
+#include"Ev/yield.hpp"
 #include"Ln/NodeId.hpp"
 #include"Net/Connector.hpp"
 #include"Net/Fd.hpp"
@@ -81,6 +83,22 @@ struct Counts {
 	std::size_t request_connects;
 };
 
+/* A concurrent task is scheduled on an idle watcher and runs on the
+ * next pass of the event loop; this many yields flush any that the
+ * message handlers started.  */
+auto const flush_yields = std::size_t(16);
+
+/* Yield until a solicitation has been counted.  The bound only ends
+ * a failing run.  */
+Ev::Io<void> wait_solicit(std::size_t const& solicits, double start) {
+	return Ev::yield().then([&solicits, start]() {
+		if (solicits >= 1)
+			return Ev::lift();
+		assert(Ev::now() - start < 10.0); /* Time out.  */
+		return wait_solicit(solicits, start);
+	});
+}
+
 Counts run_case(bool offline) {
 	S::Bus bus;
 	Ev::ThreadPool threadpool;
@@ -125,14 +143,17 @@ Counts run_case(bool offline) {
 			offline
 		});
 	}).then([&]() {
-		/* The startup solicitation runs as a concurrent task;
-		 * give it time to happen.  */
-		return waiter.wait(0.5);
+		/* The startup solicitation runs as a concurrent task.
+		 * Online it must arrive; offline none is expected, so
+		 * that run can only flush the scheduled work.  */
+		if (offline)
+			return Ev::yield(flush_yields);
+		return wait_solicit(solicits, Ev::now());
 	}).then([&]() {
 		counts.solicits_after_init = solicits;
 		return bus.raise(Boss::Msg::TimerRandomHourly());
 	}).then([&]() {
-		return waiter.wait(0.5);
+		return Ev::yield(flush_yields);
 	}).then([&]() {
 		counts.solicits_after_timer = solicits;
 		counts.request_connects = request_connects;
