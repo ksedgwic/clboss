@@ -603,6 +603,7 @@ TESTS = \
 	tests/boltz/test_match_lockscript \
 	tests/boss/channelcandidateinvestigator/test_evictionpolicy \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
+	tests/boss/channelcandidateinvestigator/test_manager_offline \
 	tests/boss/channelcandidateinvestigator/test_secretary \
 	tests/boss/test_amountsettingshandler \
 	tests/boss/test_askrene_layer \
