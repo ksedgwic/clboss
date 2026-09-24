@@ -17,7 +17,7 @@ namespace Sqlite3 {
  *
  * @desc This object is movable but not copyable.
  * When the object is valid and then destructed, it
- * automatically commits all updates.
+ * rolls the transaction back.
  *
  * The transaction can be rolled back or committed
  * explicitly by `rollback()` or `commit()` member
