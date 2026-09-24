@@ -33,7 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   arrival-order-dominated, and an overweight item could still be
   evicted by later arrivals.  The popularity finder now shares
   `Stats::ReservoirSampler` with the other finders instead of a
-  drifted inline copy.
+  drifted inline copy (#343).
 - Backing up a live `data.clboss` with `sqlite3 .backup` or `.dump`
   could kill CLBOSS, and `lightningd` with it when CLBOSS is an
   important plugin: a write that found the file read-locked failed
