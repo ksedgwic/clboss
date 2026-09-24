@@ -35,6 +35,8 @@ private:
 
 	Sqlite3::Db db;
 	Boss::Mod::Rpc* rpc;
+	/* lightningd runs with --offline: no investigation.  */
+	bool offline = false;
 
 	std::set<Ln::NodeId> unmanaged;
 

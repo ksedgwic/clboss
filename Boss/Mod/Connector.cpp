@@ -15,6 +15,7 @@ namespace Boss { namespace Mod {
 void Connector::start() {
 	bus.subscribe<Boss::Msg::Init>([this](Boss::Msg::Init const& init) {
 		rpc = &init.rpc;
+		offline = init.offline;
 		return Ev::lift();
 	});
 	bus.subscribe<Boss::Msg::RequestConnect>([this](Boss::Msg::RequestConnect const& c) {
@@ -24,6 +25,19 @@ void Connector::start() {
 					, "Attempt to connect to %s before init?"
 					, c.node.c_str()
 					);
+		/* An explicit `connect` would go through even with
+		 * --offline; answer as a failure so that every requester
+		 * moves on.  */
+		if (offline)
+			return Boss::log( bus, Debug
+					, "Connector: offline mode, not "
+					  "connecting to %s"
+					, c.node.c_str()
+					).then([this, node = c.node]() {
+				return bus.raise(Boss::Msg::ResponseConnect{
+					node, false
+				});
+			});
 
 		return connect(c.node);
 	});

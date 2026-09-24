@@ -1,6 +1,7 @@
 #include"Boss/Mod/ChannelCandidatePreinvestigator.hpp"
 #include"Boss/ModG/ReqResp.hpp"
 #include"Boss/Msg/AmountSettings.hpp"
+#include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/PreinvestigateChannelCandidates.hpp"
 #include"Boss/Msg/ProposeChannelCandidates.hpp"
 #include"Boss/Msg/RequestConnect.hpp"
@@ -23,9 +24,15 @@ private:
 	S::Bus& bus;
 	ModG::ReqResp<Msg::RequestDowser, Msg::ResponseDowser> dowser;
 	Ln::Amount min_channel;
+	/* lightningd runs with --offline: connect tests would fail.  */
+	bool offline = false;
 
 	void start() {
 		using std::placeholders::_1;
+		bus.subscribe<Msg::Init>([this](Msg::Init const& init) {
+			offline = init.offline;
+			return Ev::lift();
+		});
 		bus.subscribe<Msg::PreinvestigateChannelCandidates
 			     >(std::bind(&Impl::on_preinv, this, _1));
 		bus.subscribe<Msg::ResponseConnect
@@ -135,6 +142,14 @@ private:
 	}
 
 	Ev::Io<void> on_preinv(Msg::PreinvestigateChannelCandidates const& p) {
+		/* The finders propose again on their own timers.  */
+		if (offline)
+			return Boss::log( bus, Debug
+					, "ChannelCandidatePreinvestigator: "
+					  "offline mode, not preinvestigating "
+					  "%zu candidates."
+					, p.candidates.size()
+					);
 		auto c = Case::create(bus, *this, p, min_channel);
 		return Case::run(c);
 	}

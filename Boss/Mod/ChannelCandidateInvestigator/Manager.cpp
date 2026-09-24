@@ -81,6 +81,7 @@ void Manager::start() {
 	bus.subscribe<Msg::Init>([this](Msg::Init const& init) {
 		db = init.db;
 		rpc = &init.rpc;
+		offline = init.offline;
 
 		/* Initialize the database.  */
 		return db.transact().then([this](Sqlite3::Tx tx) {
@@ -97,7 +98,9 @@ void Manager::start() {
 				secretary.get_nonnegative_candidates_count(tx);
 			tx.commit();
 
-			if (good_candidates < min_good_candidates)
+			/* The finders' proposals would only be dropped by
+			 * the preinvestigator in offline mode.  */
+			if (!offline && good_candidates < min_good_candidates)
 				return Boss::concurrent(
 					solicit_candidates(good_candidates)
 				);
@@ -211,6 +214,11 @@ void Manager::start() {
 
 	bus.subscribe<Msg::TimerRandomHourly
 		     >([this](Msg::TimerRandomHourly const& _) {
+		if (offline)
+			return Boss::log( bus, Debug
+					, "ChannelCandidateInvestigator: "
+					  "offline mode, not investigating."
+					);
 		/* Construct shared variables.  */
 		/* Number of good candidates.  */
 		auto good_candidates = std::make_shared<std::size_t>();

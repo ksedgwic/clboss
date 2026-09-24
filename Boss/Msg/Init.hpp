@@ -26,6 +26,11 @@ struct Init {
 	/* Empty string if no proxy.  */
 	std::string proxy;
 	bool always_use_proxy;
+	/* True when lightningd runs with --offline: it neither
+	 * reconnects to peers nor accepts connections, and CLBOSS
+	 * must not connect either.  Defaulted so that aggregate
+	 * constructions without the field still compile.  */
+	bool offline = false;
 };
 
 }}

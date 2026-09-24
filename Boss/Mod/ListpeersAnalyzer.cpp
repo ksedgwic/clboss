@@ -55,6 +55,12 @@ ListpeersAnalyzer::ListpeersAnalyzer(S::Bus& bus) {
 			}
 		}
 
+		ar.all_peers_disconnected =
+			!ar.disconnected_channeled.empty()
+		     && ar.connected_channeled.empty()
+		     && ar.connected_unchanneled.empty()
+		      ;
+
 		return bus.raise(std::move(ar));
 	});
 }
