@@ -248,12 +248,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   open and forwarding for the hours until the new funding confirms)
   was skipped wherever channels were summed or chosen by
   `CHANNELD_NORMAL`: the peer judge's channel total, the node
-  balance swapper's sendable and receivable totals, the by-balance
-  fee modder, and the active prober.  They now admit that state.
-  The rebalancer keeps to `CHANNELD_NORMAL`: the xrebalance plugin
-  accepts only that state and rejects a request naming any other
-  channel, so a channel being spliced sits its cycles out until
-  lock-in.  While a splice-out is pending, CLN reports the balance
+  balance swapper's sendable and receivable totals, and the
+  by-balance fee modder.  They now admit that state.  The rebalancer
+  and the active prober keep to `CHANNELD_NORMAL`: the xrebalance
+  plugin accepts only that state and rejects a request naming any
+  other channel, and a probe is sized from a spendable balance that
+  CLN reports for the old funding until lock-in.  While a splice-out
+  is pending, CLN reports the balance
   of the old funding until the new one locks in but already admits
   HTLCs against the lower post-splice balance; the node balance
   swapper and the by-balance fee modder now deduct the pending

@@ -146,9 +146,13 @@ private:
 					auto state = std::string(
 						c["state"]
 					);
-					if ( state != "CHANNELD_NORMAL"
-					  && state != "CHANNELD_AWAITING_SPLICE"
-					   )
+					/* CHANNELD_NORMAL only.  The probe is
+					 * sized from spendable_msat below, which
+					 * CLN reports for the old funding until a
+					 * pending splice locks in; a probe over a
+					 * splice-out could then fail locally
+					 * instead of measuring the peer.  */
+					if (state != "CHANNELD_NORMAL")
 						continue;
 
 					chan0 = Ln::Scid(std::string(
@@ -169,9 +173,9 @@ private:
 
 			if (!chan0)
 				return Boss::log( bus, Info
-						, "ActiveProber: No open "
-						  "channel with node %s, "
-						  "cannot probe."
+						, "ActiveProber: No "
+						  "CHANNELD_NORMAL channel "
+						  "with node %s, cannot probe."
 						, std::string(peer).c_str()
 						);
 
