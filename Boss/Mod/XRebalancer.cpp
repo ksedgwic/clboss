@@ -1,4 +1,5 @@
 #include"Boss/Mod/XRebalancer.hpp"
+#include"Boss/Mod/ChannelBalance.hpp"
 #include"Boss/Mod/Waiter.hpp"
 #include"Boss/Mod/XRebalanceCensus.hpp"
 #include"Boss/Mod/Rpc.hpp"
@@ -403,6 +404,12 @@ private:
 				return out;
 			for (auto i = std::size_t(0); i < channels.size(); ++i) {
 				auto c = channels[i];
+				/* CHANNELD_NORMAL only.  The xrebalance plugin
+				 * keeps its own map of usable channels, of that
+				 * state alone, and rejects a request naming any
+				 * other channel whole, so a channel awaiting
+				 * splice lock-in sits the cycles out until the
+				 * new funding confirms.  */
 				if (!c.has("state")
 				 || std::string(c["state"]) != "CHANNELD_NORMAL")
 					continue;
@@ -411,12 +418,13 @@ private:
 				 || !c.has("to_us_msat")
 				 || !c.has("total_msat"))
 					continue;
+				/* Balance and capacity as every consumer reads
+				 * them: see ChannelBalance.  */
+				auto bal = channel_balance(c);
 				auto cap = std::int64_t(
-				    Ln::Amount::object(c["total_msat"])
-				    .to_msat() / 1000);
+				    bal.total.to_msat() / 1000);
 				auto loc = std::int64_t(
-				    Ln::Amount::object(c["to_us_msat"])
-				    .to_msat() / 1000);
+				    bal.to_us.to_msat() / 1000);
 				if (cap <= 0)
 					continue;
 				auto online = c.has("peer_connected")

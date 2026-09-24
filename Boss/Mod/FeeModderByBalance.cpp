@@ -1,4 +1,5 @@
 #include"Boss/Mod/FeeModderByBalance.hpp"
+#include"Boss/Mod/ChannelBalance.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/ChannelDestruction.hpp"
 #include"Boss/Msg/MonitorFeeByBalance.hpp"
@@ -176,15 +177,16 @@ private:
 					auto state = std::string(
 						c["state"]
 					);
-					if (state != "CHANNELD_NORMAL")
+					if ( state != "CHANNELD_NORMAL"
+					  && state != "CHANNELD_AWAITING_SPLICE"
+					   )
 						continue;
 					found = true;
-					to_us = Ln::Amount::object(
-						c["to_us_msat"]
-					);
-					total = Ln::Amount::object(
-						c["total_msat"]
-					);
+					/* A pending splice-out is
+					 * deducted: see ChannelBalance.  */
+					auto bal = channel_balance(c);
+					to_us = bal.to_us;
+					total = bal.total;
 					break;
 				}
 			} catch (std::exception const& ex) {
