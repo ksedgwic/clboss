@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- A total peer blackout (lightningd started with `--offline`, Tor
+  down, a firewall) no longer demerits every peer or counts as
+  CLBOSS uptime; with `clboss-auto-close` it could close channels
+  as the peers came back.  CLBOSS also honours `--offline` itself:
+  it no longer connects to peers, tests channel candidates, or
+  opens channels while the flag is set, since an explicit connect
+  used to go through and defeat both the flag and the guard (#346,
+  #347).
 - Channel-candidate selection by popularity now samples with A-ES
   (Efraimidis and Spirakis) instead of an A-Chao variant that
   omitted the reservoir-size factor m: selection was
