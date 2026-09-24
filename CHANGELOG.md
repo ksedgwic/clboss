@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.17.1] - Unreleased
 
+### Changed
+
+- The XRebalancer grant now fades out as a side's real forwarded
+  volume grows.  The credit is assumed earned on
+  `clboss-xrebalance-grant-weight` percent of the peer's capacity
+  (new dynamic option, default 25, both sides; it was a whole
+  capacity-turn), and real forwards replace it one for one: a side
+  with no record reads exactly `clboss-xrebalance-grant`, at half
+  the weight the rate is half grant and half record, and from the
+  weight on the side reads its own record alone (#339).
+
 ### Fixed
 
 - A total peer blackout (lightningd started with `--offline`, Tor

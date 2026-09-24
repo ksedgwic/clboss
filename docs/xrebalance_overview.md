@@ -154,24 +154,28 @@ or `off`.  What each knob moves:
 | `route-cost-floor` | auto | how wide a matched set may grow: a fixed ppm floor on the fee ceiling, or `auto`, a ladder of floors derived from the node's own rates with a random rung picked each cycle, so focused cycles at high ceilings and wide cycles at low ones alternate |
 | `maxparts` | 80 | how finely a transfer may split; larger means more paths and more refusals per solve |
 | `grant` | 0 | an assumed prior rate credited to every peer, see below |
+| `grant-weight` | 25 | the volume the grant is assumed earned on, percent of capacity; real forwards replace it, see below |
 | `gain` | 1 | a multiplier on the measured rates, see below |
 
 **grant and gain** bend the strict rule that a side must have
 earned what a transfer costs.
 
 - `grant` credits every peer, on both sides, an assumed rate of
-  `grant` ppm as if it had already been earned on one capacity-turn
-  of volume:
+  `grant` ppm as if it had already been earned on `grant-weight`
+  percent of the peer's capacity, less what the side has really
+  forwarded in the window:
 
-      adjusted rate = (net + capacity * grant / 1e6) / (forwarded + capacity)
+      w = capacity * grant-weight / 100
+      g = max(0, w - forwarded)
+      adjusted rate = (net + g * grant / 1e6) / (forwarded + g) * gain
 
-  A peer with no record reads exactly `grant`.  The credit weighs
-  one capacity-turn of volume, so it matters only while a peer's
-  forwarded volume is small next to its capacity; as the record
-  grows, the adjusted rate converges on the measured net rate, and
-  expenditures spend the credit down.  It admits new peers and
-  peers with thin records, and lifts a slightly negative record to
-  a small positive one.  This is what
+  A side with no record reads exactly `grant`.  Real volume
+  replaces the credit one for one: at half of `w` forwarded the
+  adjusted rate is half `grant` and half the measured net rate,
+  and from `w` on the credit is gone and the side reads its own
+  record alone.  Expenditures spend the credit down.  It admits
+  new peers and peers with thin records, and lifts a slightly
+  negative record to a small positive one.  This is what
   takes the place of the `InitialRebalancer`: an optimistic credit
   that lets a new channel be filled before it has earned anything,
   and that its own record then confirms or spends down.
@@ -185,10 +189,10 @@ rate.  `clboss-xrebalance-view` shows both, `InNetPpm` / `OutNetPpm`
 raw and `InAdjPpm` / `OutAdjPpm` adjusted, so the effect of the two
 settings is visible per peer.  A node with no record cannot
 rebalance under the strict rule at all, since no side has earned
-anything; `grant` is what admits it, and the credit dilutes on its
-own as forwarded volume grows past the channel capacity.  One
-production node runs `grant` 100 and `gain` 1.2 on a mature
-record.
+anything; `grant` is what admits it, and the credit is gone on its
+own once a side has forwarded `grant-weight` percent of the peer's
+capacity.  One production node runs `grant` 100 and `gain` 1.2 on a
+mature record.
 
 What to watch:
 
