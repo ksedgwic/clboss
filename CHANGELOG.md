@@ -41,6 +41,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   progress looked unchanneled; it now counts `DUALOPEND` states
   too, and no longer reads past the end of the shorter `ONCHAIN`
   (#332).
+- Channel-candidate selection by popularity now samples with A-ES
+  (Efraimidis and Spirakis) instead of an A-Chao variant that
+  omitted the reservoir-size factor m: selection was
+  arrival-order-dominated, and an overweight item could still be
+  evicted by later arrivals.  The popularity finder now shares
+  `Stats::ReservoirSampler` with the other finders instead of a
+  drifted inline copy (#343).
 
 ### Removed
 
