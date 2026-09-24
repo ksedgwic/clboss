@@ -1,4 +1,5 @@
 #include"Boss/Mod/ChannelCandidateInvestigator/Main.hpp"
+#include"Boss/Mod/ChanneledPeers.hpp"
 #include"Boss/Mod/ChannelCreator/Carpenter.hpp"
 #include"Boss/Mod/ChannelCreator/Manager.hpp"
 #include"Boss/Mod/ChannelCreator/Planner.hpp"
@@ -226,6 +227,14 @@ Manager::on_request_channel_creation(Ln::Amount amt) {
 			   + (double)info["num_active_channels"]
 			   ;
 		return investigator.get_channel_candidates();
+	}).then([this](std::vector<std::pair<Ln::NodeId, Ln::NodeId>> proposals) {
+		/* The candidate table is swept of channeled peers only
+		 * on the 10-minute listpeers poll, and most finders do
+		 * not check either, so a proposal can name a peer we
+		 * opened to since the last sweep.  Check against a
+		 * fresh listpeerchannels here, before any funds are
+		 * planned (#332).  */
+		return drop_channeled(std::move(proposals));
 	}).then([ dowser_func
 		](std::vector<std::pair<Ln::NodeId, Ln::NodeId>> proposals) {
 		auto rearranger = RearrangerBySize(dowser_func);
@@ -378,6 +387,47 @@ Manager::get_peers() {
 			});
 		}
 		return Ev::lift(std::move(rv));
+	});
+}
+Ev::Io<std::vector<std::pair<Ln::NodeId, Ln::NodeId>>>
+Manager::drop_channeled(std::vector<std::pair<Ln::NodeId, Ln::NodeId>> proposals_v) {
+	assert(rpc);
+	auto proposals = std::make_shared<std::vector<std::pair<Ln::NodeId, Ln::NodeId>>>
+		(std::move(proposals_v));
+	return Ev::lift().then([this]() {
+		return rpc->command( "listpeerchannels"
+				   , Json::Out::empty_object()
+				   );
+	}).then([this, proposals](Jsmn::Object res) {
+		auto channeled = channeled_peers(res);
+		auto kept = std::vector<std::pair<Ln::NodeId, Ln::NodeId>>();
+		auto dropped = std::vector<Ln::NodeId>();
+		for (auto const& p : *proposals) {
+			if (channeled.count(p.first) == 0)
+				kept.push_back(p);
+			else
+				dropped.push_back(p.first);
+		}
+		*proposals = std::move(kept);
+		auto act = Ev::lift();
+		for (auto const& n : dropped)
+			act += Boss::log( bus, Info
+					, "ChannelCreator: Not proposing %s, "
+					  "we already have a channel with it."
+					, std::string(n).c_str()
+					);
+		return act;
+	}).catching<RpcError>([this, proposals](RpcError const& e) {
+		/* Without the check we would be back to the race;
+		 * skip this cycle's proposals instead.  */
+		proposals->clear();
+		return Boss::log( bus, Error
+				, "ChannelCreator: listpeerchannels failed, "
+				  "not creating channels this cycle: %s"
+				, e.error.direct_text().c_str()
+				);
+	}).then([proposals]() {
+		return Ev::lift(std::move(*proposals));
 	});
 }
 Ev::Io<std::set<Ln::NodeId>>
