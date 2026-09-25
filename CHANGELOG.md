@@ -81,6 +81,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the by-balance fee modder now deduct the pending splice-out the same
   way, so a channel awaiting a splice-out is never read as holding
   funds it no longer has (#345).
+- `--clboss-min-onchain` is now floored at 30000 sat, CLN's default
+  `min-emergency-msat` plus funding fees -- below that, every
+  channel open fails with error 313.  A leading "-" now parses
+  as 0 and is raised to the floor; "-1" previously wrapped to a
+  huge number through the unsigned parse.  Other spellings,
+  including a leading "+", parse as before (#340).
 
 ### Removed
 
