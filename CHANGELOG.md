@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.17.2] - Unreleased
 
+### Added
+
+- `contrib/clboss-recent-earnings --group` arranges the rows in three
+  groups, each sorted by net earnings: balanced, fills (peers the
+  rebalancer mostly topped up) and sources (peers it mostly drew
+  from).
+- `contrib/clboss-earnings-history` accepts a short channel id as the
+  peer argument, as well as a node id or an alias.
+
+### Changed
+
+- The contrib scripts show a peer's newest short channel id in place
+  of its node id when the peer has no alias.
+- `contrib/clboss-routing-stats` keeps a channel awaiting splice
+  lock-in in its table; the channel forwards until the splice locks
+  in.
+- `contrib/clboss-recent-earnings` prints PPM values with underscore
+  separators, like the amount columns.
+
 ### Fixed
 
 - Timestamps and other non-integer numbers in command output keep
