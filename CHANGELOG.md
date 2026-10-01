@@ -14,6 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from).
 - `contrib/clboss-earnings-history` accepts a short channel id as the
   peer argument, as well as a node id or an alias.
+- `contrib/clboss-channel-sizing` shows which channels want more
+  capacity on our side and which carry capital that never moves, from
+  CLBOSS's balance samples and CLN's forwards.  Rows are grouped as
+  Grow, Shrink, Spent, Right-sized, Liquidity-limited, Too young and
+  Little or no traffic, with a proposed splice amount and what holds
+  each row back.
 
 ### Changed
 
