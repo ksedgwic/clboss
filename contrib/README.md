@@ -1,5 +1,8 @@
 # Contributed CLBOSS Utilities
 
+These tools are provisional.  They are released so operators can
+try them; their options and output may change between releases.
+
 ## Installing
 
 There are two ways to install the requirements:
