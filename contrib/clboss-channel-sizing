@@ -127,9 +127,11 @@
 # transactions, splice by splice.
 #
 # NetEarn, Fill and Drain are read from CLBOSS's per-peer earnings record
-# (clboss-recent-earnings), which counts every channel the peer had in the
-# window, closed ones included; it is the figure clboss-forwarding-stats
-# prints.  The rate and Gain columns rest on the forwards attributed above.
+# (the day buckets of clboss-earnings-history that start inside the
+# window), which counts every channel the peer had in the window, closed
+# ones included; over the default window it is the figure
+# clboss-forwarding-stats prints.  The rate and Gain columns rest on the
+# forwards attributed above.
 
 import argparse
 import bisect
@@ -817,10 +819,20 @@ def main():
             connect_rate[peer_id] = float(m["connect_rate"])
 
     # fees, rebalance spend and rebalance volumes per peer over the same
-    # window (CLBOSS day buckets)
-    recent_days = max(1, int(round(window_days)))
-    recent = cli("clboss-recent-earnings", str(recent_days)) or {}
-    recent = recent.get("recent", {})
+    # window: CLBOSS's per-peer day buckets, summed where the bucket
+    # starts inside [since, before), so --since/--before cover these
+    # columns too (clboss-recent-earnings only counts back from now)
+    recent = {}
+    history = (cli("clboss-earnings-history", "all") or {}).get("history", [])
+    for entry in history:
+        t = entry.get("bucket_time", 0)
+        if t < since or t >= before:
+            continue
+        rec = recent.setdefault(entry.get("node"), {})
+        for key, val in entry.items():
+            if key in ("bucket_time", "node"):
+                continue
+            rec[key] = rec.get(key, 0) + val
 
     balances = {}
     for peer_id in peers:
