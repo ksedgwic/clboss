@@ -1,0 +1,1296 @@
+#!/usr/bin/env python3
+
+# Which channels want more capacity on our side, and which carry capital
+# that never moves.  The table is grouped:
+#
+#   Grow        bidir channels whose GainOut clears --min-gain, or which
+#               turn over --grow-turns of capacity per day while refusing
+#               at least --grow-refused of the outbound volume they carry
+#               (the fast-cycling case, admitted even young); by GainOut
+#   Shrink      channels whose MinLoc is at least --idle-frac of capacity
+#               (and 1M sat), by MinLoc
+#   Spent       peer-funded channels the peer spent through us: our side
+#               holds --spent-frac of capacity after one inbound rise
+#               within the window; its Change is the whole capacity, a
+#               close, once the channel has been quiet for --spent-quiet
+#               days; by capacity
+#   Right-sized the other bidir channels, by NetEarn
+#   Liquidity   sinks, sources and rebalance-carried channels: refills, not
+#               size, are the lever; sinks by Refused, then sources by
+#               GainIn, then rebalance-carried by NetEarn
+#   Young       under --min-days of samples: a new channel's balance is its
+#               opening state, not its behavior; by Sampled.  A channel with
+#               no samples at all (CLBOSS samples a peer's balance when it
+#               sets the channel's fee, so a private channel, or an
+#               unmanaged peer's, has none) stays here unless it is Spent:
+#               its Sampled and shares print as -, its MinLoc is our side
+#               now.  Age is the current short channel id's age and, after
+#               a slash when older, the peer's: since our earliest channel
+#               with it, closed ones and pre-splice fundings included;
+#               Sampled is the evidence behind the balance columns
+#   No traffic  under --min-turns of capacity forwarded in the window: a
+#               probe still waiting for flow, or a dead channel; by Cap
+#
+# Change is the proposed splice, in M sat.  Shrink is measured: remove
+# enough that the window's lowest local balance lands at the edge
+# threshold of the smaller channel; when under 1M sat would be left the
+# number is shown in parentheses, since closing may be the better move,
+# and that is clboss-forwarding-stats' call.  Grow is a step, not a
+# measurement: add the current capacity,
+# which lands our side near the midpoint; refused volume cannot size it
+# (retries inflate it), so double and read the next window.
+#
+# Spent is the peer-funded channel that arrives, spends its balance
+# through us and stops: their capital sits on our side and nothing flows
+# back.  A node that wants inbound liquidity starts the same way, and is
+# told apart only by what follows: payments to the peer.  So the row
+# waits for --spent-quiet days without a forward either way before it is
+# actionable (Wait shows quiet until then); the close costs us nothing,
+# the peer opened, and their balance lands in our wallet.  The pattern has
+# a shape, and all of it is required: the flow was inbound (out at most a
+# seventh of in), the local share rose to --spent-frac once within the
+# window from 50% or under (a young remote open started at zero) and did
+# not fall back, and inbound forwards rather than CLBOSS fills account
+# for at least half of our side.  A busy two-way channel that happens to
+# sit high fails on the flow and on the swings; an old source channel
+# that drained slowly has no rise in the window.
+#
+# In Grow and Shrink a row is actionable when nothing holds it back.  A
+# hold is advice, not a veto, and comes in two kinds.  Wait names what
+# resolves itself with time: young or thin evidence, a capacity resized
+# within --min-days (MinLoc and Change then rest on the samples since
+# the change), a peer offline or flaky.  Cost names the price of acting now, a person's to accept: when
+# the peer cannot splice a resize means a close, so inbound marks the
+# inbound liquidity the close would forfeit.  The stat that triggered
+# either is tinted, and actionable rows are bold.
+#
+# CLBOSS records a balance sample per peer roughly hourly
+# (clboss-feemon-history).  Each sampled hour is labelled by the local share
+# of capacity: "low" (under --edge percent), "high" (over 100 - edge), or
+# interior.  Settled forwards (listforwards) are credited to the state their
+# channel was in when they arrived, which gives an out-side earn rate for
+# interior vs low hours and an in-side rate for interior vs high hours.
+#
+#   gain = (interior rate - edge rate) * edge hours, per side:
+#   GainOut for the low hours (our side ran dry), GainIn for the high
+#   hours (the peer's side ran dry)
+#
+# Gain is what the edge hours would have earned at the interior rate.  It is
+# an upper bound on what more capacity on that side can recover, and it
+# only means something for channels whose flow is bidirectional and not
+# carried by rebalancing: a sink that drains after every refill has the
+# same floor at any size.  We control our side, so GainOut is the sort key;
+# GainIn says what a drain, or the peer adding funds, would be worth.
+# The Class column separates the cases:
+#
+#   sink    pinned low (90% of hours or more), or net outflow: the local
+#           side runs dry
+#   source  pinned high, or net inflow: the remote side runs dry
+#   rebal   bidirectional but rebalance-carried (over 25% of forwarded
+#           volume)
+#   bidir   none of the above (|net| <= 0.25)
+#   idle    no settled forwards in the window
+#
+# A channel pinned at an edge is classed by the edge, not by net flow: the
+# flow it refuses there never shows up in net.
+#   ?       appended when the interior rate rests on under 3 days (or 5%)
+#           of interior time
+#
+# MinLoc is the lowest our side got during the window: capital that never
+# moved, which a splice-out could remove without changing any forward that
+# happened (a longer window can only lower it, so read it at 60-90 days
+# before removing capital; hourly samples miss a dip that came and went
+# within the hour).  Turns is forwarded volume over capacity for the window.
+#
+# Inb is the peer's side of the channel now, the inbound liquidity a close
+# would give up (a splice keeps it).  PeerPpm is the peer's fee rate toward
+# us: a fill, or a move of Inb to a replacement channel, pays that rate on
+# the peer's hop (the base fee is left out; at the sizes involved it is
+# under 1 ppm).  Up is whether the peer is connected now, Up3d its 3-day connect rate from
+# clboss-status, and Splice whether it negotiates or announces splicing
+# (BOLT 9 feature bit 62/63): a channel that can be spliced is resized
+# without a close.
+#
+# Balance samples are per peer, so a peer with several channels shares one
+# state across them.
+#
+# A splice keeps the channel and its history.  Forwards recorded under the
+# pre-splice short channel id are attributed through CLN's own lookup of
+# old ids, Turns is measured over the window's mean sampled capacity, and
+# a channel awaiting splice lock-in stays in the table.
+#
+# A closed channel's forwards are credited to the peer's current channel:
+# the balance samples are per peer, so a reopened channel is already read
+# against the closed one's balance history.  A closed channel that had
+# been spliced is listed under its last short channel id only; the
+# earlier ones are rebuilt from the channel id and the wallet's
+# transactions, splice by splice.
+#
+# NetEarn, Fill and Drain are read from CLBOSS's per-peer earnings record
+# (clboss-recent-earnings), which counts every channel the peer had in the
+# window, closed ones included; it is the figure clboss-forwarding-stats
+# prints.  The rate and Gain columns rest on the forwards attributed above.
+
+import argparse
+import bisect
+import json
+import os
+import subprocess
+import sys
+import textwrap
+import time
+
+from tabulate import tabulate
+
+from clboss.alias_cache import lookup_alias
+
+HOLD_MAX = 6 * 3600  # a balance sample stands in for at most this long
+MIN_IDLE_SAT = 1_000_000  # MinLoc below this is never worth a splice-out
+SPENT_LOW = 0.5  # a spent channel starts with our side at or under this share
+SPENT_NET = -0.75  # ... and flows in: out at most a seventh of in
+FLAKY_RATE = 0.9  # 3-day connect rate under this holds a resize
+
+ANSI_BOLD = "\033[1m"    # actionable row
+ANSI_HOLD = "\033[33m"   # yellow: the stat that holds a row back
+ANSI_RESET = "\033[0m"
+
+GROUPS = [
+    ("grow", "Grow"),
+    ("shrink", "Shrink"),
+    ("spent", "Spent: the peer funded it and spent it through us"),
+    ("right", "Right-sized"),
+    ("liquidity", "Liquidity-limited: refills, not size, are the lever"),
+    ("young", "Too young to judge"),
+    ("notraffic", "Little or no traffic"),
+]
+
+
+def run_lightning_cli_command(lightning_dir, network_option, command, *args,
+                              keyword=False):
+    argv = ["lightning-cli", network_option]
+    if lightning_dir:
+        argv.append(f"--lightning-dir={lightning_dir}")
+    if keyword:
+        argv.append("-k")
+    argv += [command, *args]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True,
+                                check=True)
+        return json.loads(result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(f"Command '{argv}' failed with error: {e}", file=sys.stderr)
+        print(e.stderr, file=sys.stderr)
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse JSON from command '{argv}': {e}",
+              file=sys.stderr)
+    return None
+
+
+def msat(value):
+    """listforwards amounts arrive as ints or 'Nmsat' strings."""
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    return int(str(value).replace("msat", ""))
+
+
+def feature_bit(features_hex, bit):
+    """BOLT 9: bit 0 is the least significant bit of the last byte."""
+    try:
+        value = int(features_hex, 16)
+    except (TypeError, ValueError):
+        return False
+    return (value >> bit) & 1 == 1
+
+
+def spliceable(features_hex):
+    return feature_bit(features_hex, 62) or feature_bit(features_hex, 63)
+
+
+class Cli:
+    def __init__(self, lightning_dir, network_option):
+        self.lightning_dir = lightning_dir
+        self.network_option = network_option
+
+    def __call__(self, command, *args, keyword=False):
+        return run_lightning_cli_command(self.lightning_dir,
+                                         self.network_option, command, *args,
+                                         keyword=keyword)
+
+
+def forwards_last_index(cli):
+    """Current created_index of the forwards table (wait with nextvalue=0
+    returns immediately)."""
+    data = cli("wait", "forwards", "created", "0")
+    if data and "created" in data:
+        return int(data["created"])
+    return None
+
+
+def forward_at(cli, index):
+    data = cli("listforwards", "index=created", f"start={index}", "limit=1",
+               keyword=True)
+    fwds = data.get("forwards", []) if data else []
+    return fwds[0] if fwds else None
+
+
+def first_index_since(cli, since, last_index):
+    """Smallest created_index whose forward was received at or after since."""
+    lo, hi = 1, last_index + 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        fwd = forward_at(cli, mid)
+        if fwd is None:
+            # index gap or past the end: treat as "after"
+            hi = mid
+        elif fwd.get("received_time", 0) >= since:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+def wallet_index(cli):
+    """The wallet's transactions (listtransactions), indexed: the
+    transaction that spends each output, and each transaction by the
+    first 30 bytes of its id, since a single-funded channel's id is its
+    first funding txid with the output index folded into the last two
+    bytes."""
+    txs = (cli("listtransactions") or {}).get("transactions", [])
+    spent_by = {}
+    by_prefix = {}
+    for tx in txs:
+        for inp in tx.get("inputs", []):
+            spent_by[(inp["txid"], inp["index"])] = tx
+        txid = bytes.fromhex(tx["hash"])[::-1]
+        by_prefix[txid[:30]] = (txid[30:], tx)
+    return txs, spent_by, by_prefix
+
+
+def first_funding(by_prefix, channel_id):
+    """(transaction, output index) of a single-funded channel's first
+    funding, from its channel id; None when the id matches no wallet
+    transaction: a dual-funded channel's id is a hash of basepoints, and
+    a funding the wallet never held is not listed."""
+    cid = bytes.fromhex(channel_id)
+    hit = by_prefix.get(cid[:30])
+    if hit is None:
+        return None
+    tail, tx = hit
+    outnum = int.from_bytes(bytes(a ^ b for a, b in zip(cid[30:], tail)),
+                            "big")
+    if outnum >= len(tx.get("outputs", [])):
+        return None
+    return tx, outnum
+
+
+def former_scids(wallet, not_open, channels, closed_peer):
+    """Add the short channel ids a closed channel had before its last one
+    to closed_peer.
+
+    A splice moves a channel to a new funding output and a new short
+    channel id, and listclosedchannels names only the last one.  The
+    wallet's transactions (listtransactions) hold the rest.  A
+    single-funded channel's id is its first funding txid with the output
+    index folded into the last two bytes; each splice spends the funding
+    output before it and creates the next, the pay-to-witness-script-hash
+    output that a later wallet transaction spends; and every transaction
+    carries its block height and position.  The walk runs from the first
+    funding output to the channel's last one, and its ids count only when
+    it gets there.  A dual-funded channel's id is a hash of basepoints
+    and matches no transaction, so it keeps its listed id only.  A
+    funding the wallet saw only unconfirmed has no position; its id is
+    skipped and the walk goes on."""
+    txs, spent_by, by_prefix = wallet
+
+    def scid_of(tx, outnum):
+        if not tx.get("blockheight") or not tx.get("txindex"):
+            return None  # unconfirmed, or a funding seen before its block
+        return f"{tx['blockheight']}x{tx['txindex']}x{outnum}"
+
+    def funding_output(tx, last):
+        """The output of a splice transaction that carries the channel on:
+        the one 2-of-2 output another wallet transaction spends."""
+        if last and tx["hash"] == last[0]:
+            return last[1]
+        picks = [o["index"] for o in tx.get("outputs", [])
+                 if o.get("scriptPubKey", "").startswith("0020")
+                 and (tx["hash"], o["index"]) in spent_by]
+        return picks[0] if len(picks) == 1 else None
+
+    for cid_hex, (peer_id, last) in not_open.items():
+        start = first_funding(by_prefix, cid_hex)
+        if start is None:
+            continue
+        tx, outnum = start
+        found = [scid_of(tx, outnum)]
+        seen = set()
+        while last and (tx["hash"], outnum) != last:
+            seen.add((tx["hash"], outnum))
+            tx = spent_by.get((tx["hash"], outnum))
+            outnum = funding_output(tx, last) if tx else None
+            if outnum is None or (tx["hash"], outnum) in seen:
+                found = found[:1]  # the chain is broken: keep the first
+                break
+            if (tx["hash"], outnum) != last:
+                found.append(scid_of(tx, outnum))
+        for scid in found:
+            if scid and scid not in channels:
+                closed_peer.setdefault(scid, peer_id)
+
+
+def iter_forwards(cli, status, start, before, page):
+    """Forwards of one status from created_index start, received before
+    'before'."""
+    while True:
+        data = cli("listforwards", f"status={status}", "index=created",
+                   f"start={start}", f"limit={page}", keyword=True)
+        fwds = data.get("forwards", []) if data else []
+        if not fwds:
+            return
+        for fwd in fwds:
+            if fwd.get("received_time", 0) >= before:
+                return
+            yield fwd
+        start = fwds[-1]["created_index"] + 1
+
+
+class PeerBalance:
+    """Hourly balance samples of one peer within the window."""
+
+    def __init__(self, records, since, before):
+        rows = []
+        for r in records:
+            our = r.get("balance_our_msat")
+            total = r.get("balance_total_msat")
+            ts = r.get("ts")
+            if our is None or not total or ts is None:
+                continue
+            if ts < since or ts >= before:
+                continue
+            rows.append((ts, our / total, our, total))
+        rows = sorted(set(rows))
+        self.ts = [r[0] for r in rows]
+        self.frac = [r[1] for r in rows]
+        self.total = [r[3] for r in rows]
+        self.before = before
+        self.lo = min(self.frac) if rows else None
+        self.hi = max(self.frac) if rows else None
+        # a capacity change (splice, or a sibling channel opened or closed,
+        # since the samples are per peer) starts the sizing evidence over:
+        # MinLoc is read from the samples since the last one
+        self.resized_at = None
+        for i in range(1, len(rows)):
+            if rows[i][3] != rows[i - 1][3]:
+                self.resized_at = rows[i][0]
+        since = [r for r in rows if self.resized_at is None
+                 or r[0] >= self.resized_at]
+        self.min_our_msat = min(r[2] for r in since) if since else None
+
+    def mean_total_msat(self):
+        """Time-weighted mean of the sampled capacity (the peer's, summed
+        over its channels), so a channel resized within the window is
+        measured against the capacity it actually had; None without
+        samples."""
+        weight = 0.0
+        total = 0.0
+        for i, ts in enumerate(self.ts):
+            nxt = self.ts[i + 1] if i + 1 < len(self.ts) else self.before
+            dt = min(max(nxt - ts, 0), HOLD_MAX)
+            weight += dt
+            total += dt * self.total[i]
+        return total / weight if weight > 0 else None
+
+    def __bool__(self):
+        return bool(self.ts)
+
+    def at(self, t):
+        """Local fraction at time t, or None if no sample covers it."""
+        i = bisect.bisect_right(self.ts, t) - 1
+        if i < 0 or t - self.ts[i] > HOLD_MAX:
+            return None
+        return self.frac[i]
+
+    def rise(self, low, high):
+        """(time of the first sample at or over `high`, whether any later
+        sample fell to `low` or under); (None, False) when the local
+        share never reached `high`"""
+        rose_at = None
+        dipped = False
+        for ts, f in zip(self.ts, self.frac):
+            if rose_at is None:
+                if f >= high:
+                    rose_at = ts
+            elif f <= low:
+                dipped = True
+        return rose_at, dipped
+
+    def hours(self, low, high):
+        h = {"low": 0.0, "mid": 0.0, "high": 0.0}
+        for i, ts in enumerate(self.ts):
+            nxt = self.ts[i + 1] if i + 1 < len(self.ts) else self.before
+            dt = min(max(nxt - ts, 0), HOLD_MAX) / 3600.0
+            f = self.frac[i]
+            key = "low" if f < low else ("high" if f > high else "mid")
+            h[key] += dt
+        return h
+
+
+def classify(row, days):
+    gross = row["fwd_in"] + row["fwd_out"]
+    if gross <= 0:
+        return "idle"
+    net = row["net"]
+    rebal = (row["fill"] + row["drain"]) / gross
+    if row["low_pct"] >= 90.0 or net > 0.25:
+        cls = "sink"
+    elif row["high_pct"] >= 90.0 or net < -0.25:
+        cls = "source"
+    elif rebal > 0.25:
+        cls = "rebal"
+    else:
+        cls = "bidir"
+    if row["gain"] > 0:
+        thin_h = max(72.0, 0.05 * days * 24)
+        thin_gain = 0.0
+        if row["notlow_h"] < thin_h:
+            thin_gain += row["gain_out"]
+        if row["nothigh_h"] < thin_h:
+            thin_gain += row["gain_in"]
+        if thin_gain > 0.5 * row["gain"]:
+            cls += "?"
+    return cls
+
+
+def group_of(row, args, window_days):
+    # a channel with samples across the whole window is never young; the
+    # 1-day slack covers samples not landing exactly on the window edges
+    young = row["days"] < min(args.min_days, window_days) - 1.0
+    bidir = row["class"].startswith("bidir")
+    # A fast-cycling channel never parks at an edge long enough to accrue
+    # GainOut: its shortage shows as refusals in mid-range, when an HTLC
+    # exceeds what is spendable at that moment.  Turns plus refused volume
+    # is its grow signal, and it is readable well before --min-days (a
+    # young row keeps a young hold).  GainOut, by contrast, is not trusted
+    # young: a remote open is born at the low edge, inflating it.
+    lively = (bidir and row["days"] >= 3.0
+              and row["turns"] >= args.grow_turns * row["days"]
+              and row["fwd_out"] > 0
+              and row["refused_out"] >= args.grow_refused * row["fwd_out"])
+    if lively or (bidir and not young and row["gain_out"] >= args.min_gain):
+        return "grow"
+    if spent(row, args, young):
+        return "spent"
+    if young:
+        return "young"
+    if row["turns"] < args.min_turns:
+        return "notraffic"
+    if row["min_local_sat"] >= max(args.idle_frac * row["cap_sat"],
+                                   MIN_IDLE_SAT):
+        return "shrink"
+    if bidir:
+        return "right"
+    return "liquidity"
+
+
+def spent(row, args, young):
+    """A peer-funded channel the peer spent through us.  The shape: our
+    side holds --spent-frac of capacity; the flow was inbound (net at or
+    under SPENT_NET); the local share rose to --spent-frac once within
+    the window and never fell back to SPENT_LOW; it started at or under
+    SPENT_LOW (a young remote open started at zero; a channel without
+    balance samples is read from its balance now); and inbound
+    forwards, not CLBOSS fills, account for at least half of what we
+    hold.  A busy two-way channel that happens to sit high fails on the
+    flow and on the swings."""
+    if row["opener"] != "remote":
+        return False
+    if row["local_frac"] < args.spent_frac:
+        return False
+    if row["fwd_in"] <= 0 or row["net"] > SPENT_NET:
+        return False
+    if row["sampled"]:
+        if row["rose_at"] is None or row["dipped_after_rise"]:
+            return False
+        started_low = (row["lo_frac"] is not None
+                       and row["lo_frac"] <= SPENT_LOW)
+        if not started_low and not young:
+            return False
+    local_sat = row["local_frac"] * row["cap_sat"]
+    if row["fwd_in"] < 0.5 * local_sat:
+        return False
+    return row["fill"] <= 0.25 * local_sat
+
+
+def change_for(row, args):
+    """(proposed splice in sat, + in / - out, or None; True when the
+    remainder would be under MIN_IDLE_SAT, so closing may be the better
+    move)"""
+    if row["group"] == "grow":
+        return row["cap_sat"], False
+    if row["group"] == "spent":
+        return -row["cap_sat"], True
+    if row["group"] == "shrink":
+        edge = args.edge / 100.0
+        out = (row["min_local_sat"] - edge * row["cap_sat"]) / (1.0 - edge)
+        out = min(out, row["cap_sat"])
+        return -out, row["cap_sat"] - out < MIN_IDLE_SAT
+    return None, False
+
+
+def holds_for(row, args, window_days):
+    """Two lists of (word, [row fields that triggered it]): waits, which
+    resolve themselves with time, and costs, prices a person can accept."""
+    if row["group"] not in ("grow", "shrink", "spent"):
+        return [], []
+    waits = []
+    if row["group"] == "spent":
+        # the spending is the evidence, young or not; what it waits for is
+        # silence: a peer that wanted inbound starts receiving instead
+        if row["quiet_days"] is None or row["quiet_days"] < args.spent_quiet:
+            waits.append(("quiet", ["quiet_days"]))
+    else:
+        if row["days"] < min(args.min_days, window_days) - 1.0:
+            waits.append(("young", ["days"]))
+        if (row["resized_days"] is not None
+                and row["resized_days"] < min(args.min_days, window_days)
+                - 1.0):
+            waits.append(("resized", ["cap_sat"]))
+        if row["class"].endswith("?"):
+            waits.append(("thin", ["class"]))
+    if not row["connected"]:
+        waits.append(("offline", ["connected"]))
+    elif (row["connect_rate_3d"] is not None
+          and row["connect_rate_3d"] < FLAKY_RATE):
+        waits.append(("flaky", ["connect_rate_3d"]))
+    costs = []
+    if row["group"] == "spent":
+        # a close the peer pays for; what it forfeits on their side is
+        # under 1 - spent-frac of capacity
+        return waits, costs
+    # without splicing a resize is a close: what would it forfeit?
+    # (downtime is not on the list: open the replacement first, close
+    # the old channel once it is locked in and announced)
+    if (not row["spliceable"]
+            and row["inbound_sat"] >= 0.25 * row["cap_sat"]):
+        costs.append(("inbound", ["spliceable", "inbound_sat"]))
+    return waits, costs
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Which channels want more capacity on our side, and "
+                    "which carry capital that never moves")
+    parser.add_argument("--mainnet", action="store_true", help="Run on mainnet")
+    parser.add_argument("--testnet", action="store_true", help="Run on testnet")
+    parser.add_argument("--signet", action="store_true", help="Run on signet")
+    parser.add_argument("--regtest", action="store_true", help="Run on regtest")
+    parser.add_argument("--network", help="Set the network explicitly")
+    parser.add_argument("--lightning-dir", help="lightning data location")
+    parser.add_argument("--days", type=int, default=30,
+                        help="Window length in days (default: 30; confirm "
+                             "a candidate with 60)")
+    parser.add_argument("--since", type=int,
+                        help="Window start, unix seconds (overrides --days)")
+    parser.add_argument("--before", type=int,
+                        help="Window end, unix seconds (default: now)")
+    parser.add_argument("--edge", type=float, default=10.0,
+                        help="Edge threshold, percent of capacity on the "
+                             "local side (default: 10; try 5 for a lower "
+                             "bound on gain)")
+    parser.add_argument("--min-gain", type=int, default=1000,
+                        help="GainOut, sat over the window, that puts a "
+                             "bidir channel in Grow (default: 1000, about "
+                             "one on-chain transaction)")
+    parser.add_argument("--grow-turns", type=float, default=0.5,
+                        help="Turns per day at which a bidir channel joins "
+                             "Grow on activity alone, when its refusals "
+                             "also clear --grow-refused (default: 0.5)")
+    parser.add_argument("--grow-refused", type=float, default=0.25,
+                        help="Refused outbound volume as a fraction of "
+                             "carried outbound that, with --grow-turns, "
+                             "puts a fast-cycling bidir channel in Grow "
+                             "(default: 0.25; retries inflate refusals, so "
+                             "this is a coarse gate, not a sizer)")
+    parser.add_argument("--idle-frac", type=float, default=0.4,
+                        help="MinLoc as a fraction of capacity that puts a "
+                             "channel in Shrink (default: 0.4; never under "
+                             "1M sat)")
+    parser.add_argument("--min-days", type=int, default=30,
+                        help="Days of samples under which a channel is too "
+                             "young to judge (default: 30, the default "
+                             "window: a younger channel's balance is still "
+                             "its opening state)")
+    parser.add_argument("--spent-frac", type=float, default=0.8,
+                        help="Share of capacity on our side at which a "
+                             "peer-funded channel the peer spent through "
+                             "us counts as spent (default: 0.8; a peer "
+                             "that keeps a sixth back is the same case)")
+    parser.add_argument("--spent-quiet", type=int, default=30,
+                        help="Days without a forward before a spent "
+                             "channel is actionable (default: 30)")
+    parser.add_argument("--min-turns", type=float, default=0.1,
+                        help="Forwarded volume over capacity under which a "
+                             "channel has too little traffic to size "
+                             "(default: 0.1)")
+    parser.add_argument("--sort", choices=["group", "sizing", "class", "gain",
+                                           "earned", "cap", "alias"],
+                        default="group",
+                        help="Row order (default: group; sizing is one "
+                             "list, channels short on our side by GainOut "
+                             "first, the rest by MinLoc ascending)")
+    parser.add_argument("--color", action="store_true",
+                        help="Bold and tint even when stdout is not a tty")
+    parser.add_argument("--no-color", action="store_true",
+                        help="Never bold or tint")
+    parser.add_argument("--wide", action="store_true",
+                        help="Add the OutLow, InHigh, @Low and Range "
+                             "diagnostic columns")
+    parser.add_argument("--ids", action="store_true",
+                        help="Show full peer node ids instead of aliases")
+    parser.add_argument("--json", action="store_true",
+                        help="Print the rows as JSON instead of a table")
+    parser.add_argument("--page", type=int, default=10000,
+                        help="listforwards page size (default: 10000)")
+    args = parser.parse_args()
+
+    if args.days <= 0:
+        parser.error("--days must be a positive integer")
+    if not 0 < args.edge < 50:
+        parser.error("--edge must be between 0 and 50")
+    if not 0 < args.idle_frac < 1:
+        parser.error("--idle-frac must be between 0 and 1")
+    color = (args.color or sys.stdout.isatty()) and not args.no_color
+
+    if args.network:
+        network_option = f"--network={args.network}"
+    elif args.testnet:
+        network_option = "--network=testnet"
+    elif args.signet:
+        network_option = "--network=signet"
+    elif args.regtest:
+        network_option = "--network=regtest"
+    else:
+        network_option = "--network=bitcoin"
+
+    lightning_dir = None
+    if args.lightning_dir:
+        lightning_dir = args.lightning_dir
+        assert os.path.isdir(lightning_dir), \
+            f'"{lightning_dir}" is not a valid directory'
+
+    before = args.before or int(time.time())
+    since = args.since or before - args.days * 86400
+    if since >= before:
+        parser.error("--since must be earlier than --before")
+    window_days = (before - since) / 86400.0
+    low = args.edge / 100.0
+    high = 1.0 - low
+
+    cli = Cli(lightning_dir, network_option)
+
+    data = cli("listpeerchannels")
+    if not data:
+        return 1
+    channels = {}
+    closed_peer = {}  # short channel id -> peer of a channel not open
+    not_open = {}  # channel id -> (peer, last funding outpoint)
+
+    def funding_of(ch):
+        if ch.get("funding_txid") is None or ch.get("funding_outnum") is None:
+            return None
+        return (ch["funding_txid"], ch["funding_outnum"])
+
+    for ch in data.get("channels", []):
+        scid = ch.get("short_channel_id")
+        if not scid:
+            continue
+        if ch.get("state") not in ("CHANNELD_NORMAL",
+                                   "CHANNELD_AWAITING_SPLICE"):
+            closed_peer[scid] = ch["peer_id"]
+            if ch.get("channel_id"):
+                not_open[ch["channel_id"]] = (ch["peer_id"], funding_of(ch))
+            continue
+        remote = (ch.get("updates") or {}).get("remote") or {}
+        channels[scid] = {
+            "peer_id": ch["peer_id"],
+            "cap": msat(ch.get("total_msat")),
+            "inbound": msat(ch.get("total_msat")) - msat(ch.get("to_us_msat")),
+            "peer_ppm": remote.get("fee_proportional_millionths"),
+            "connected": bool(ch.get("peer_connected")),
+            "opener": ch.get("opener"),
+            "channel_id": ch.get("channel_id"),
+        }
+    scid2peer = {scid: c["peer_id"] for scid, c in channels.items()}
+    peers = sorted({c["peer_id"] for c in channels.values()})
+    peer_cap = {}
+    peer_channels = {}
+    for scid, c in channels.items():
+        peer_cap[c["peer_id"]] = peer_cap.get(c["peer_id"], 0) + c["cap"]
+        peer_channels.setdefault(c["peer_id"], []).append(scid)
+    closed = cli("listclosedchannels") or {}
+    for ch in closed.get("closedchannels", []):
+        scid = ch.get("short_channel_id")
+        if scid and ch.get("peer_id") and scid not in channels:
+            closed_peer.setdefault(scid, ch["peer_id"])
+        if ch.get("channel_id") and ch.get("peer_id"):
+            not_open.setdefault(ch["channel_id"],
+                                (ch["peer_id"], funding_of(ch)))
+    wallet = wallet_index(cli)
+    former_scids(wallet, not_open, channels, closed_peer)
+    tip = (cli("getinfo") or {}).get("blockheight")
+
+    def block_of(scid):
+        return int(scid.split("x")[0])
+
+    # the earliest block at which we had a channel with each peer: the
+    # open channels' first fundings (a splice keeps the channel id, which
+    # names the first funding), every id a closed channel had, and the
+    # short channel ids themselves
+    peer_first_block = {}
+
+    def note_block(peer_id, block):
+        if block and block < peer_first_block.get(peer_id, block + 1):
+            peer_first_block[peer_id] = block
+
+    for scid, c in channels.items():
+        note_block(c["peer_id"], block_of(scid))
+        first = first_funding(wallet[2], c["channel_id"]) if c["channel_id"] \
+            else None
+        if first:
+            note_block(c["peer_id"], first[0].get("blockheight"))
+    for scid, peer_id in closed_peer.items():
+        note_block(peer_id, block_of(scid))
+
+    # A splice gives a channel a new short channel id; its forwards keep
+    # the id they happened under.  listpeerchannels does not print the old
+    # ids, but its short_channel_id filter resolves them, so ask once per
+    # unknown id and remember the answer.  A closed channel's forwards go
+    # to the peer's current channel, the largest if there are several (a
+    # peer with no open channel has no row, and they stay unattributed).
+    resolved = {}
+
+    def current_scid(scid):
+        if scid is None or scid in channels:
+            return scid
+        if scid not in resolved:
+            hit = None
+            if scid in closed_peer:
+                now = peer_channels.get(closed_peer[scid], [])
+                if now:
+                    hit = max(now, key=lambda s: channels[s]["cap"])
+            else:
+                found = cli("listpeerchannels", f"short_channel_id={scid}",
+                            keyword=True)
+                for ch in (found or {}).get("channels", []):
+                    if ch.get("short_channel_id") in channels:
+                        hit = ch["short_channel_id"]
+                        break
+            resolved[scid] = hit
+        return resolved[scid]
+
+    aliases = {}
+    for peer_id in peers:
+        aliases[peer_id] = lookup_alias(run_lightning_cli_command,
+                                        lightning_dir, network_option, peer_id)
+
+    # splicing: the negotiated init features of connected peers, else the
+    # node announcement
+    features = {}
+    for peer in (cli("listpeers") or {}).get("peers", []):
+        if peer.get("connected") and peer.get("features"):
+            features[peer["id"]] = peer["features"]
+    for peer_id in peers:
+        if peer_id in features:
+            continue
+        nodes = (cli("listnodes", peer_id) or {}).get("nodes", [])
+        for node in nodes:
+            if node.get("features"):
+                features[peer_id] = node["features"]
+
+    # 3-day connect rate per peer
+    connect_rate = {}
+    metrics = (cli("clboss-status") or {}).get("peer_metrics", {})
+    for peer_id, m in metrics.items():
+        if m.get("connect_rate") is not None:
+            connect_rate[peer_id] = float(m["connect_rate"])
+
+    # fees, rebalance spend and rebalance volumes per peer over the same
+    # window (CLBOSS day buckets)
+    recent_days = max(1, int(round(window_days)))
+    recent = cli("clboss-recent-earnings", str(recent_days)) or {}
+    recent = recent.get("recent", {})
+
+    balances = {}
+    for peer_id in peers:
+        hist = cli("clboss-feemon-history", peer_id, str(since), str(before))
+        records = hist.get("history", []) if hist else []
+        balances[peer_id] = PeerBalance(records, since, before)
+
+    # forwards
+    last_index = forwards_last_index(cli)
+    if last_index is None:
+        print("could not read the forwards index", file=sys.stderr)
+        return 1
+    start = first_index_since(cli, since, last_index)
+
+    acc = {scid: {k: 0.0 for k in (
+        "in_fwd", "out_fwd",
+        "out_earn_low", "out_earn_notlow", "in_earn_high", "in_earn_nothigh",
+        "ref_msat", "ref_low_msat", "last_fwd_t")} for scid in channels}
+
+    def state(scid, t):
+        peer = scid2peer.get(scid)
+        if peer is None:
+            return None
+        return balances[peer].at(t)
+
+    for fwd in iter_forwards(cli, "settled", start, before, args.page):
+        fee = msat(fwd.get("fee_msat"))
+        t = fwd["received_time"]
+        o = current_scid(fwd.get("out_channel"))
+        i = current_scid(fwd.get("in_channel"))
+        if o in acc:
+            a = acc[o]
+            a["out_fwd"] += msat(fwd.get("out_msat"))
+            a["last_fwd_t"] = max(a["last_fwd_t"], t)
+            f = state(o, t)
+            if f is not None:
+                a["out_earn_low" if f < low else "out_earn_notlow"] += fee
+        if i in acc:
+            a = acc[i]
+            a["in_fwd"] += msat(fwd.get("in_msat"))
+            a["last_fwd_t"] = max(a["last_fwd_t"], t)
+            f = state(i, t)
+            if f is not None:
+                a["in_earn_high" if f > high else "in_earn_nothigh"] += fee
+
+    for fwd in iter_forwards(cli, "local_failed", start, before, args.page):
+        if fwd.get("failcode") != 4103:  # WIRE_TEMPORARY_CHANNEL_FAILURE
+            continue
+        o = current_scid(fwd.get("out_channel"))
+        if o not in acc:
+            continue
+        amt = msat(fwd.get("in_msat"))
+        acc[o]["ref_msat"] += amt
+        f = state(o, fwd["received_time"])
+        if f is not None and f < low:
+            acc[o]["ref_low_msat"] += amt
+
+    rows = []
+    for scid, ch in channels.items():
+        peer_id = ch["peer_id"]
+        bal = balances[peer_id]
+        # the capacity the channel had over the window: the peer's mean
+        # sampled capacity, apportioned by this channel's share of the
+        # peer's capacity now (the samples are per peer and may lag a
+        # splice by an hour; the current capacity alone would divide
+        # pre-splice volume by post-splice size)
+        mean_total = bal.mean_total_msat() if bal else None
+        window_cap = ch["cap"]
+        if mean_total and peer_cap.get(peer_id):
+            window_cap = mean_total * ch["cap"] / peer_cap[peer_id]
+        # CLBOSS samples a peer's balance when it sets the channel's fee,
+        # which it does for channels it sees in gossip; a private channel
+        # (or an unmanaged peer's) has no samples.  Such a channel keeps
+        # its row: the columns that rest on samples are empty, the rest
+        # (forwards, balance now, Quiet) still read, and it can be Spent.
+        h = bal.hours(low, high) if bal else {"low": 0.0, "mid": 0.0,
+                                               "high": 0.0}
+        total_h = h["low"] + h["mid"] + h["high"]
+        sampled = total_h > 0
+        a = acc[scid]
+        notlow_h = h["mid"] + h["high"]
+        nothigh_h = h["low"] + h["mid"]
+        out_int = a["out_earn_notlow"] / notlow_h if notlow_h else 0.0
+        out_low = a["out_earn_low"] / h["low"] if h["low"] else 0.0
+        in_int = a["in_earn_nothigh"] / nothigh_h if nothigh_h else 0.0
+        in_high = a["in_earn_high"] / h["high"] if h["high"] else 0.0
+        gain_out = max(0.0, out_int - out_low) * h["low"]
+        gain_in = max(0.0, in_int - in_high) * h["high"]
+        gross = a["in_fwd"] + a["out_fwd"]
+        rec = recent.get(peer_id, {})
+        rose_at, dipped = (bal.rise(SPENT_LOW, args.spent_frac) if bal
+                           else (None, False))
+        # two ages: the current short channel id's (since the last splice
+        # or open) and the peer's (since the earliest channel we had with
+        # it, closed ones included)
+        age_days = (tip - block_of(scid)) / 144.0 if tip else None
+        peer_age_days = ((tip - peer_first_block[peer_id]) / 144.0
+                         if tip and peer_id in peer_first_block else None)
+        earned = rec.get("in_earnings", 0) + rec.get("out_earnings", 0)
+        spent = rec.get("in_expenditures", 0) + rec.get("out_expenditures", 0)
+        net_earned = earned - spent
+        row = {
+            "peer_id": peer_id,
+            "alias": aliases.get(peer_id, peer_id),
+            "scid": scid,
+            "cap_sat": ch["cap"] / 1000.0,
+            "inbound_sat": ch["inbound"] / 1000.0,
+            "peer_ppm": ch["peer_ppm"],
+            "sampled": sampled,
+            "age_days": age_days,
+            "peer_age_days": peer_age_days,
+            "days": total_h / 24.0,
+            "low_pct": h["low"] / total_h * 100.0 if sampled else 0.0,
+            "mid_pct": h["mid"] / total_h * 100.0 if sampled else 0.0,
+            "high_pct": h["high"] / total_h * 100.0 if sampled else 0.0,
+            "low_h": h["low"],
+            "high_h": h["high"],
+            "notlow_h": notlow_h,
+            "nothigh_h": nothigh_h,
+            "out_int": out_int * 24 / 1000.0,   # sat/day
+            "out_low": out_low * 24 / 1000.0,
+            "in_int": in_int * 24 / 1000.0,
+            "in_high": in_high * 24 / 1000.0,
+            "gain_out": gain_out / 1000.0,      # sat over the window
+            "gain_in": gain_in / 1000.0,
+            "gain": (gain_out + gain_in) / 1000.0,
+            "gain_pct": ((gain_out + gain_in) / net_earned * 100.0
+                         if net_earned > 0 else None),
+            "earned": earned / 1000.0,
+            "spent": spent / 1000.0,
+            "net_earned": net_earned / 1000.0,
+            "fwd_in": a["in_fwd"] / 1000.0,
+            "fwd_out": a["out_fwd"] / 1000.0,
+            "net": (a["out_fwd"] - a["in_fwd"]) / gross if gross else 0.0,
+            "fill": rec.get("out_rebalanced", 0) / 1000.0,
+            "drain": rec.get("in_rebalanced", 0) / 1000.0,
+            "refused_out": a["ref_msat"] / 1000.0,
+            "refused_low_pct": (a["ref_low_msat"] / a["ref_msat"] * 100.0
+                                if a["ref_msat"] else 0.0),
+            "range_pct": (bal.hi - bal.lo) * 100.0 if sampled else 0.0,
+            # without samples the lowest our side is known to have been
+            # is where it is now
+            "min_local_sat": (bal.min_our_msat if sampled
+                              else ch["cap"] - ch["inbound"]) / 1000.0,
+            "resized_days": ((before - bal.resized_at) / 86400.0
+                             if sampled and bal.resized_at is not None
+                             else None),
+            "turns": gross / window_cap if window_cap else 0.0,
+            # days since the last settled forward either way; None when
+            # the window has none
+            "quiet_days": ((before - a["last_fwd_t"]) / 86400.0
+                           if a["last_fwd_t"] else None),
+            "opener": ch["opener"],
+            "local_frac": (ch["cap"] - ch["inbound"]) / ch["cap"]
+                          if ch["cap"] else 0.0,
+            "lo_frac": bal.lo if sampled else None,
+            "rose_at": rose_at,
+            "dipped_after_rise": dipped,
+            "connected": ch["connected"],
+            "connect_rate_3d": connect_rate.get(peer_id),
+            "spliceable": (spliceable(features[peer_id])
+                           if peer_id in features else None),
+        }
+        row["class"] = classify(row, row["days"])
+        rows.append(row)
+
+    for r in rows:
+        r["group"] = group_of(r, args, window_days)
+        r["change_sat"], r["consider_close"] = change_for(r, args)
+        r["wait"], r["cost"] = holds_for(r, args, window_days)
+        r["actionable"] = (r["group"] in ("grow", "shrink", "spent")
+                           and not r["wait"] and not r["cost"])
+
+    class_rank = {"bidir": 0, "bidir?": 1, "rebal": 2, "rebal?": 3,
+                  "sink": 4, "sink?": 5, "source": 4, "source?": 5,
+                  "idle": 6}
+    group_rank = {name: i for i, (name, _) in enumerate(GROUPS)}
+
+    def group_key(r):
+        g = r["group"]
+        if g == "grow":
+            second = -r["gain_out"]
+        elif g == "shrink":
+            second = -r["min_local_sat"]
+        elif g == "spent":
+            second = (1 if r["wait"] else 0, -r["cap_sat"])
+        elif g == "right":
+            second = -r["net_earned"]
+        elif g == "liquidity":
+            # sinks together, then sources, then rebalance-carried, each
+            # ranked by the best estimate of the demand it refuses
+            cls = r["class"].rstrip("?")
+            if cls == "sink":
+                second = (0, -r["refused_out"])
+            elif cls == "source":
+                second = (1, -r["gain_in"])
+            else:
+                second = (2, -r["net_earned"])
+        elif g == "young":
+            second = -r["days"]
+        else:
+            second = -r["cap_sat"]
+        return (group_rank[g], second)
+
+    if args.sort == "group":
+        rows.sort(key=group_key)
+    elif args.sort == "sizing":
+        def sizing_key(r):
+            if r["class"].startswith("bidir") and r["gain_out"] > 0:
+                return (0, -r["gain_out"], 0.0)
+            return (1, r["min_local_sat"], -r["gain_in"])
+        rows.sort(key=sizing_key)
+    elif args.sort == "class":
+        rows.sort(key=lambda r: (class_rank.get(r["class"], 9), -r["gain"]))
+    elif args.sort == "gain":
+        rows.sort(key=lambda r: -r["gain"])
+    elif args.sort == "earned":
+        rows.sort(key=lambda r: -r["net_earned"])
+    elif args.sort == "cap":
+        rows.sort(key=lambda r: -r["cap_sat"])
+    else:
+        rows.sort(key=lambda r: r["alias"].lower())
+
+    if args.json:
+        out = []
+        for r in rows:
+            j = dict(r)
+            j["wait"] = [word for word, _ in r["wait"]]
+            j["cost"] = [word for word, _ in r["cost"]]
+            out.append(j)
+        print(json.dumps({"since": since, "before": before,
+                          "edge_pct": args.edge, "rows": out}, indent=1))
+        return 0
+
+    def m(sat):
+        return f"{sat / 1e6:.1f}"
+
+    def yn(value):
+        return "?" if value is None else ("y" if value else "n")
+
+    def rate(value):
+        return "?" if value is None else f"{value * 100:.0f}"
+
+    def change(r):
+        if r["change_sat"] is None:
+            return ""
+        text = f"{r['change_sat'] / 1e6:+.1f}"
+        return f"({text})" if r["consider_close"] else text
+
+    def per_day(value, hours):
+        """a rate over a state the channel was never in has no value"""
+        return "-" if hours <= 0 else f"{value:.0f}"
+
+    def pct(value, r):
+        """a share of sampled hours, or - without samples"""
+        return f"{value:.0f}" if r["sampled"] else "-"
+
+    def age(r):
+        """days of the current short channel id, then, after a slash when
+        the peer goes back further, days since our earliest channel with
+        it"""
+        if r["age_days"] is None:
+            return "?"
+        scid_age = f"{r['age_days']:.0f}"
+        peer_age = r["peer_age_days"]
+        if peer_age is None or f"{peer_age:.0f}" == scid_age:
+            return scid_age
+        return f"{scid_age}/{peer_age:.0f}"
+
+    id_col = "PeerID" if args.ids else "Alias"
+    # (header, value, wide-only, left-aligned, row field for tinting)
+    cols = [
+        (id_col, lambda r: r["peer_id"] if args.ids else r["alias"], False,
+         True, None),
+        ("SCID", lambda r: r["scid"], False, True, None),
+        ("Cap", lambda r: m(r["cap_sat"]), False, False, "cap_sat"),
+        ("Inb", lambda r: m(r["inbound_sat"]), False, False, "inbound_sat"),
+        ("PeerPpm", lambda r: "?" if r["peer_ppm"] is None
+         else f"{r['peer_ppm']}", False, False, None),
+        ("Change", change, False, False, None),
+        ("Age", age, False, False, None),
+        ("Quiet", lambda r: "-" if r["quiet_days"] is None
+         else f"{r['quiet_days']:.0f}", False, False, "quiet_days"),
+        ("Sampled", lambda r: f"{r['days']:.0f}" if r["sampled"] else "-",
+         False, False, "days"),
+        ("%Low", lambda r: pct(r["low_pct"], r), False, False, None),
+        ("%Int", lambda r: pct(r["mid_pct"], r), False, False, None),
+        ("%High", lambda r: pct(r["high_pct"], r), False, False, None),
+        ("GainOut", lambda r: f"{r['gain_out']:.0f}", False, False, None),
+        ("OutLow", lambda r: per_day(r["out_low"], r["low_h"]), True, False,
+         None),
+        ("OutInt", lambda r: per_day(r["out_int"], r["notlow_h"]), False,
+         False, None),
+        ("InInt", lambda r: per_day(r["in_int"], r["nothigh_h"]), False,
+         False, None),
+        ("InHigh", lambda r: per_day(r["in_high"], r["high_h"]), True, False,
+         None),
+        ("GainIn", lambda r: f"{r['gain_in']:.0f}", False, False, None),
+        ("NetEarn", lambda r: f"{r['net_earned']:.0f}", False, False,
+         "net_earned"),
+        ("Turns", lambda r: f"{r['turns']:.1f}", False, False, None),
+        ("Fill", lambda r: m(r["fill"]), False, False, None),
+        ("Drain", lambda r: m(r["drain"]), False, False, None),
+        ("Refused", lambda r: m(r["refused_out"]), False, False, None),
+        ("@Low", lambda r: f"{r['refused_low_pct']:.0f}", True, False, None),
+        ("MinLoc", lambda r: m(r["min_local_sat"]), False, False, None),
+        ("Range", lambda r: pct(r["range_pct"], r), True, False, None),
+        ("Up", lambda r: "y" if r["connected"] else "n", False, True,
+         "connected"),
+        ("Up3d", lambda r: rate(r["connect_rate_3d"]), False, True,
+         "connect_rate_3d"),
+        ("Splice", lambda r: yn(r["spliceable"]), False, True, "spliceable"),
+        ("Class", lambda r: r["class"], False, True, "class"),
+        ("Wait", lambda r: ",".join(word for word, _ in r["wait"]), False,
+         True, None),
+        ("Cost", lambda r: ",".join(word for word, _ in r["cost"]), False,
+         True, None),
+    ]
+    cols = [c for c in cols if args.wide or not c[2]]
+    headers = [c[0] for c in cols]
+
+    def paint(r, col):
+        text = col[1](r)
+        if not color:
+            return text
+        tinted = any(col[4] in fields
+                     for _, fields in r["wait"] + r["cost"])
+        if tinted:
+            return ANSI_HOLD + text + ANSI_RESET
+        if r["actionable"]:
+            return ANSI_BOLD + text + ANSI_RESET
+        return text
+
+    table = [[paint(r, c) for c in cols] for r in rows]
+
+    print(f"window {time.strftime('%Y-%m-%d %H:%M', time.gmtime(since))}Z .. "
+          f"{time.strftime('%Y-%m-%d %H:%M', time.gmtime(before))}Z "
+          f"({window_days:.1f} d), edge {args.edge:g}%")
+    lines = tabulate(table, headers=headers, tablefmt="plain",
+                     stralign="left", numalign="right", disable_numparse=True,
+                     colalign=tuple("left" if c[3] else "right"
+                                    for c in cols)).splitlines()
+    print(lines[0])
+    if args.sort == "group":
+        titles = dict(GROUPS)
+        current = None
+        for r, line in zip(rows, lines[1:]):
+            if r["group"] != current:
+                current = r["group"]
+                print()
+                if color:
+                    print(ANSI_BOLD + titles[current] + ANSI_RESET)
+                else:
+                    print(titles[current])
+            print(line)
+    else:
+        for line in lines[1:]:
+            print(line)
+    print()
+
+    def legend(name, desc):
+        first, *rest = textwrap.wrap(desc, width=101)
+        print(f"{name:<9}{first}")
+        for cont in rest:
+            print(f"{'':9}{cont}")
+
+    blocks = [
+        [(id_col, "the peer's node id" if args.ids
+          else "the peer's alias (--ids shows node ids)", False),
+         ("SCID", "short channel id, ready for splice and close commands",
+          False),
+         ("Cap", "capacity, M sat", False),
+         ("Inb", "the peer's side now, M sat: the inbound liquidity a "
+          "close gives up and a splice keeps", False),
+         ("PeerPpm", "the peer's fee rate toward us, ppm, from its channel "
+          "update: what pulling liquidity in through this channel costs, "
+          "so what moving Inb to a replacement channel would pay; "
+          "? = no update seen", False),
+         ("Change", "proposed splice, M sat; in parentheses when under 1M "
+          "sat would remain, so consider closing instead "
+          "(clboss-forwarding-stats --days 90 --sort tral)", False),
+         ("Age", "days since the current short channel id's block (the "
+          "last splice or open), at 144 blocks a day; after a slash, when "
+          "the peer goes back further, days since the earliest channel we "
+          "had with it, closed ones and pre-splice fundings included",
+          False),
+         ("Quiet", "days since the last settled forward either way; - = "
+          "none in the window", False),
+         ("Sampled", "days of balance samples in the window; - = none, "
+          "the peer's fee is not managed (a private channel), so the "
+          "shares, Gain and Range are unknown and MinLoc is our side "
+          "now", False)],
+        [("%Low", f"share of sampled hours with our side under "
+          f"{args.edge:g}% of capacity: outbound runs dry", False),
+         ("%Int", "share in the interior; the three shares sum to 100",
+          False),
+         ("%High", f"share with our side over {100 - args.edge:g}%: the "
+          f"peer's side runs dry", False),
+         ("GainOut", "foregone outbound fees, sat: low hours priced at "
+          "the interior rate; an upper bound on what more capacity on our "
+          "side recovers, meaningful for class bidir only", False),
+         ("OutLow", "outbound fee rate in low hours, sat/day; - = no low "
+          "hours", True),
+         ("OutInt", "outbound fee rate outside low hours, sat/day", False),
+         ("InInt", "inbound fee rate outside high hours, sat/day", False),
+         ("InHigh", "inbound fee rate in high hours, sat/day; - = no high "
+          "hours", True),
+         ("GainIn", "foregone inbound fees, sat: high hours at the "
+          "interior rate; a drain or the peer's funds recover it, our "
+          "splice does not", False)],
+        [("NetEarn", "forwarding fees less the rebalance spend, both as "
+          "CLBOSS attributes them to the peer, sat over the window; the "
+          "clboss-forwarding-stats figure", False),
+         ("Turns", "forwarded volume over capacity", False),
+         ("Fill", "rebalanced into our side by CLBOSS, M sat", False),
+         ("Drain", "rebalanced out of our side by CLBOSS, M sat", False),
+         ("Refused", "outbound volume refused, M sat; retries inflate it",
+          False),
+         ("@Low", "share of Refused that arrived in low hours, %: at 100 "
+          "the dry side turned it away, at 0 the refusals are mid-range, "
+          "the fast-cycling signature", True),
+         ("MinLoc", "lowest our side got, M sat: capital that never moved",
+          False),
+         ("Range", "highest minus lowest local share in the window, % of "
+          "capacity", True)],
+        [("Up", "connected now", False),
+         ("Up3d", "3-day connect rate, %", False),
+         ("Splice", "peer negotiates or announces splicing; ? = no "
+          "announcement seen", False),
+         ("Class", "flow shape -- bidir, sink, source, rebal, idle; ? = "
+          "thin interior evidence", False),
+         ("Wait", "reasons to defer a Grow/Shrink/Spent row that resolve "
+          "themselves with time: young or thin evidence, resized (the "
+          "capacity changed under --min-days ago, so MinLoc and Change "
+          "rest on the samples since), quiet (a spent channel's last "
+          "forward is under --spent-quiet days old), peer offline or "
+          "flaky", False),
+         ("Cost", "the price of acting on a Grow/Shrink row now, a "
+          "person's to accept: inbound = the peer cannot splice, so a "
+          "resize is a close, forfeiting the inbound liquidity.  Wait "
+          "and Cost both empty = actionable"
+          + (" (bold)" if color else ""), False)],
+    ]
+    for i, block in enumerate(blocks):
+        if i:
+            print()
+        for name, desc, wide_only in block:
+            if wide_only and not args.wide:
+                continue
+            legend(name, desc)
+    print()
+    print(textwrap.fill(
+        f"Grow: bidir with GainOut >= {args.min_gain} sat (our side ran "
+        f"dry), or turning over {args.grow_turns:g}x Cap/day with refusals "
+        f">= {args.grow_refused:g} of carried (a fast-cycling channel "
+        f"never parks at an edge; its shortage shows as refusals); its "
+        f"Change adds the current capacity as a step, then read the next "
+        f"window.  Shrink: MinLoc >= {args.idle_frac:g} of Cap and >= "
+        f"{MIN_IDLE_SAT // 1_000_000}M sat; its Change removes enough "
+        f"that the window's lowest local balance lands at the edge of the "
+        f"smaller channel.  Spent: the peer opened, the flow was inbound "
+        f"and our side rose once within the window to >= "
+        f"{args.spent_frac:g} of Cap and stayed; its Change is the whole "
+        f"capacity, a close the peer pays for, once {args.spent_quiet} "
+        f"days have passed without a forward.  Too young: under "
+        f"{args.min_days} days of samples.  Little or no traffic: Turns "
+        f"under {args.min_turns:g}.",
+        width=110))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
