@@ -134,6 +134,7 @@
 # forwards attributed above.
 
 import argparse
+import math
 import bisect
 import json
 import os
@@ -819,14 +820,17 @@ def main():
             connect_rate[peer_id] = float(m["connect_rate"])
 
     # fees, rebalance spend and rebalance volumes per peer over the same
-    # window: CLBOSS's per-peer day buckets, summed where the bucket
-    # starts inside [since, before), so --since/--before cover these
-    # columns too (clboss-recent-earnings only counts back from now)
+    # window: CLBOSS's per-peer day buckets, so --since/--before cover
+    # these columns too (clboss-recent-earnings only counts back from
+    # now).  A bucket counts when it overlaps the window: from the
+    # bucket that contains the start, as clboss-recent-earnings does,
+    # so the default window gives its figures
     recent = {}
+    bucket_start = math.floor(since / 86400) * 86400
     history = (cli("clboss-earnings-history", "all") or {}).get("history", [])
     for entry in history:
         t = entry.get("bucket_time", 0)
-        if t < since or t >= before:
+        if t < bucket_start or t >= before:
             continue
         rec = recent.setdefault(entry.get("node"), {})
         for key, val in entry.items():
