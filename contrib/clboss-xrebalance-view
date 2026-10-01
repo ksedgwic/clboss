@@ -681,6 +681,9 @@ def main():
     channels = {}
     peers = {}
     for ch in channels_data:
+        # The rebalancer admits CHANNELD_NORMAL channels only; a
+        # channel awaiting splice lock-in sits out until then, so it
+        # sits out here too.
         if ch.get("state") != "CHANNELD_NORMAL":
             continue
         scid = ch.get("short_channel_id")
