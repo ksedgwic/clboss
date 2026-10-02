@@ -4,6 +4,7 @@
 #include"Net/IPAddr.hpp"
 #include"Net/IPAddrOrOnion.hpp"
 #include<assert.h>
+#include<stdexcept>
 #include<string>
 
 namespace {
@@ -12,6 +13,15 @@ std::unique_ptr<Net::IPAddrOrOnion> lookup(char const* json) {
 	return Boss::Mod::ChannelCreator::node_address(
 		Jsmn::Object::parse_json(json)
 	);
+}
+
+bool throws(char const* json) {
+	try {
+		lookup(json);
+	} catch (std::exception const&) {
+		return true;
+	}
+	return false;
 }
 
 }
@@ -58,6 +68,13 @@ int main() {
 	assert(six);
 	assert(six->is_ip_addr(ip));
 	assert(ip == Net::IPAddr::v6("2001:db8::7"));
+
+	/* A reply of the wrong shape throws, so the caller logs it.  */
+	assert(throws(R"({"nodes": {}})"));
+	assert(throws(R"({"nodes": [{"nodeid": "02aa", "addresses": {}}]})"));
+	assert(throws(R"({"nodes": [{"nodeid": "02aa", "addresses": [
+		{"type": "ipv4", "port": 9735}
+	]}]})"));
 
 	return 0;
 }
