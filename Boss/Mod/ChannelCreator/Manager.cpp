@@ -2,6 +2,7 @@
 #include"Boss/Mod/ChanneledPeers.hpp"
 #include"Boss/Mod/ChannelCreator/Carpenter.hpp"
 #include"Boss/Mod/ChannelCreator/Manager.hpp"
+#include"Boss/Mod/ChannelCreator/NodeAddress.hpp"
 #include"Boss/Mod/ChannelCreator/Planner.hpp"
 #include"Boss/Mod/ChannelCreator/RearrangerBySize.hpp"
 #include"Boss/Mod/Rpc.hpp"
@@ -335,21 +336,8 @@ Manager::get_node_addr(Ln::NodeId n) {
 					.end_object()
 				   );
 	}).then([this](Jsmn::Object res) {
-		auto rv = Net::IPAddrOrOnion();
 		try {
-			auto nodes = res["nodes"];
-			/* Node not known?  */
-			if (nodes.length() == 0)
-				return Ev::lift(std::unique_ptr<Net::IPAddrOrOnion>());
-			auto node = nodes[0];
-			auto addrs = node["addresses"];
-			/* No addresses known for node?  */
-			if (addrs.length() == 0)
-				return Ev::lift(std::unique_ptr<Net::IPAddrOrOnion>());
-			/* Report first address.  */
-			auto addr_j = addrs[0];
-			auto addr_s = std::string(addr_j["address"]);
-			rv = Net::IPAddrOrOnion(addr_s);
+			return Ev::lift(node_address(res));
 		} catch (...) {
 			return Boss::log( bus, Error
 					, "ChannelCreator: Unexpected result from "
@@ -359,7 +347,6 @@ Manager::get_node_addr(Ln::NodeId n) {
 				return Ev::lift(std::unique_ptr<Net::IPAddrOrOnion>());
 			});
 		}
-		return Ev::lift(Util::make_unique<Net::IPAddrOrOnion>(std::move(rv)));
 	});
 }
 Ev::Io<std::vector<Ln::NodeId>>
