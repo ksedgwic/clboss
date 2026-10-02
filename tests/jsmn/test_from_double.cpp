@@ -1,6 +1,7 @@
 #undef NDEBUG
 #include"Jsmn/Detail/Str.hpp"
 #include<cassert>
+#include<limits>
 #include<string>
 
 int main() {
@@ -25,6 +26,17 @@ int main() {
 	assert(to_double(from_double(x)) == x);
 	auto third = 1.0 / 3.0;
 	assert(to_double(from_double(third)) == third);
+
+	/* The limits of the range: a fifteen-digit rounding of the
+	 * largest double lies outside the range and must not be
+	 * accepted; the seventeen-digit text reads back exactly.  */
+	auto big = std::numeric_limits<double>::max();
+	assert(from_double(big) == "1.7976931348623157e+308");
+	assert(to_double(from_double(big)) == big);
+	auto low = std::numeric_limits<double>::lowest();
+	assert(to_double(from_double(low)) == low);
+	auto tiny = std::numeric_limits<double>::min();
+	assert(to_double(from_double(tiny)) == tiny);
 
 	return 0;
 }

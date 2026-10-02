@@ -129,7 +129,10 @@ std::string from_double(double d) {
 		is.imbue(std::locale("C"));
 		auto back = double();
 		is >> back;
-		if (back == d)
+		/* A value outside the double range sets failbit and
+		 * clamps back to the limit, which would compare equal
+		 * to the limit itself; the text must read cleanly.  */
+		if (is && back == d)
 			return os.str();
 	}
 }
