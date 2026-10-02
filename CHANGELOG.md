@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.2] - Unreleased
+
+### Fixed
+
+- The channel creator no longer logs an error for a candidate without
+  a node_announcement, or whose only address is of type `dns`; both
+  count as having no address for IP binning.  Issue #257.
+
 ## [0.17.1] - Unreleased
 
 ### Changed
