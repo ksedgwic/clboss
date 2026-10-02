@@ -669,6 +669,7 @@ TESTS = \
 	tests/ev/test_throw_in_then \
 	tests/graph/test_dijkstra \
 	tests/jsmn/test_equality \
+	tests/jsmn/test_from_double \
 	tests/jsmn/test_iterator \
 	tests/jsmn/test_parser \
 	tests/jsmn/test_performance \

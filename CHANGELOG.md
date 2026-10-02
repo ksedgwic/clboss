@@ -37,6 +37,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   a node_announcement, or whose only address is of type `dns`; both
   count as having no address for IP binning.  Issue #257.
 
+- Timestamps and other non-integer numbers in command output keep
+  their full precision.  They were printed with six significant
+  digits, so `clboss-status` showed a `now` of 1721640000 beside a
+  `now_human` of 08:29:41.  Issue #224.
+
 ## [0.17.1] - Unreleased
 
 ### Changed
