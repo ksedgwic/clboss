@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.2] - Unreleased
+
+### Fixed
+
+- Timestamps and other non-integer numbers in command output keep
+  their full precision.  They were printed with six significant
+  digits, so `clboss-status` showed a `now` of 1721640000 beside a
+  `now_human` of 08:29:41.  Issue #224.
+
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
 ### Changed

@@ -115,12 +115,23 @@ double to_double(std::string const& s) {
 	return ret;
 }
 std::string from_double(double d) {
-	/* Assumes C locale is JSON-compatible.  */
-	auto os = std::ostringstream();
-	os.imbue(std::locale("C"));
-
-	os << d;
-	return os.str();
+	/* Print with the fewest significant digits that read back as
+	 * the same double.  The stream default of six digits turned a
+	 * timestamp such as 1721639381.632 into 1.72164e+09.
+	 * Assumes C locale is JSON-compatible.  */
+	for (auto precision = 15; ; ++precision) {
+		auto os = std::ostringstream();
+		os.imbue(std::locale("C"));
+		os << std::setprecision(precision) << d;
+		if (precision >= 17)
+			return os.str();
+		auto is = std::istringstream(os.str());
+		is.imbue(std::locale("C"));
+		auto back = double();
+		is >> back;
+		if (back == d)
+			return os.str();
+	}
 }
 
 }}}
