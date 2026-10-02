@@ -554,6 +554,20 @@ Earlier versions do not record, so if you have been using CLBOSS
 before 0.11D, then historical offchain-to-onchain swaps are not
 reported.
 
+### One channel per peer
+
+CLBOSS keeps one channel per peer and never opens a second one
+itself.  A peer, or you, may open one beside it.  Several of CLBOSS's
+per-peer records then describe one channel while its actions apply to
+all of them: the fee for both channels follows the balance of the
+older one, auto-close waits, since CLN refuses to close by peer id
+while the peer has several channels, and the earnings and sizing
+statistics for that peer are off until it is back to one channel.
+Funds are not at risk, and a short overlap, while the second channel
+opens or the first one closes, does no damage.  When the overlap
+ends, the peer's complaint history is reset and its fee state is
+rebuilt on the next cycle.  Issue #352 tracks the per-channel fixes.
+
 ### Running `lightningd` with `--offline`
 
 `lightningd --offline` stops automatic reconnection to peers and
