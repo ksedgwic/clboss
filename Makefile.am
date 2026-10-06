@@ -611,6 +611,7 @@ TESTS = \
 	tests/boss/test_channelbalance \
 	tests/boss/test_channel_create_destroy_monitor_missing_old_state \
 	tests/boss/test_channelcreationdecider \
+	tests/boss/test_channelcreator_carpenter \
 	tests/boss/test_channelcreator_planner \
 	tests/boss/test_channelcreator_rearrangerbysize \
 	tests/boss/test_channelcreator_reprioritizer \

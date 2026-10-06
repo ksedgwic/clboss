@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.2] - Unreleased
+
+### Fixed
+
+- The channel creator checks `listpeerchannels` again right before
+  `multifundchannel`.  A plan takes minutes to make and to connect
+  for, and a planned peer could get a channel with us in that time
+  (an inbound open, a manual one); it would then have been funded a
+  second time.
+
 ## [0.17.1] - Unreleased
 
 ### Changed
