@@ -40,6 +40,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - The channel creator no longer logs an error for a candidate without
   a node_announcement, or whose only address is of type `dns`; both
   count as having no address for IP binning.  Issue #257.
+- CLBOSS again keeps at most three connections to peers without
+  channels.  Since 0.13.2 the peer list came from `listpeerchannels`,
+  which has no entry for a peer without a channel, so the limit never
+  applied and every channel candidate that was tested for uptime
+  stayed connected.  The peer list now takes those peers from
+  `listpeers` (#355).
 
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
