@@ -46,6 +46,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   applied and every channel candidate that was tested for uptime
   stayed connected.  The peer list now takes those peers from
   `listpeers` (#355).
+- The uptime test of a channel candidate no longer leaves a
+  connection behind: it disconnects after a successful connect, and
+  a candidate that is already connected counts as online without a
+  connect (#355).
 
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 

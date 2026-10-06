@@ -1,21 +1,27 @@
 #undef NDEBUG
 #include"Boss/Mod/ChannelCandidateInvestigator/Gumshoe.hpp"
 #include"Boss/Msg/RequestConnect.hpp"
+#include"Boss/Msg/RequestRpcCommand.hpp"
 #include"Boss/Msg/ResponseConnect.hpp"
+#include"Boss/Msg/ResponseRpcCommand.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/start.hpp"
 #include"Ev/yield.hpp"
+#include"Jsmn/Object.hpp"
+#include"Json/Out.hpp"
 #include"Ln/NodeId.hpp"
 #include"S/Bus.hpp"
 #include<assert.h>
 #include<map>
 #include<set>
+#include<vector>
 
 namespace {
 
 auto const A = Ln::NodeId("020000000000000000000000000000000000000000000000000000000000000000");
 auto const B = Ln::NodeId("020000000000000000000000000000000000000000000000000000000000000001");
 auto const C = Ln::NodeId("020000000000000000000000000000000000000000000000000000000000000002");
+auto const D = Ln::NodeId("020000000000000000000000000000000000000000000000000000000000000003");
 
 class DummyConnector {
 private:
@@ -98,6 +104,45 @@ int main() {
 
 	auto connector = DummyConnector(bus);
 
+	/* Mock `listpeers` and `disconnect`.  */
+	auto connected = std::set<std::string>();
+	auto disconnected = std::vector<std::string>();
+	bus.subscribe<Boss::Msg::RequestRpcCommand
+		     >([&](Boss::Msg::RequestRpcCommand const& m) {
+		auto params = Jsmn::Object::parse_json(
+			m.params.output().c_str()
+		);
+		auto id = std::string(params["id"]);
+
+		auto text = std::string("{}");
+		if (m.command == "listpeers") {
+			if (connected.count(id) != 0)
+				text = "{\"peers\": [{\"id\": \"" + id + "\""
+				     + ", \"connected\": true}]}"
+				     ;
+			else
+				text = "{\"peers\": []}";
+		} else {
+			assert(m.command == "disconnect");
+			disconnected.push_back(id);
+		}
+
+		auto response = Boss::Msg::ResponseRpcCommand();
+		response.requester = m.requester;
+		response.succeeded = true;
+		response.result = Jsmn::Object::parse_json(text.c_str());
+
+		return bus.raise(std::move(response));
+	});
+
+	/* Every connect that is requested.  */
+	auto requested = std::multiset<std::string>();
+	bus.subscribe<Boss::Msg::RequestConnect
+		     >([&](Boss::Msg::RequestConnect const& rc) {
+		requested.insert(rc.node);
+		return Ev::lift();
+	});
+
 	auto code = Ev::lift().then([&]() {
 
 		/* Simple investigate/report check.  */
@@ -113,6 +158,9 @@ int main() {
 		/* Should have reported it now.  */
 		assert(last_node == A);
 		assert(last_success);
+		/* And dropped the connection it made.  */
+		assert(disconnected.size() == 1);
+		assert(disconnected.back() == std::string(A));
 
 		/* Unrelated connects should be ignored.  */
 		return bus.raise(Boss::Msg::RequestConnect{
@@ -124,6 +172,8 @@ int main() {
 		/* Should not change.  */
 		assert(last_node == A);
 		assert(last_success);
+		/* That connection is not ours to drop.  */
+		assert(disconnected.size() == 1);
 
 		/* Multiple under investigation.  */
 		return g.investigate(A);
@@ -137,6 +187,8 @@ int main() {
 		/* Should report C.  */
 		assert(last_node == C);
 		assert(!last_success);
+		/* Nothing to disconnect after a failed connect.  */
+		assert(disconnected.size() == 1);
 
 		/* Re-raising C should not change report.  */
 		last_node = Ln::NodeId();
@@ -155,6 +207,20 @@ int main() {
 		/* Should report C.  */
 		assert(last_node == A);
 		assert(last_success);
+		assert(disconnected.size() == 2);
+		assert(disconnected.back() == std::string(A));
+
+		/* A node that is already connected is online, without
+		 * a connect, and stays connected.  */
+		connected.insert(std::string(D));
+		return g.investigate(D);
+	}).then([&]() {
+		return Ev::yield(25);
+	}).then([&]() {
+		assert(last_node == D);
+		assert(last_success);
+		assert(requested.count(std::string(D)) == 0);
+		assert(disconnected.size() == 2);
 
 		return Ev::lift(0);
 	});
