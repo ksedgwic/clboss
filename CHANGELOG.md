@@ -50,6 +50,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   connection behind: it disconnects after a successful connect, and
   a candidate that is already connected counts as online without a
   connect (#355).
+- The channel creator checks `listpeerchannels` again right before
+  `multifundchannel`.  A plan takes minutes to make and to connect
+  for, and a planned peer could get a channel with us in that time
+  (an inbound open, a manual one); it would then have been funded a
+  second time.
 
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
