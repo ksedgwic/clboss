@@ -15,6 +15,7 @@ namespace Boss { namespace Msg {
  * `listpeers` but rather is constructed by "convolving" the value
  * from `listpeerchannels`.  Specifically, the top level `peer`
  * objects are non-standard and only have what CLBOSS uses ...
+ * A peer without channels has an entry too, taken from `listpeers`.
  */
 
 struct ListpeersResult {

@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.2] - Unreleased
+
+### Fixed
+
+- CLBOSS again keeps at most three connections to peers without
+  channels.  Since 0.13.2 the peer list came from `listpeerchannels`,
+  which has no entry for a peer without a channel, so the limit never
+  applied and every channel candidate that was tested for uptime
+  stayed connected.  The peer list now takes those peers from
+  `listpeers` (#355).
+
 ## [0.17.1] - Unreleased
 
 ### Changed
