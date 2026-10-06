@@ -1,4 +1,5 @@
 #include"Boss/Mod/ChannelCreator/Carpenter.hpp"
+#include"Boss/Mod/ChanneledPeers.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Mod/Waiter.hpp"
 #include"Boss/Msg/ChannelCreateResult.hpp"
@@ -106,6 +107,49 @@ Carpenter::construct(std::map<Ln::NodeId, Ln::Amount> plan) {
 	}).then([this]() {
 		/* Now wait a few seconds as per multifundchannel manpage.  */
 		return waiter.wait(3.0);
+	}).then([this]() {
+		/* The plan was made minutes ago: the dowser probed every
+		 * candidate, and the connects above can take minutes.  A
+		 * peer may have a channel with us by now (an inbound open,
+		 * the operator, a cycle that overlapped with this one),
+		 * and multifundchannel would open a second one.  Check
+		 * again right before funding.  */
+		return rpc->command( "listpeerchannels"
+				   , Json::Out::empty_object()
+				   ).catching<RpcError>([this](RpcError const& e) {
+			/* Without the check the plan could fund a peer
+			 * that has a channel; skip the plan instead.  */
+			return Boss::log( bus, Error
+					, "ChannelCreator: listpeerchannels "
+					  "failed, not creating channels "
+					  "this cycle: %s"
+					, e.error.direct_text().c_str()
+					).then([]() {
+				throw SkipConstruction();
+				return Ev::lift(Jsmn::Object());
+			});
+		});
+	}).then([this, pplan, pfails](Jsmn::Object res) {
+		auto channeled = channeled_peers(res);
+		auto act = Ev::lift();
+		for (auto it = pplan->begin(); it != pplan->end();) {
+			if (channeled.count(it->first) == 0) {
+				++it;
+				continue;
+			}
+			act += Boss::log( bus, Info
+					, "ChannelCreator: Not funding %s, "
+					  "we already have a channel with it."
+					, std::string(it->first).c_str()
+					);
+			pfails->push(it->first);
+			it = pplan->erase(it);
+		}
+		return act;
+	}).then([pplan]() {
+		if (pplan->empty())
+			throw SkipConstruction();
+		return Ev::lift();
 	}).then([this, pplan]() {
 
 		/* The plan might have sub-satoshi amounts that are not

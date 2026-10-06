@@ -51,6 +51,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   connection behind: it disconnects after a successful connect, and
   a candidate that is already connected counts as online without a
   connect (#355).
+- The channel creator checks `listpeerchannels` again right before
+  `multifundchannel`.  A plan takes minutes to make and to connect
+  for, and a planned peer could get a channel with us in that time
+  (an inbound open, a manual one); it would then have been funded a
+  second time.
+- The channel creator runs one creation cycle at a time.  Onchain
+  funds are announced on every block, and a cycle can outlast the gap
+  between two blocks, so a second cycle could plan the same funds for
+  the same peers.
 
 ## [0.17.1] - Unreleased
 
