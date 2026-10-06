@@ -41,6 +41,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   their full precision.  They were printed with six significant
   digits, so `clboss-status` showed a `now` of 1721640000 beside a
   `now_human` of 08:29:41.  Issue #224.
+- CLBOSS again keeps at most three connections to peers without
+  channels.  Since 0.13.2 the peer list came from `listpeerchannels`,
+  which has no entry for a peer without a channel, so the limit never
+  applied and every channel candidate that was tested for uptime
+  stayed connected.  The peer list now takes those peers from
+  `listpeers` (#355).
+- The uptime test of a channel candidate no longer leaves a
+  connection behind: it disconnects after a successful connect, and
+  a candidate that is already connected counts as online without a
+  connect (#355).
 
 ## [0.17.1] - Unreleased
 
