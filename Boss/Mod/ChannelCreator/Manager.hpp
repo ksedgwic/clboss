@@ -57,8 +57,12 @@ private:
 
 	/* clboss-candidate-prefer-spliceable.  */
 	bool prefer_spliceable;
+	/* A creation cycle is in progress; one at a time.  */
+	bool cycle_running = false;
 
 	void start();
+	/* One cycle, with the catch-all that clears cycle_running.  */
+	Ev::Io<void> run_cycle(Ln::Amount);
 	Ev::Io<void> on_request_channel_creation(Ln::Amount);
 
 	/* Needed by reprioritizer.  */
