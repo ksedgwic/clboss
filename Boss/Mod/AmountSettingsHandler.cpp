@@ -11,6 +11,7 @@
 #include<assert.h>
 #include<sstream>
 #include<string>
+#include<vector>
 
 namespace {
 
@@ -49,21 +50,126 @@ auto const min_usable_max_channel =
  * forever while churning the candidate table, so floor it.  */
 auto const min_usable_reserve = Ln::Amount::sat(30000);
 
-Ln::Amount parse_sats(Jsmn::Object value) {
+/* Read an amount in satoshis from the option value.
+ *
+ * `operator>>` into an unsigned skips leading whitespace and
+ * then accepts a leading '-', so even " -1" wraps to a huge
+ * value and bypasses the floors below.  Skip the same whitespace
+ * the stream would, then read nothing for a minus there (the
+ * amount stays 0); everything else keeps the stream parse, so
+ * spellings that parsed before, including a leading '+', still
+ * parse.
+ *
+ * Returns whether the text was a clean amount: digits, with an
+ * optional leading '+' and surrounding whitespace, and nothing
+ * else.  The startup path keeps the lenient value either way, as
+ * it always has; the setconfig path refuses anything unclean.  */
+bool parse_sats(Jsmn::Object const& value, Ln::Amount& out) {
 	auto str = std::string(value);
-	/* `operator>>` into an unsigned skips leading whitespace
-	 * and then accepts a leading '-', so even " -1" wraps to
-	 * a huge value and bypasses the floors below.  Skip the
-	 * same whitespace the stream would, then reject only a
-	 * minus there; everything else keeps the stream parse,
-	 * so spellings that parsed before, including a leading
-	 * '+', still parse.  */
 	auto is = std::istringstream(str);
-	auto sats = std::uint64_t();
+	auto sats = std::uint64_t(0);
+	auto clean = true;
 	is >> std::ws;
-	if (is.peek() != '-')
+	if (is.peek() == '-')
+		clean = false;
+	else {
 		is >> sats;
-	return Ln::Amount::sat(sats);
+		if (is.fail()) {
+			sats = 0;
+			clean = false;
+		} else {
+			is >> std::ws;
+			if (!is.eof())
+				clean = false;
+		}
+	}
+	out = Ln::Amount::sat(sats);
+	return clean;
+}
+
+unsigned int sat(Ln::Amount const& a) {
+	return (unsigned int) a.to_sat();
+}
+
+/* One adjustment the validation made: the problem, and what was
+ * done about it.  The startup path logs both; the setconfig path
+ * refuses the value with the problem alone.  */
+struct Note {
+	Boss::LogLevel level;
+	std::string problem;
+	std::string fix;
+};
+
+/* Apply the floors and the planner precondition to the settings
+ * and derive min_amount and min_remaining, noting each forced
+ * change.  */
+std::vector<Note> validate(Boss::Msg::AmountSettings& s) {
+	auto notes = std::vector<Note>();
+
+	if (s.min_channel < min_min_channel) {
+		auto os = std::ostringstream();
+		os << "--clboss-min-channel " << sat(s.min_channel)
+		   << " is below the floor " << sat(min_min_channel)
+		    ;
+		auto fix = std::ostringstream();
+		fix << "forced to " << sat(min_min_channel);
+		notes.push_back(Note{Boss::Info, os.str(), fix.str()});
+		s.min_channel = min_min_channel;
+	}
+	if (s.max_channel < min_usable_max_channel) {
+		auto os = std::ostringstream();
+		os << "--clboss-max-channel " << sat(s.max_channel)
+		   << " is too low for any allowed --clboss-min-channel "
+		      "(at least " << sat(min_usable_max_channel) << ")"
+		    ;
+		auto fix = std::ostringstream();
+		fix << "forced to " << sat(min_usable_max_channel);
+		notes.push_back(Note{Boss::Warn, os.str(), fix.str()});
+		s.max_channel = min_usable_max_channel;
+	}
+	if (s.reserve < min_usable_reserve) {
+		auto os = std::ostringstream();
+		os << "clboss-min-onchain " << sat(s.reserve)
+		   << " is below " << sat(min_usable_reserve)
+		   << " sat, CLN's default min-emergency-msat plus "
+		      "funding fees; every channel open would fail"
+		    ;
+		auto fix = std::ostringstream();
+		fix << "using " << sat(min_usable_reserve);
+		notes.push_back(Note{Boss::Warn, os.str(), fix.str()});
+		s.reserve = min_usable_reserve;
+	}
+
+	/* Compute the rest.  */
+	s.min_amount = trigger_factor * s.min_channel;
+	s.min_remaining = s.min_amount + additional_remaining;
+
+	/* The ChannelCreator Planner asserts
+	 *   min_channel + min_remaining <= max_channel
+	 * at construction, so a violating config would abort on the
+	 * first channel-creation run.  max_channel is the knob that
+	 * sets typical channel size: keep it, and lower min_channel
+	 * to the largest value that fits.  */
+	if (s.min_channel + s.min_remaining > s.max_channel) {
+		auto lowered = Ln::Amount::sat(
+			(s.max_channel - additional_remaining).to_sat()
+			/ (std::uint64_t)(1.0 + trigger_factor)
+		);
+		auto os = std::ostringstream();
+		os << "--clboss-min-channel " << sat(s.min_channel)
+		   << " and --clboss-max-channel " << sat(s.max_channel)
+		   << " conflict (max must be at least "
+		   << sat(s.min_channel + s.min_remaining) << ")"
+		    ;
+		auto fix = std::ostringstream();
+		fix << "--clboss-min-channel forced to " << sat(lowered);
+		notes.push_back(Note{Boss::Warn, os.str(), fix.str()});
+		s.min_channel = lowered;
+		s.min_amount = trigger_factor * s.min_channel;
+		s.min_remaining = s.min_amount + additional_remaining;
+	}
+
+	return notes;
 }
 
 }
@@ -73,199 +179,157 @@ namespace Boss { namespace Mod {
 class AmountSettingsHandler::Impl {
 private:
 	S::Bus& bus;
-	std::unique_ptr<Msg::AmountSettings> settings;
+	/* The settings in effect: as configured until EndOfOptions,
+	 * validated and published from then on.  */
+	Msg::AmountSettings settings;
+	bool options_ended;
+
+	static
+	Ln::Amount* field_of(Msg::AmountSettings& s, std::string const& name) {
+		if (name == "clboss-min-onchain")
+			return &s.reserve;
+		if (name == "clboss-min-channel")
+			return &s.min_channel;
+		if (name == "clboss-max-channel")
+			return &s.max_channel;
+		return nullptr;
+	}
+
+	/* Startup: take the configured value; the validation runs at
+	 * EndOfOptions over all three together.  */
+	Ev::Io<void> on_startup_option( Msg::Option const& o
+				      , Ln::Amount& field
+				      , Ln::Amount const& default_value
+				      , char const* what
+				      ) {
+		parse_sats(o.value, field);
+		if (field == default_value)
+			return Ev::lift();
+		return Boss::log( bus, Info
+				, "AmountSettingsHandler: "
+				  "%s set by --%s to %s satoshis."
+				, what
+				, o.name.c_str()
+				, std::string(o.value).c_str()
+				);
+	}
+
+	/* setconfig: validate a copy with the new value in place, and
+	 * refuse a value the validation would alter, so the value
+	 * lightningd persists is always the one in effect.  */
+	Ev::Io<void> on_dynamic_option(Msg::Option const& o) {
+		auto amount = Ln::Amount();
+		if (!parse_sats(o.value, amount)) {
+			o.reject( o.name + ": not a valid amount in satoshis");
+			return Boss::log( bus, Warn
+					, "AmountSettingsHandler: %s: '%s' is "
+					  "not a valid amount in satoshis; "
+					  "keeping %u."
+					, o.name.c_str()
+					, std::string(o.value).c_str()
+					, sat(*field_of(settings, o.name))
+					);
+		}
+		auto candidate = settings;
+		*field_of(candidate, o.name) = amount;
+		auto notes = validate(candidate);
+		if (!notes.empty()) {
+			o.reject(notes[0].problem);
+			return Boss::log( bus, Warn
+					, "AmountSettingsHandler: %s %u "
+					  "refused: %s; keeping %u."
+					, o.name.c_str()
+					, sat(amount)
+					, notes[0].problem.c_str()
+					, sat(*field_of(settings, o.name))
+					);
+		}
+		settings = candidate;
+		return Boss::log( bus, Info
+				, "AmountSettingsHandler: %s set to %u "
+				  "satoshis."
+				, o.name.c_str()
+				, sat(amount)
+				).then([this]() {
+			return bus.raise(Msg::AmountSettings(settings));
+		});
+	}
 
 	void start() {
-		settings->min_channel = default_min_channel;
-		settings->max_channel = default_max_channel;
-		settings->reserve = default_reserve;
+		settings.min_channel = default_min_channel;
+		settings.max_channel = default_max_channel;
+		settings.reserve = default_reserve;
+		options_ended = false;
 
 		bus.subscribe<Msg::Manifestation
 			     >([this](Msg::Manifestation const& _) {
-			assert(settings);
 			return bus.raise(Msg::ManifestOption{
 				"clboss-min-onchain",
 				Msg::OptionType_String,
 				Json::Out::direct(default_reserve.to_sat()),
 				"Target to leave this number of satoshis "
-				"onchain, putting the rest into channels."
+				"onchain, putting the rest into channels.  "
+				"Dynamic: settable at runtime via "
+				"`lightning-cli setconfig`.",
+				/* dynamic = */ true
 			}) + bus.raise(Msg::ManifestOption{
 				"clboss-min-channel",
 				Msg::OptionType_String,
 				Json::Out::direct(default_min_channel.to_sat()),
-				"Minimum size of channels to make."
+				"Minimum size of channels to make.  "
+				"Dynamic: settable at runtime via "
+				"`lightning-cli setconfig`.",
+				/* dynamic = */ true
 			}) + bus.raise(Msg::ManifestOption{
 				"clboss-max-channel",
 				Msg::OptionType_String,
 				Json::Out::direct(default_max_channel.to_sat()),
-				"Maximum size of channels to make."
+				"Maximum size of channels to make.  "
+				"Dynamic: settable at runtime via "
+				"`lightning-cli setconfig`.",
+				/* dynamic = */ true
 			});
 		});
 
 		bus.subscribe<Msg::Option
-			     >([this](Msg::Option o) {
-			/* Msg::Option was originally a startup-only signal
-			 * (delivered once per registered option between
-			 * Manifestation and EndOfOptions), and EndOfOptions
-			 * moves `settings` away on line below.  Now that
-			 * SetConfigHandler can re-raise Msg::Option at
-			 * runtime to deliver setconfig updates, this handler
-			 * may receive events for unrelated names long after
-			 * `settings` has been moved -- e.g. a runtime
-			 * `setconfig` on any dynamic option triggers a
-			 * Msg::Option that hits every subscriber.
-			 *
-			 * Drop those silently: none of the options this
-			 * handler owns is registered dynamic, so by the time
-			 * we see a post-EndOfOptions event it cannot
-			 * legitimately apply.  This also covers a latent
-			 * assertion crash that pre-existed dynamic options
-			 * (any post-EOO Msg::Option for any name would have
-			 * tripped the old assert(settings) here). */
-			if (!settings)
+			     >([this](Msg::Option const& o) {
+			/* Every Msg::Option reaches every subscriber;
+			 * only the three amounts are ours.  */
+			if (!field_of(settings, o.name))
 				return Ev::lift();
-			auto const& name = o.name;
-			if (name == "clboss-min-onchain") {
-				settings->reserve = parse_sats(o.value);
-				if (settings->reserve == default_reserve)
-					return Ev::lift();
-				return Boss::log( bus, Info
-						, "AmountSettingsHandler: "
-						  "Onchain reserve set by "
-						  "--clboss-min-onchain to "
-						  "%s satoshis."
-						, std::string(o.value).c_str()
+			if (options_ended)
+				return on_dynamic_option(o);
+			if (o.name == "clboss-min-onchain")
+				return on_startup_option( o, settings.reserve
+							, default_reserve
+							, "Onchain reserve"
+							);
+			if (o.name == "clboss-min-channel")
+				return on_startup_option( o, settings.min_channel
+							, default_min_channel
+							, "Minimum channel size"
+							);
+			return on_startup_option( o, settings.max_channel
+						, default_max_channel
+						, "Maximum channel size"
 						);
-			} else if (name == "clboss-min-channel") {
-				settings->min_channel = parse_sats(o.value);
-				if (settings->min_channel == default_min_channel)
-					return Ev::lift();
-				return Boss::log( bus, Info
-						, "AmountSettingsHandler: "
-						  "Minimum channel size set by "
-						  "--clboss-min-channel to "
-						  "%s satoshis."
-						, std::string(o.value).c_str()
-						);
-			} else if (name == "clboss-max-channel") {
-				settings->max_channel = parse_sats(o.value);
-				if (settings->max_channel == default_max_channel)
-					return Ev::lift();
-				return Boss::log( bus, Info
-						, "AmountSettingsHandler: "
-						  "Maximum channel size set by "
-						  "--clboss-max-channel to "
-						  "%s satoshis."
-						, std::string(o.value).c_str()
-						);
-			}
-			return Ev::lift();
 		});
 
 		bus.subscribe<Msg::EndOfOptions
 			     >([this](Msg::EndOfOptions const& _) {
-			assert(settings);
+			assert(!options_ended);
+			options_ended = true;
 
 			auto act = Ev::lift();
-
-			/* Validate settings.  */
-			if (settings->min_channel < min_min_channel) {
-				settings->min_channel = min_min_channel;
-				act += Boss::log( bus, Info
+			for (auto const& n : validate(settings))
+				act += Boss::log( bus, n.level
 						, "AmountSettingsHandler: "
-						  "--clboss-min-channel too "
-						  "low, forced to %u."
-						, (unsigned int)
-						  min_min_channel.to_sat()
+						  "%s, %s."
+						, n.problem.c_str()
+						, n.fix.c_str()
 						);
-			}
-			if (settings->max_channel < min_usable_max_channel) {
-				act += Boss::log( bus, Warn
-						, "AmountSettingsHandler: "
-						  "--clboss-max-channel %u too "
-						  "low for any allowed "
-						  "--clboss-min-channel, "
-						  "forced to %u."
-						, (unsigned int)
-						  settings->max_channel.to_sat()
-						, (unsigned int)
-						  min_usable_max_channel.to_sat()
-						);
-				settings->max_channel = min_usable_max_channel;
-			}
-			if (settings->reserve < min_usable_reserve) {
-				act += Boss::log( bus, Warn
-						, "AmountSettingsHandler: "
-						  "clboss-min-onchain %u is "
-						  "below %u sat, CLN's default "
-						  "min-emergency-msat plus "
-						  "funding fees; every channel "
-						  "open would fail.  Using %u."
-						, (unsigned int)
-						  settings->reserve.to_sat()
-						, (unsigned int)
-						  min_usable_reserve.to_sat()
-						, (unsigned int)
-						  min_usable_reserve.to_sat()
-						);
-				settings->reserve = min_usable_reserve;
-			}
 
-			/* Compute the rest.  */
-			settings->min_amount = trigger_factor
-					     * settings->min_channel
-					     ;
-			settings->min_remaining = settings->min_amount
-						+ additional_remaining
-						;
-
-			/* The ChannelCreator Planner asserts
-			 *   min_channel + min_remaining <= max_channel
-			 * at construction, so a violating config would
-			 * abort on the first channel-creation run.
-			 * max_channel is the knob that sets typical
-			 * channel size: keep it, and lower min_channel
-			 * to the largest value that fits.  */
-			if ( settings->min_channel + settings->min_remaining
-			   > settings->max_channel
-			   ) {
-				auto lowered = Ln::Amount::sat(
-					( settings->max_channel
-					- additional_remaining
-					).to_sat()
-					/ (std::uint64_t)(1.0 + trigger_factor)
-				);
-				act += Boss::log( bus, Warn
-						, "AmountSettingsHandler: "
-						  "--clboss-min-channel %u "
-						  "and --clboss-max-channel %u "
-						  "conflict (max must be at "
-						  "least %u), "
-						  "--clboss-min-channel "
-						  "forced to %u."
-						, (unsigned int)
-						  settings->min_channel.to_sat()
-						, (unsigned int)
-						  settings->max_channel.to_sat()
-						, (unsigned int)
-						  ( settings->min_channel
-						  + settings->min_remaining
-						  ).to_sat()
-						, (unsigned int)
-						  lowered.to_sat()
-						);
-				settings->min_channel = lowered;
-				settings->min_amount = trigger_factor
-						     * settings->min_channel
-						     ;
-				settings->min_remaining = settings->min_amount
-							+ additional_remaining
-							;
-			}
-
-			/* Grab the settings and send it.  */
-			auto msg = std::move(settings);
-			return act + bus.raise(std::move(*msg));
+			return act + bus.raise(Msg::AmountSettings(settings));
 		});
 	}
 
@@ -277,7 +341,8 @@ public:
 	explicit
 	Impl( S::Bus& bus_
 	    ) : bus(bus_)
-	      , settings(Util::make_unique<Msg::AmountSettings>())
+	      , settings()
+	      , options_ended(false)
 	      { start(); }
 };
 
