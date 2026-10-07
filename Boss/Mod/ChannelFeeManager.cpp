@@ -27,7 +27,9 @@ void ChannelFeeManager::start() {
 			"clboss-zerobasefee", Msg::OptionType_String,
 			Json::Out::direct(std::string("allow")),
 			"Whether to require, allow, or disallow a "
-			"0 base fee."
+			"0 base fee.  Dynamic: settable at runtime via "
+			"`lightning-cli setconfig`.",
+			/* dynamic = */ true
 		});
 	});
 	bus.subscribe<Msg::Option
@@ -35,21 +37,39 @@ void ChannelFeeManager::start() {
 		if (o.name != "clboss-zerobasefee")
 			return Ev::lift();
 
-		auto svalue = std::string(o.value);
+		auto name_of = [](ZeroBaseFee z) {
+			return (z == ZeroBaseFee_Require) ? "require" :
+			       (z == ZeroBaseFee_Disallow) ? "disallow" :
+			       /*otherwise*/ "allow";
+		};
+		auto svalue = o.value.is_string() ? std::string(o.value)
+						  : std::string();
+		auto value = ZeroBaseFee_Allow;
 		if (svalue == "require" || svalue == "required")
-			zero_base_fee = ZeroBaseFee_Require;
+			value = ZeroBaseFee_Require;
+		else if (svalue == "allow" || svalue == "allowed")
+			value = ZeroBaseFee_Allow;
 		else if (svalue == "disallow" || svalue == "disallowed")
-			zero_base_fee = ZeroBaseFee_Disallow;
-		else	zero_base_fee = ZeroBaseFee_Allow;
-
-		auto comment =
-			(zero_base_fee == ZeroBaseFee_Require) ?	"require" :
-			(zero_base_fee == ZeroBaseFee_Allow) ?		"allow" :
-			(zero_base_fee == ZeroBaseFee_Disallow) ?	"disallow" :
-			/*otherwise*/					"?" ;
+			value = ZeroBaseFee_Disallow;
+		else {
+			/* An unknown word used to mean allow; keep the
+			 * current setting instead, and refuse it from
+			 * setconfig so it is not persisted.  */
+			o.reject( "clboss-zerobasefee: expected require, "
+				  "allow or disallow"
+				);
+			return Boss::log( bus, Boss::Warn
+					, "ChannelFeeManager: "
+					  "clboss-zerobasefee: expected "
+					  "require, allow or disallow; "
+					  "keeping %s."
+					, name_of(zero_base_fee)
+					);
+		}
+		zero_base_fee = value;
 		return Boss::log( bus, Boss::Info
 				, "ChannelFeeManager: zerobasefee: %s"
-				, comment
+				, name_of(zero_base_fee)
 				);
 	});
 

@@ -23,6 +23,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- The six remaining startup-only options are dynamic:
+  `clboss-min-onchain`, `clboss-min-channel`, `clboss-max-channel`,
+  `clboss-auto-close`, `clboss-zerobasefee` and
+  `clboss-min-nodes-to-process` change at runtime with
+  `lightning-cli setconfig`, so every CLBOSS option except
+  `clboss-skip-cln-version-check` does.  A `setconfig` value that
+  the startup validation would have adjusted (an amount below its
+  floor, a channel-size pair the planner cannot use) or cannot
+  parse is refused with the reason, so the value `lightningd`
+  persists is always the one in effect; the startup path keeps
+  forcing such values, so existing configuration files still load.
+  An unknown `clboss-zerobasefee` word, which used to mean `allow`
+  silently, now keeps the current setting and logs a warning.
+
 - The contrib scripts show a peer's newest short channel id in place
   of its node id when the peer has no alias.
 - `contrib/clboss-routing-stats` keeps a channel awaiting splice
@@ -61,7 +75,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   between two blocks, so a second cycle could plan the same funds for
   the same peers.
 
-## [0.17.1] - Unreleased
+## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
 ### Changed
 
