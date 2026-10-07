@@ -589,6 +589,14 @@ The value is floored at 30000 sat, which is CLN's default
 `min-emergency-msat`, raise `--clboss-min-onchain` by the same
 amount.
 
+This is a *dynamic* option: set it in the `lightningd` config for the
+startup default, or change it at runtime without a restart with
+
+    lightning-cli setconfig clboss-min-onchain <satoshis>
+
+A value below the floor is forced up at startup and refused by
+`setconfig`.
+
 ### `--clboss-auto-close=<true|false>`
 
 This version of CLBOSS has ***EXPERIMENTAL*** code to monitor
@@ -600,7 +608,11 @@ This monitoring can be seen in `clboss-status`, under the
 As this feature is experimental, it is currently disabled by
 default.
 You can enable it by adding `clboss-auto-close=true` in your
-`lightningd` configuration.
+`lightningd` configuration, or at runtime without a restart with
+
+    lightning-cli setconfig clboss-auto-close true
+
+It is a *dynamic* option; `false` turns it off again the same way.
 Even if it is disabled, this monitoring is still performed and
 reported in `clboss-status`, channels are simply not actually
 closed, but most of the algorithm is still running (so you can
@@ -634,6 +646,13 @@ Some pathfinding algorithms under development may strongly
 prefer 0 or low base fees, so you might want to set CLBOSS
 to 0 base fee, or to allow a 0 base fee.
 
+This is a *dynamic* option: set it in the `lightningd` config for the
+startup default, or change it at runtime without a restart with
+
+    lightning-cli setconfig clboss-zerobasefee <require|allow|disallow>
+
+Any other word is refused.
+
 ### `--clboss-min-channel=<satoshis>` / `--clboss-max-channel=<satoshis>`
 
 Sets the minimum and maximum channel sizes that CLBOSS
@@ -646,14 +665,24 @@ The defaults are:
 
 The channel-creation planner requires
 `max-channel >= 3 * min-channel + 20000`.
-If the configured pair violates this, CLBOSS keeps the
-maximum and lowers the minimum to the largest value that
+If the configured pair violates this at startup, CLBOSS keeps
+the maximum and lowers the minimum to the largest value that
 fits, logging a warning.
 
 Specify the value in satoshis without adding any unit
 suffix, e.g.
 
     lightningd --clboss-min-channel=1000000
+
+Both are *dynamic* options: set them in the `lightningd` config for
+the startup defaults, or change them at runtime without a restart with
+
+    lightning-cli setconfig clboss-max-channel <satoshis>
+
+A `setconfig` value that would violate the requirement above, or
+fall below the 500000 sat minimum, is refused with the reason; the
+other value is left as it is.  A running channel-creation cycle
+keeps the sizes it started with; the next cycle uses the new ones.
 
 ### `--clboss-rebalance-mode=<xrebalance|off>`
 
@@ -741,6 +770,11 @@ The defaults depend on the network:
 
 Setting the option to `-1` reverts to the built-in network-specific
 default.
+
+This is a *dynamic* option: set it in the `lightningd` config for the
+startup default, or change it at runtime without a restart with
+
+    lightning-cli setconfig clboss-min-nodes-to-process <number>
 
 ### `--clboss-candidate-record-window-days=<days>`, `--clboss-candidate-keeper-tral-bps=<bps>`, `--clboss-candidate-min-record-days=<days>`, `--clboss-candidate-prefer-spliceable=<true|false>`
 

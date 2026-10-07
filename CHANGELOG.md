@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.2] - Unreleased
+
+### Changed
+
+- The six remaining startup-only options are dynamic:
+  `clboss-min-onchain`, `clboss-min-channel`, `clboss-max-channel`,
+  `clboss-auto-close`, `clboss-zerobasefee` and
+  `clboss-min-nodes-to-process` change at runtime with
+  `lightning-cli setconfig`, so every CLBOSS option except
+  `clboss-skip-cln-version-check` does.  A `setconfig` value that
+  the startup validation would have adjusted (an amount below its
+  floor, a channel-size pair the planner cannot use) or cannot
+  parse is refused with the reason, so the value `lightningd`
+  persists is always the one in effect; the startup path keeps
+  forcing such values, so existing configuration files still load.
+  An unknown `clboss-zerobasefee` word, which used to mean `allow`
+  silently, now keeps the current setting and logs a warning.
+
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
 ### Changed
