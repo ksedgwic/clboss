@@ -39,6 +39,17 @@ auto const chan_b = std::string(
 auto const chan_c = std::string(
 	"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 );
+auto const opening_str = std::string(
+	"020000000000000000000000000000000000000000000000000000000000000001"
+);
+auto const chan_d = std::string(
+	"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+);
+
+Jsmn::Object unnamed_channel(std::string const& state) {
+	auto json = std::string("{\"state\":\"") + state + "\"}";
+	return Jsmn::Object::parse_json(json.c_str());
+}
 
 Jsmn::Object channel(std::string const& id, std::string const& state) {
 	auto json = std::string("{\"channel_id\":\"") + id + "\","
@@ -80,6 +91,7 @@ int main() {
 
 	auto peer = Ln::NodeId(peer_str);
 	auto other = Ln::NodeId(other_str);
+	auto opening = Ln::NodeId(opening_str);
 
 	auto code = Ev::lift().then([&]() {
 		/* `peer` has two open channels, `other` has one.  */
@@ -92,6 +104,13 @@ int main() {
 		cpeers[other].connected = true;
 		cpeers[other].channels.push_back(
 			channel(chan_c, "CHANNELD_NORMAL"));
+		/* `opening` has one open channel and one still
+		 * opening, listed without a channel_id.  */
+		cpeers[opening].connected = true;
+		cpeers[opening].channels.push_back(
+			channel(chan_d, "CHANNELD_NORMAL"));
+		cpeers[opening].channels.push_back(
+			unnamed_channel("DUALOPEND_AWAITING_LOCKIN"));
 		return bus.raise(Boss::Msg::ListpeersResult{
 			std::move(cpeers), true
 		});
@@ -99,6 +118,7 @@ int main() {
 		auto r = Boss::Msg::ListpeersAnalyzedResult{};
 		r.connected_channeled.insert(peer);
 		r.connected_channeled.insert(other);
+		r.connected_channeled.insert(opening);
 		r.initial = true;
 		return bus.raise(std::move(r));
 	}).then([&]() {
@@ -127,6 +147,14 @@ int main() {
 	}).then([&]() {
 		assert(destroyed->size() == 2);
 		assert((*destroyed)[1] == other);
+		/* The opening channel without an id still holds
+		 * `opening` open when its other channel closes.  */
+		return state_changed( bus, opening_str, chan_d
+				    , "CHANNELD_NORMAL"
+				    , "AWAITING_UNILATERAL"
+				    );
+	}).then([&]() {
+		assert(destroyed->size() == 2);
 		return bus.raise(Boss::Shutdown{});
 	}).then([]() {
 		return Ev::lift(0);

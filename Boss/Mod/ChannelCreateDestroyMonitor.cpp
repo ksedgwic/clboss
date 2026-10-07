@@ -68,18 +68,30 @@ void ChannelCreateDestroyMonitor::start() {
 		     >([this](Msg::ListpeersResult const& r) {
 		auto curr = std::map<Ln::NodeId, std::set<std::string>>();
 		for (auto const& peer : r.cpeers) {
+			auto unidentified = std::size_t(0);
 			for (auto chan : peer.second.channels) {
-				if (!chan.is_object()
-				 || !chan.has("state")
-				 || !chan.has("channel_id"))
+				if (!chan.is_object() || !chan.has("state"))
 					continue;
 				auto state_j = chan["state"];
-				auto id_j = chan["channel_id"];
-				if (!state_j.is_string() || !id_j.is_string())
+				if (!state_j.is_string())
 					continue;
 				if (!open_state(std::string(state_j)))
 					continue;
-				curr[peer.first].insert(std::string(id_j));
+				/* An opening channel can be listed before it
+				 * has a channel_id.  Keep it under a
+				 * placeholder until a later listing names it,
+				 * so it still holds the peer open.  */
+				if (!chan.has("channel_id")
+				 || !chan["channel_id"].is_string()) {
+					curr[peer.first].insert(
+						"unidentified-"
+						+ std::to_string(unidentified++)
+					);
+					continue;
+				}
+				curr[peer.first].insert(
+					std::string(chan["channel_id"])
+				);
 			}
 		}
 		open_channels = std::move(curr);
