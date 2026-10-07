@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.2] - Unreleased
+
+### Fixed
+
+- With two or more channels to one peer, closing one of them no
+  longer announces the peer's channel as destroyed while another
+  is still open, which archived its complaint history, reset its
+  channel age and flushed its fee state.  The create/destroy
+  monitor now tracks open channels per channel id (#354).
+
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
 ### Changed
