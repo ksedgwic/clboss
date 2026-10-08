@@ -372,9 +372,11 @@ private:
 		}).then([this, p](Jsmn::Object res) {
 			auto connected = false;
 			auto ids = std::vector<std::string>();
+			auto nchannels = std::size_t(0);
 			if (res.has("channels")) {
 				auto cs = res["channels"];
 				for (auto c : cs) {
+					++nchannels;
 					if (c.has("channel_id")
 					 && c["channel_id"].is_string()
 					 && c.has("state")
@@ -405,8 +407,8 @@ private:
 					Recorder::clear_close_pending(tx, p);
 					tx.commit();
 					return Ev::lift();
-				}).then([this, p, ids]() {
-					return do_close(p, ids);
+				}).then([this, p, ids, nchannels]() {
+					return do_close(p, ids, nchannels);
 				});
 			}
 			/* Offline: wait for a mutual-close window
@@ -421,7 +423,7 @@ private:
 				tx.commit();
 				assert(since);
 				return Ev::lift(*since);
-			}).then([this, p, ids](double since) {
+			}).then([this, p, ids, nchannels](double since) {
 				if (Ev::now() - since < close_patience)
 					return Boss::log( bus, Debug
 							, "PeerComplaintsDesk: %s is "
@@ -448,8 +450,8 @@ private:
 						  "came back online, closing "
 						  "anyway."
 						, Util::stringify(p).c_str()
-						).then([this, p, ids]() {
-					return do_close(p, ids);
+						).then([this, p, ids, nchannels]() {
+					return do_close(p, ids, nchannels);
 				});
 			});
 		}).catching<RpcError>([this, p](RpcError e) {
@@ -486,14 +488,24 @@ private:
 	 * `close id=<node>` is refused by lightningd when the peer
 	 * has more than one channel ("Peer has multiple channels"),
 	 * and the close would then be retried every cycle forever
-	 * (#352), so with several channels close each by its
-	 * channel id.  A failure on one channel is logged and does
-	 * not stop the others.  */
+	 * (#352), so with several channels close each closable one
+	 * by its channel id.  `nchannels` counts all of the peer's
+	 * channels, including ones already shutting down, since
+	 * lightningd refuses the node id whenever there is more than
+	 * one.  A failure on one channel is logged and does not stop
+	 * the others.  */
 	Ev::Io<void> do_close( Ln::NodeId const& p
 			     , std::vector<std::string> const& ids
+			     , std::size_t nchannels
 			     ) {
-		if (ids.size() < 2)
+		if (nchannels < 2)
 			return close_one(Util::stringify(p));
+		if (ids.empty())
+			return Boss::log( bus, Debug
+					, "PeerComplaintsDesk: %s has no "
+					  "channel left to close."
+					, Util::stringify(p).c_str()
+					);
 		auto f = [this, p](std::string id) {
 			return close_one(id).catching<RpcError>([ this
 								, p

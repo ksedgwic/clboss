@@ -112,11 +112,13 @@ private:
 				c.field("peer_connected", connected_flag);
 				c.end_object();
 			}
-			for (auto const& cid : channel_ids) {
+			for (auto i = std::size_t(0); i < channel_ids.size(); ++i) {
 				auto c = cs.start_object();
 				c.field("peer_connected", connected_flag);
-				c.field("channel_id", cid);
-				c.field("state", std::string("CHANNELD_NORMAL"));
+				c.field("channel_id", channel_ids[i]);
+				c.field("state", i < channel_states.size()
+						 ? channel_states[i]
+						 : std::string("CHANNELD_NORMAL"));
 				c.end_object();
 			}
 			cs.end_array();
@@ -157,6 +159,8 @@ public:
 	/* When set, listpeerchannels reports these channels for the
 	 * peer instead of one anonymous channel.  */
 	std::vector<std::string> channel_ids;
+	/* Per-channel state, CHANNELD_NORMAL where not given.  */
+	std::vector<std::string> channel_states;
 	std::uint64_t last_close_timeout = 0;
 
 	explicit
@@ -243,6 +247,9 @@ int main() {
 	));
 	auto peerD = Ln::NodeId(std::string(
 		"0200000000000000000000000000000000000000000000000000000000000000D4"
+	));
+	auto peerE = Ln::NodeId(std::string(
+		"0200000000000000000000000000000000000000000000000000000000000000E5"
 	));
 
 	/* Enough non-ignored complaints to cross the close
@@ -464,6 +471,31 @@ int main() {
 		assert(ids.size() == 2);
 		assert(ids[0] == std::string(64, '1'));
 		assert(ids[1] == std::string(64, '2'));
+		return bus.raise(Boss::Msg::ChannelDestruction{peerD});
+	}).then([&]() {
+		return Ev::yield(200);
+
+	/* One closable channel beside one already shutting down:
+	 * lightningd still refuses the node id, so the closable
+	 * channel is closed by its id and the other is left alone.
+	 */
+	}).then([&]() {
+		server.close_ids.clear();
+		server.channel_ids = {
+			std::string(64, '3'),
+			std::string(64, '4')
+		};
+		server.channel_states = {
+			std::string("CHANNELD_NORMAL"),
+			std::string("CHANNELD_SHUTTING_DOWN")
+		};
+		return insert_complaints(peerE);
+	}).then([&]() {
+		return cycle();
+	}).then([&]() {
+		assert(server.close_calls == 5);
+		assert(server.close_ids.size() == 1);
+		assert(server.close_ids[0] == std::string(64, '3'));
 
 		/* Stop the Rpc watchers so the event loop can
 		 * drain and Ev::start can return.
