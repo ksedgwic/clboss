@@ -31,9 +31,10 @@
 
 /* clboss-min-nodes-to-process takes a number at startup and a
  * string from setconfig; -1 selects the per-network default, at
- * once when Msg::Init has told the module the network; a word is
- * refused and the current value kept.  The value is observed
- * through the log line each change writes.  */
+ * once when Msg::Init has told the module the network; a word, or
+ * a number followed by anything but whitespace, is refused and the
+ * current value kept.  The value is observed through the log line
+ * each change writes.  */
 
 namespace {
 
@@ -135,7 +136,17 @@ int main() {
 	}).then([&](std::string reason) {
 		assert(!reason.empty());
 		assert(last_has("keeping 10"));
-		return setconfig(bus, "25");
+		/* std::stoll alone would read these as 25 and 1.  */
+		return setconfig(bus, "25abc");
+	}).then([&](std::string reason) {
+		assert(!reason.empty());
+		assert(last_has("keeping 10"));
+		return setconfig(bus, "1.5");
+	}).then([&](std::string reason) {
+		assert(!reason.empty());
+		assert(last_has("keeping 10"));
+		/* Surrounding whitespace is fine.  */
+		return setconfig(bus, " 25 ");
 	}).then([&](std::string reason) {
 		assert(reason.empty());
 		assert(last_has("set to 25"));

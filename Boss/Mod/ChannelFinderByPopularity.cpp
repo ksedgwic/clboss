@@ -33,6 +33,7 @@
 #include"Stats/ReservoirSampler.hpp"
 #include"Util/make_unique.hpp"
 #include<algorithm>
+#include<cctype>
 #include<cstdint>
 #include<iterator>
 #include<queue>
@@ -194,9 +195,24 @@ private:
 			try {
 				if (o.value.is_number())
 					v = std::int64_t(double(o.value));
-				else if (o.value.is_string())
-					v = std::stoll(std::string(o.value));
-				else
+				else if (o.value.is_string()) {
+					/* std::stoll stops at the first
+					 * non-digit without complaint, so
+					 * refuse anything but whitespace
+					 * after the number: "25abc" and
+					 * "1.5" are not 25 and 1.  */
+					auto s = std::string(o.value);
+					auto pos = std::size_t(0);
+					v = std::stoll(s, &pos);
+					while ( pos < s.size()
+					     && std::isspace((unsigned char) s[pos])
+					      )
+						++pos;
+					if (pos != s.size())
+						throw std::invalid_argument(
+							"trailing text"
+						);
+				} else
 					throw std::invalid_argument(
 						"unsupported value type"
 					);
