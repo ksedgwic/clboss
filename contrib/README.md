@@ -95,16 +95,18 @@ how many days of earnings history are considered when ranking channels.
   order, so the list order encodes any shutdown dependency between
   them.  Restarts use the unversioned sibling path when one exists
   (usually a symlink maintained by the install script), so a repointed
-  symlink brings up the new version.  Config-file edits made since
-  `lightningd` started are applied in a second phase, which is skipped
-  with a warning naming the option and file when any config-file
-  option is no longer registered -- including one a newly installed
-  build dropped, which leaves `lightningd` holding a stale configvar
-  until it restarts.  Plugin names are the arguments
-  not starting with `-`; every other argument is passed to
-  `lightning-cli` (e.g. `--signet --lightning-dir=...`), so names and
-  options may appear in any order.  Plain POSIX sh plus `jq`, so unlike
-  a shell alias it also works under `sudo`.
+  symlink brings up the new version.  A restarted plugin gets the
+  option values `lightningd` holds: those it read from its config
+  files at its own startup, as changed since with `setconfig`.  A
+  live change is made with `setconfig`; a config-file edit takes
+  effect when `lightningd` restarts.  After the restart the script
+  warns about any configured option the new build no longer
+  registers, since `lightningd` keeps a stale configvar for it until
+  it restarts and a `setconfig` before then can crash it.  Plugin
+  names are the arguments not starting with `-`; every other argument
+  is passed to `lightning-cli` (e.g. `--signet --lightning-dir=...`),
+  so names and options may appear in any order.  Plain POSIX sh plus
+  `jq`, so unlike a shell alias it also works under `sudo`.
 - **`fee-log-parser`** is a parser that streams DEBUG-level logging and writes
   a sqlite database containing fee algorithm information. CLBOSS now records
   the same schema in its internal database (`data.clboss`, tables

@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.2] - Unreleased
+
+### Changed
+
+- `contrib/cln-plugin-bounce` is the plain bounce again: ordered
+  stops, reverse starts.  It no longer re-reads config files and
+  passes edited values on the `plugin start` line; a restarted plugin
+  gets the values `lightningd` holds, those read at its own startup
+  as changed since with `setconfig`.  A config-file edit takes effect
+  when `lightningd` restarts.  The warning about a configured option
+  that a newly installed build no longer registers stays, since
+  `lightningd` keeps a stale configvar for it until it restarts.
+
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
 ### Changed
