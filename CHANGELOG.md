@@ -44,6 +44,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   in.
 - `contrib/clboss-recent-earnings` prints PPM values with underscore
   separators, like the amount columns.
+- `contrib/cln-plugin-bounce` is the plain bounce again: ordered
+  stops, reverse starts.  It no longer re-reads config files and
+  passes edited values on the `plugin start` line; a restarted plugin
+  gets the values `lightningd` holds, those read at its own startup
+  as changed since with `setconfig`.  A config-file edit takes effect
+  when `lightningd` restarts.  The warning about a configured option
+  that a newly installed build no longer registers stays, since
+  `lightningd` keeps a stale configvar for it until it restarts.
 
 ### Fixed
 
