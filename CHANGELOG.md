@@ -74,6 +74,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   funds are announced on every block, and a cycle can outlast the gap
   between two blocks, so a second cycle could plan the same funds for
   the same peers.
+- With two or more channels to one peer, closing one of them no
+  longer announces the peer's channel as destroyed while another
+  is still open, which archived its complaint history, reset its
+  channel age and flushed its fee state.  The create/destroy
+  monitor now tracks open channels per channel id (#354).
 
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
