@@ -236,10 +236,8 @@ private:
 		if (!notes.empty()) {
 			o.reject(notes[0].problem);
 			return Boss::log( bus, Warn
-					, "AmountSettingsHandler: %s %u "
-					  "refused: %s; keeping %u."
-					, o.name.c_str()
-					, sat(amount)
+					, "AmountSettingsHandler: refused: "
+					  "%s; keeping %u."
 					, notes[0].problem.c_str()
 					, sat(*field_of(settings, o.name))
 					);
