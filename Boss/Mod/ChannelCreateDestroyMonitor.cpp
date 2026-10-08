@@ -5,7 +5,6 @@
 #include"Boss/Msg/ChannelCreateResult.hpp"
 #include"Boss/Msg/ChannelCreation.hpp"
 #include"Boss/Msg/ChannelDestruction.hpp"
-#include"Boss/Msg/ListpeersAnalyzedResult.hpp"
 #include"Boss/Msg/ListpeersResult.hpp"
 #include"Boss/Msg/Manifestation.hpp"
 #include"Boss/Msg/ManifestNotification.hpp"
@@ -62,8 +61,13 @@ Ev::Io<void> wait_for_true(bool& flag) {
 namespace Boss { namespace Mod {
 
 void ChannelCreateDestroyMonitor::start() {
-	/* Refresh the per-channel view from the same listing the
-	 * analyzer bins peers from.  */
+	/* Rebuild the per-channel view from each listing, and
+	 * reconcile the channeled peers against it.  The peer-level
+	 * set uses the same rule as the notification path: a peer is
+	 * channeled while it has an open channel, and a channel
+	 * shutting down does not count.  ListpeersAnalyzer still
+	 * counts it, which is right for its other consumers, so we
+	 * do not use its bins here (#366).  */
 	bus.subscribe<Msg::ListpeersResult
 		     >([this](Msg::ListpeersResult const& r) {
 		auto curr = std::map<Ln::NodeId, std::set<std::string>>();
@@ -94,22 +98,12 @@ void ChannelCreateDestroyMonitor::start() {
 				);
 			}
 		}
-		open_channels = std::move(curr);
-		return Ev::lift();
-	});
 
-	bus.subscribe<Msg::ListpeersAnalyzedResult
-		     >([this](Msg::ListpeersAnalyzedResult const& r) {
-		/* First gather the current channeled peers.  */
+		/* The current channeled peers.  */
 		auto curr_channeled = std::set<Ln::NodeId>();
-		std::set_union( r.connected_channeled.begin()
-			      , r.connected_channeled.end()
-			      , r.disconnected_channeled.begin()
-			      , r.disconnected_channeled.end()
-			      , std::inserter( curr_channeled
-					     , curr_channeled.begin()
-					     )
-			      );
+		for (auto const& e : curr)
+			curr_channeled.insert(e.first);
+		open_channels = std::move(curr);
 
 		/* If initial, we have to initialize our channeled.  */
 		if (r.initial) {

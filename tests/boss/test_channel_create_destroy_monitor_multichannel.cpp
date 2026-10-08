@@ -2,7 +2,6 @@
 #include"Boss/Mod/ChannelCreateDestroyMonitor.hpp"
 #include"Boss/Mod/ConstructedListpeers.hpp"
 #include"Boss/Msg/ChannelDestruction.hpp"
-#include"Boss/Msg/ListpeersAnalyzedResult.hpp"
 #include"Boss/Msg/ListpeersResult.hpp"
 #include"Boss/Msg/Notification.hpp"
 #include"Boss/Shutdown.hpp"
@@ -114,13 +113,6 @@ int main() {
 		return bus.raise(Boss::Msg::ListpeersResult{
 			std::move(cpeers), true
 		});
-	}).then([&]() {
-		auto r = Boss::Msg::ListpeersAnalyzedResult{};
-		r.connected_channeled.insert(peer);
-		r.connected_channeled.insert(other);
-		r.connected_channeled.insert(opening);
-		r.initial = true;
-		return bus.raise(std::move(r));
 	}).then([&]() {
 		/* First channel to `peer` starts closing.  */
 		return state_changed( bus, peer_str, chan_a
