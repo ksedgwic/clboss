@@ -87,6 +87,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is still open, which archived its complaint history, reset its
   channel age and flushed its fee state.  The create/destroy
   monitor now tracks open channels per channel id (#354).
+- A cooperative close no longer reports the peer as destroyed,
+  re-created and destroyed again: the create/destroy monitor's
+  ten-minute reconciliation uses the same rule as its notifications,
+  so a channel shutting down does not make the peer channeled again
+  (#366).
 
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
