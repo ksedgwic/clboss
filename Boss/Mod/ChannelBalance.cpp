@@ -2,6 +2,7 @@
 #include"Jsmn/Object.hpp"
 #include<cstddef>
 #include<cstdint>
+#include<string>
 
 namespace Boss { namespace Mod {
 
@@ -43,6 +44,25 @@ ChannelBalance channel_balance(Jsmn::Object const& channel) {
 	else
 		rv.total = Ln::Amount::object(lowest_total);
 	return rv;
+}
+
+std::size_t peer_live_balance( Jsmn::Object const& channels
+			     , ChannelBalance& out
+			     ) {
+	out = ChannelBalance();
+	auto count = std::size_t(0);
+	for (auto c : channels) {
+		auto state = std::string(c["state"]);
+		if ( state != "CHANNELD_NORMAL"
+		  && state != "CHANNELD_AWAITING_SPLICE"
+		   )
+			continue;
+		auto bal = channel_balance(c);
+		out.to_us += bal.to_us;
+		out.total += bal.total;
+		++count;
+	}
+	return count;
 }
 
 }}
