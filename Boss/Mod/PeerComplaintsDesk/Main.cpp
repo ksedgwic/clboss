@@ -21,6 +21,7 @@
 #include"Boss/Msg/TimerTwiceDaily.hpp"
 #include"Boss/concurrent.hpp"
 #include"Boss/log.hpp"
+#include"Ev/foreach.hpp"
 #include"Ev/now.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
@@ -31,6 +32,8 @@
 #include<algorithm>
 #include<assert.h>
 #include<memory>
+#include<string>
+#include<vector>
 
 namespace {
 
@@ -368,18 +371,25 @@ private:
 			return rpc->command("listpeerchannels", std::move(parms));
 		}).then([this, p](Jsmn::Object res) {
 			auto connected = false;
+			auto ids = std::vector<std::string>();
 			if (res.has("channels")) {
 				auto cs = res["channels"];
 				for (auto c : cs) {
+					if (c.has("channel_id")
+					 && c["channel_id"].is_string()
+					 && c.has("state")
+					 && c["state"].is_string()
+					 && closable_state(std::string(c["state"])))
+						ids.push_back(std::string(
+							c["channel_id"]
+						));
 					if (!c.has("peer_connected"))
 						continue;
 					auto conn = c["peer_connected"];
 					if (!conn.is_boolean())
 						continue;
-					if (bool(conn)) {
+					if (bool(conn))
 						connected = true;
-						break;
-					}
 				}
 			}
 			if (connected) {
@@ -395,8 +405,8 @@ private:
 					Recorder::clear_close_pending(tx, p);
 					tx.commit();
 					return Ev::lift();
-				}).then([this, p]() {
-					return do_close(p);
+				}).then([this, p, ids]() {
+					return do_close(p, ids);
 				});
 			}
 			/* Offline: wait for a mutual-close window
@@ -411,7 +421,7 @@ private:
 				tx.commit();
 				assert(since);
 				return Ev::lift(*since);
-			}).then([this, p](double since) {
+			}).then([this, p, ids](double since) {
 				if (Ev::now() - since < close_patience)
 					return Boss::log( bus, Debug
 							, "PeerComplaintsDesk: %s is "
@@ -438,8 +448,8 @@ private:
 						  "came back online, closing "
 						  "anyway."
 						, Util::stringify(p).c_str()
-						).then([this, p]() {
-					return do_close(p);
+						).then([this, p, ids]() {
+					return do_close(p, ids);
 				});
 			});
 		}).catching<RpcError>([this, p](RpcError e) {
@@ -450,10 +460,19 @@ private:
 					);
 		});
 	}
-	Ev::Io<void> do_close(Ln::NodeId const& p) {
+	/* States a `close` can be issued in.  A channel already
+	 * shutting down or closing is left alone.  */
+	static bool closable_state(std::string const& state) {
+		return state == "CHANNELD_NORMAL"
+		    || state == "CHANNELD_AWAITING_LOCKIN"
+		    || state == "CHANNELD_AWAITING_SPLICE"
+		    || state == "DUALOPEND_AWAITING_LOCKIN"
+		     ;
+	}
+	Ev::Io<void> close_one(std::string const& id) {
 		auto parms = Json::Out()
 			.start_object()
-				.field("id", Util::stringify(p))
+				.field("id", id)
 				.field("unilateraltimeout", channel_close_timeout)
 				.field("fee_negotiation_step", fee_negotiation_step)
 			.end_object()
@@ -462,6 +481,34 @@ private:
 			.then([](Jsmn::Object _) {
 			return Ev::lift();
 		});
+	}
+	/* Complaints are per peer, so the whole peer is closed.
+	 * `close id=<node>` is refused by lightningd when the peer
+	 * has more than one channel ("Peer has multiple channels"),
+	 * and the close would then be retried every cycle forever
+	 * (#352), so with several channels close each by its
+	 * channel id.  A failure on one channel is logged and does
+	 * not stop the others.  */
+	Ev::Io<void> do_close( Ln::NodeId const& p
+			     , std::vector<std::string> const& ids
+			     ) {
+		if (ids.size() < 2)
+			return close_one(Util::stringify(p));
+		auto f = [this, p](std::string id) {
+			return close_one(id).catching<RpcError>([ this
+								, p
+								, id
+								](RpcError e) {
+				return Boss::log( bus, Error
+						, "PeerComplaintsDesk: close "
+						  "%s channel %s error: %s"
+						, Util::stringify(p).c_str()
+						, id.c_str()
+						, Util::stringify(e.error).c_str()
+						);
+			});
+		};
+		return Ev::foreach(std::move(f), ids);
 	}
 	Ev::Io<void> on_channel_destroy(Ln::NodeId const& p) {
 		return db.transact().then([p](Sqlite3::Tx tx) {

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.2] - Unreleased
+
+### Fixed
+
+- `clboss-auto-close` on a peer with more than one channel issued
+  `close id=<node>`, which lightningd refuses ("Peer has multiple
+  channels"); the error was logged and the close retried every
+  cycle.  It now closes each of the peer's channels by channel id
+  (#352).
+
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
 ### Changed

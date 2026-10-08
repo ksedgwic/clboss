@@ -28,6 +28,7 @@
 #include"Sha256/fun.hpp"
 #include"Sqlite3.hpp"
 #include"Util/stringify.hpp"
+#include<algorithm>
 #include<array>
 #include<assert.h>
 #include<cctype>
@@ -39,6 +40,7 @@
 #include<sys/socket.h>
 #include<sys/types.h>
 #include<unistd.h>
+#include<vector>
 
 namespace {
 
@@ -105,9 +107,16 @@ private:
 		auto robj = result.start_object();
 		if (method == "listpeerchannels") {
 			auto cs = robj.start_array("channels");
-			{
+			if (channel_ids.empty()) {
 				auto c = cs.start_object();
 				c.field("peer_connected", connected_flag);
+				c.end_object();
+			}
+			for (auto const& cid : channel_ids) {
+				auto c = cs.start_object();
+				c.field("peer_connected", connected_flag);
+				c.field("channel_id", cid);
+				c.field("state", std::string("CHANNELD_NORMAL"));
 				c.end_object();
 			}
 			cs.end_array();
@@ -115,6 +124,7 @@ private:
 			++close_calls;
 			auto params = req["params"];
 			last_close_id = std::string(params["id"]);
+			close_ids.push_back(last_close_id);
 			last_close_timeout = std::uint64_t(double(
 				params["unilateraltimeout"]
 			));
@@ -143,6 +153,10 @@ public:
 	bool connected_flag = true;
 	std::size_t close_calls = 0;
 	std::string last_close_id;
+	std::vector<std::string> close_ids;
+	/* When set, listpeerchannels reports these channels for the
+	 * peer instead of one anonymous channel.  */
+	std::vector<std::string> channel_ids;
 	std::uint64_t last_close_timeout = 0;
 
 	explicit
@@ -226,6 +240,9 @@ int main() {
 	));
 	auto peerC = Ln::NodeId(std::string(
 		"0200000000000000000000000000000000000000000000000000000000000000C3"
+	));
+	auto peerD = Ln::NodeId(std::string(
+		"0200000000000000000000000000000000000000000000000000000000000000D4"
 	));
 
 	/* Enough non-ignored complaints to cross the close
@@ -417,6 +434,36 @@ int main() {
 		return cycle();
 	}).then([&]() {
 		assert(server.close_calls == 2);
+
+	/* A peer with two channels: `close id=<node>` would be
+	 * refused by lightningd ("Peer has multiple channels"), so
+	 * each channel is closed by its channel id (#352).
+	 */
+		return bus.raise(Boss::Msg::Option{
+			"clboss-auto-close",
+			Jsmn::Object::parse_json("{\"enabled\": true}")["enabled"]
+		});
+	}).then([&]() {
+		return bus.raise(Boss::Msg::ChannelDestruction{peerC});
+	}).then([&]() {
+		return Ev::yield(200);
+	}).then([&]() {
+		server.close_ids.clear();
+		server.channel_ids = {
+			std::string(64, '1'),
+			std::string(64, '2')
+		};
+		server.connected_flag = true;
+		return insert_complaints(peerD);
+	}).then([&]() {
+		return cycle();
+	}).then([&]() {
+		assert(server.close_calls == 4);
+		auto ids = server.close_ids;
+		std::sort(ids.begin(), ids.end());
+		assert(ids.size() == 2);
+		assert(ids[0] == std::string(64, '1'));
+		assert(ids[1] == std::string(64, '2'));
 
 		/* Stop the Rpc watchers so the event loop can
 		 * drain and Ev::start can return.
