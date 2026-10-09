@@ -2,6 +2,7 @@
 #include"Boss/Mod/AskreneLayer.hpp"
 #include"Boss/Mod/ChannelCandidateInvestigator/Main.hpp"
 #include"Boss/Mod/GetroutesFirstHop.hpp"
+#include"Boss/Mod/ProbeChannel.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/ProbeActively.hpp"
@@ -137,32 +138,12 @@ private:
 			return rpc.command("listpeerchannels", std::move(parms));
 		}).then([this](Jsmn::Object res) {
 			try {
-				auto cs = res["channels"];
-				for (auto c : cs) {
-					if (!c.has("short_channel_id"))
-						continue;
-					if (!c.has("spendable_msat"))
-						continue;
-					auto state = std::string(
-						c["state"]
-					);
-					/* CHANNELD_NORMAL only.  The probe is
-					 * sized from spendable_msat below, which
-					 * CLN reports for the old funding until a
-					 * pending splice locks in; a probe over a
-					 * splice-out could then fail locally
-					 * instead of measuring the peer.  */
-					if (state != "CHANNELD_NORMAL")
-						continue;
-
-					chan0 = Ln::Scid(std::string(
-						c["short_channel_id"]
-					));
-					cap0 = Ln::Amount::object(
-						c["spendable_msat"]
-					);
-					break;
-				}
+				/* With several channels to the peer, go
+				 * out through the one with the most to
+				 * spend: see ProbeChannel.  */
+				auto pc = probe_channel(res["channels"]);
+				chan0 = pc.scid;
+				cap0 = pc.spendable;
 			} catch (Jsmn::TypeError const& _) {
 				return Boss::log( bus, Error
 						, "ActiveProber: unexpected "
