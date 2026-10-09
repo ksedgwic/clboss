@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   their full precision.  They were printed with six significant
   digits, so `clboss-status` showed a `now` of 1721640000 beside a
   `now_human` of 08:29:41.  Issue #224.
+- The channel creator no longer logs an error for a candidate without
+  a node_announcement, or whose only address is of type `dns`; both
+  count as having no address for IP binning.  Issue #257.
 
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
