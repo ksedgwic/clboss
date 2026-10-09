@@ -270,14 +270,17 @@ private:
 		   )
 			return Boss::concurrent(server_check());
 
-		/* Otherwise pick a random peer to ping.  */
+		/* Otherwise pick a random peer to ping.  Take one with a
+		 * channel if there is one: `Boss::Mod::AutoDisconnector`
+		 * handles this same message and may be disconnecting
+		 * the peers without channels.  */
+		auto const& candidates = r.connected_channeled.empty()
+				       ? r.connected_unchanneled
+				       : r.connected_channeled
+				       ;
 		auto peers = std::vector<Ln::NodeId>();
-		std::copy( r.connected_channeled.begin()
-			 , r.connected_channeled.end()
-			 , std::back_inserter(peers)
-			 );
-		std::copy( r.connected_unchanneled.begin()
-			 , r.connected_unchanneled.end()
+		std::copy( candidates.begin()
+			 , candidates.end()
 			 , std::back_inserter(peers)
 			 );
 		auto dist_peers = std::uniform_int_distribution<std::size_t>(
