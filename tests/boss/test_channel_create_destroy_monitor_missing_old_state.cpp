@@ -1,7 +1,8 @@
 #undef NDEBUG
 #include"Boss/Mod/ChannelCreateDestroyMonitor.hpp"
 #include"Boss/Msg/ChannelDestruction.hpp"
-#include"Boss/Msg/ListpeersAnalyzedResult.hpp"
+#include"Boss/Mod/ConstructedListpeers.hpp"
+#include"Boss/Msg/ListpeersResult.hpp"
 #include"Boss/Msg/Notification.hpp"
 #include"Boss/Shutdown.hpp"
 #include"Ev/Io.hpp"
@@ -51,10 +52,16 @@ int main() {
 		 * notification handler would block in
 		 * wait_for_true(initted).
 		 */
-		auto r = Boss::Msg::ListpeersAnalyzedResult{};
-		r.connected_channeled.insert(peer);
-		r.initial = true;
-		return bus.raise(std::move(r));
+		auto cpeers = Boss::Mod::ConstructedListpeers();
+		cpeers[peer].connected = true;
+		cpeers[peer].channels.push_back(Jsmn::Object::parse_json(
+			"{\"channel_id\":\""
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			"\",\"state\":\"CHANNELD_NORMAL\"}"
+		));
+		return bus.raise(Boss::Msg::ListpeersResult{
+			std::move(cpeers), true
+		});
 	}).then([&]() {
 		/* Build a channel_state_changed notification with
 		 * NO old_state field -- the v26.06+ shape.
