@@ -229,6 +229,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/PeerStatistician.hpp \
 	Boss/Mod/PeerTrackRecord.cpp \
 	Boss/Mod/PeerTrackRecord.hpp \
+	Boss/Mod/ProbeChannel.cpp \
+	Boss/Mod/ProbeChannel.hpp \
 	Boss/Mod/Reconnector.cpp \
 	Boss/Mod/Reconnector.hpp \
 	Boss/Mod/RegularActiveProbe.cpp \
@@ -639,6 +641,7 @@ TESTS = \
 	tests/boss/test_offline_mode \
 	tests/boss/test_onchainfeemonitor_samples_init \
 	tests/boss/test_peerfromscidmapper \
+	tests/boss/test_probechannel \
 	tests/boss/test_recentearnings \
 	tests/boss/test_earningshistory \
 	tests/boss/test_xrebalancecensus \
