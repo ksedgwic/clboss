@@ -147,6 +147,112 @@ int main() {
 		});
 	}
 
+	/* The setconfig path: after EndOfOptions a clean value that
+	 * passes validation is applied and the settings are published
+	 * again; a value the validation would alter, or that is not
+	 * an amount, is refused and nothing is published.  */
+	buses.push_back(Util::make_unique<S::Bus>());
+	auto& bus = *buses.back();
+	handlers.push_back(
+		Util::make_unique<Boss::Mod::AmountSettingsHandler>(bus)
+	);
+	auto published = std::make_shared<std::vector<Boss::Msg::AmountSettings>>();
+	bus.subscribe<Boss::Msg::AmountSettings
+		     >([published](Boss::Msg::AmountSettings const& m) {
+		published->push_back(m);
+		return Ev::lift();
+	});
+	/* A setconfig delivery: the value as a JSON string, with the
+	 * rejection back-channel allocated.  Returns the reason, empty
+	 * when accepted.  */
+	auto setconfig = [&bus](char const* name, char const* value) {
+		auto reason = std::make_shared<std::string>();
+		auto json = "\"" + std::string(value) + "\"";
+		return bus.raise(Boss::Msg::Option{
+			name,
+			Jsmn::Object::parse_json(json.c_str()),
+			reason
+		}).then([reason]() {
+			return Ev::lift(*reason);
+		});
+	};
+	auto last = [published]() -> Boss::Msg::AmountSettings const& {
+		return published->back();
+	};
+
+	code += Ev::lift().then([&bus]() {
+		return bus.raise(make_option("clboss-min-channel", "1000000"));
+	}).then([&bus]() {
+		return bus.raise(make_option("clboss-max-channel", "3020000"));
+	}).then([&bus]() {
+		return bus.raise(Boss::Msg::EndOfOptions{});
+	}).then([published, last]() {
+		assert(published->size() == 1);
+		assert(last().reserve == Ln::Amount::sat(30000));
+		return Ev::lift();
+	}).then([setconfig]() {
+		/* Accepted: published again with the new reserve.  */
+		return setconfig("clboss-min-onchain", "40000");
+	}).then([published, last](std::string reason) {
+		assert(reason.empty());
+		assert(published->size() == 2);
+		assert(last().reserve == Ln::Amount::sat(40000));
+		assert(last().min_channel == Ln::Amount::sat(1000000));
+		return Ev::lift();
+	}).then([setconfig]() {
+		/* Not an amount.  */
+		return setconfig("clboss-min-onchain", "abc");
+	}).then([published, setconfig](std::string reason) {
+		assert(!reason.empty());
+		assert(published->size() == 2);
+		/* Trailing text.  */
+		return setconfig("clboss-min-onchain", "50000 sat");
+	}).then([published, setconfig](std::string reason) {
+		assert(!reason.empty());
+		assert(published->size() == 2);
+		/* A leading minus.  */
+		return setconfig("clboss-min-onchain", " -1");
+	}).then([published, setconfig](std::string reason) {
+		assert(!reason.empty());
+		assert(published->size() == 2);
+		/* Below the reserve floor: the startup path would force
+		 * it up; setconfig refuses it.  */
+		return setconfig("clboss-min-onchain", "10000");
+	}).then([published, last, setconfig](std::string reason) {
+		assert(!reason.empty());
+		assert(published->size() == 2);
+		assert(last().reserve == Ln::Amount::sat(40000));
+		/* A max below 3 * min + 20000 would lower min at
+		 * startup; refused here, min and max unchanged.  */
+		return setconfig("clboss-max-channel", "2000000");
+	}).then([published, last, setconfig](std::string reason) {
+		assert(!reason.empty());
+		assert(published->size() == 2);
+		assert(last().max_channel == Ln::Amount::sat(3020000));
+		/* Raising max is fine.  */
+		return setconfig("clboss-max-channel", "5000000");
+	}).then([published, last, setconfig](std::string reason) {
+		assert(reason.empty());
+		assert(published->size() == 3);
+		assert(last().max_channel == Ln::Amount::sat(5000000));
+		/* A min that now fits under the raised max.  */
+		return setconfig("clboss-min-channel", "1500000");
+	}).then([published, last, setconfig](std::string reason) {
+		assert(reason.empty());
+		assert(published->size() == 4);
+		assert(last().min_channel == Ln::Amount::sat(1500000));
+		assert( last().min_remaining
+		     == 2.0 * last().min_channel + Ln::Amount::sat(20000)
+		      );
+		/* Below the absolute min floor.  */
+		return setconfig("clboss-min-channel", "400000");
+	}).then([published, last](std::string reason) {
+		assert(!reason.empty());
+		assert(published->size() == 4);
+		assert(last().min_channel == Ln::Amount::sat(1500000));
+		return Ev::lift();
+	});
+
 	return Ev::start(std::move(code).then([]() {
 		return Ev::lift(0);
 	}));

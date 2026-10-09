@@ -33,11 +33,15 @@
 #include"Stats/ReservoirSampler.hpp"
 #include"Util/make_unique.hpp"
 #include<algorithm>
+#include<cctype>
+#include<cstdint>
 #include<iterator>
 #include<queue>
 #include<random>
 #include<set>
 #include<sstream>
+#include<stdexcept>
+#include<string>
 #include<vector>
 
 namespace {
@@ -125,6 +129,18 @@ private:
 	 */
 	size_t min_nodes_to_process = size_t(0);
 	bool min_nodes_to_process_set;
+	/* From Msg::Init; the default depends on it.  */
+	Boss::Msg::Network network;
+	bool network_known;
+
+	static
+	std::size_t default_min_nodes(Boss::Msg::Network n) {
+		switch (n) {
+		case Boss::Msg::Network_Bitcoin: return 800;
+		case Boss::Msg::Network_Testnet: return 100;
+		default: return 10; /* others are likely small */
+		}
+	}
 
 	void start() {
 		running = false;
@@ -135,18 +151,16 @@ private:
 		total_owned = nullptr;
 		min_nodes_to_process_set = false;
 		min_nodes_to_process = 0;
+		network_known = false;
 
 		bus.subscribe<Msg::Init>([this](Msg::Init const& init) {
 			rpc = &init.rpc;
 			self = init.self_id;
 			db = init.db;
-			if (!min_nodes_to_process_set) {
-				switch (init.network) {
-				case Boss::Msg::Network_Bitcoin: min_nodes_to_process = 800; break;
-				case Boss::Msg::Network_Testnet: min_nodes_to_process = 100; break;
-				default: min_nodes_to_process = 10; break; // others are likely small
-				}
-			}
+			network = init.network;
+			network_known = true;
+			if (!min_nodes_to_process_set)
+				min_nodes_to_process = default_min_nodes(network);
 			return db.transact().then([this](Sqlite3::Tx tx) {
 				/* Create the on-database have_run flag.  */
 				tx.query_execute(R"SQL(
@@ -176,14 +190,59 @@ private:
 			     >([this](Msg::Option const& o) {
 			if (o.name != "clboss-min-nodes-to-process")
 				return Ev::lift();
-			auto v = double(o.value);
+			/* A number at startup, a string via setconfig.  */
+			auto v = std::int64_t(0);
+			try {
+				if (o.value.is_number())
+					v = std::int64_t(double(o.value));
+				else if (o.value.is_string()) {
+					/* std::stoll stops at the first
+					 * non-digit without complaint, so
+					 * refuse anything but whitespace
+					 * after the number: "25abc" and
+					 * "1.5" are not 25 and 1.  */
+					auto s = std::string(o.value);
+					auto pos = std::size_t(0);
+					v = std::stoll(s, &pos);
+					while ( pos < s.size()
+					     && std::isspace((unsigned char) s[pos])
+					      )
+						++pos;
+					if (pos != s.size())
+						throw std::invalid_argument(
+							"trailing text"
+						);
+				} else
+					throw std::invalid_argument(
+						"unsupported value type"
+					);
+			} catch (std::exception const&) {
+				o.reject( "clboss-min-nodes-to-process: "
+					  "not a valid number"
+					);
+				return Boss::log( bus, Boss::Warn
+						, "ChannelFinderByPopularity: "
+						  "clboss-min-nodes-to-process: "
+						  "not a valid number; "
+						  "keeping %zu."
+						, min_nodes_to_process
+						);
+			}
 			if (v < 0) {
-				/* Negative values mean to use the built-in
-				 * network-specific defaults.  Do not mark the
-				 * option as explicitly set so that the
-				 * Msg::Init handler can apply the default for
-				 * the actual network.	*/
-				return Ev::lift();
+				/* Negative values mean the built-in default
+				 * for the network, applied here if Msg::Init
+				 * has told us the network, else by the
+				 * Msg::Init handler.  */
+				min_nodes_to_process_set = false;
+				if (!network_known)
+					return Ev::lift();
+				min_nodes_to_process = default_min_nodes(network);
+				return Boss::log( bus, Boss::Info
+						, "ChannelFinderByPopularity: "
+						  "min-nodes-to-process reverted "
+						  "to the network default %zu"
+						, min_nodes_to_process
+						);
 			}
 			min_nodes_to_process = std::size_t(v);
 			min_nodes_to_process_set = true;
@@ -234,7 +293,11 @@ private:
 			 * network-specific defaults once we learn the
 			 * network from Msg::Init.  */
 				Json::Out::direct(std::int64_t(-1)),
-				"Minimum number of nodes known before attempting to open channels."
+				"Minimum number of nodes known before "
+				"attempting to open channels.  -1 selects "
+				"a per-network default.  Dynamic: settable "
+				"at runtime via `lightning-cli setconfig`.",
+				/* dynamic = */ true
 			});
 		});
 		bus.subscribe< Msg::Notification
