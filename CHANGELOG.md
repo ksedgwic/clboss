@@ -91,6 +91,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   so a channel shutting down does not make the peer channeled again
   (#366).
 
+### Credits
+
+Thanks to the contributors to this release:
+- @Mohil-Ahuja: the create/destroy monitor's per-channel liveness
+  (#365) and its reconciliation by the monitor's own rule (#367).
+- @johngribbin: reported the wrong human-readable dates in
+  `clboss-status` (#224).
+- @tsjk: reported the candidate whose only address is of type `dns`
+  (#257).
+
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 
 ### Changed
