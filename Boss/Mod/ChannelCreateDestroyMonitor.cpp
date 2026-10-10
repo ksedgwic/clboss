@@ -1,10 +1,11 @@
 #include"Boss/Mod/ChannelCreateDestroyMonitor.hpp"
+#include"Boss/Mod/ChanneledPeers.hpp"
 #include"Boss/concurrent.hpp"
 #include"Boss/log.hpp"
 #include"Boss/Msg/ChannelCreateResult.hpp"
 #include"Boss/Msg/ChannelCreation.hpp"
 #include"Boss/Msg/ChannelDestruction.hpp"
-#include"Boss/Msg/ListpeersAnalyzedResult.hpp"
+#include"Boss/Msg/ListpeersResult.hpp"
 #include"Boss/Msg/Manifestation.hpp"
 #include"Boss/Msg/ManifestNotification.hpp"
 #include"Boss/Msg/Notification.hpp"
@@ -39,6 +40,14 @@ Ev::Io<void> destruction(S::Bus& bus, Ln::NodeId const& n) {
 	return Boss::concurrent(act);
 }
 
+/* Whether a channel in this state still counts as one we have
+ * with the peer: opening or open, but not shutting down.  */
+bool open_state(std::string const& state) {
+	return Boss::Mod::channeled_state(state)
+	    && state != "CHANNELD_SHUTTING_DOWN"
+	     ;
+}
+
 Ev::Io<void> wait_for_true(bool& flag) {
 	return Ev::yield().then([&flag]() {
 		if (flag)
@@ -52,18 +61,49 @@ Ev::Io<void> wait_for_true(bool& flag) {
 namespace Boss { namespace Mod {
 
 void ChannelCreateDestroyMonitor::start() {
-	bus.subscribe<Msg::ListpeersAnalyzedResult
-		     >([this](Msg::ListpeersAnalyzedResult const& r) {
-		/* First gather the current channeled peers.  */
+	/* Rebuild the per-channel view from each listing, and
+	 * reconcile the channeled peers against it.  The peer-level
+	 * set uses the same rule as the notification path: a peer is
+	 * channeled while it has an open channel, and a channel
+	 * shutting down does not count.  ListpeersAnalyzer still
+	 * counts it, which is right for its other consumers, so we
+	 * do not use its bins here (#366).  */
+	bus.subscribe<Msg::ListpeersResult
+		     >([this](Msg::ListpeersResult const& r) {
+		auto curr = std::map<Ln::NodeId, std::set<std::string>>();
+		for (auto const& peer : r.cpeers) {
+			auto unidentified = std::size_t(0);
+			for (auto chan : peer.second.channels) {
+				if (!chan.is_object() || !chan.has("state"))
+					continue;
+				auto state_j = chan["state"];
+				if (!state_j.is_string())
+					continue;
+				if (!open_state(std::string(state_j)))
+					continue;
+				/* An opening channel can be listed before it
+				 * has a channel_id.  Keep it under a
+				 * placeholder until a later listing names it,
+				 * so it still holds the peer open.  */
+				if (!chan.has("channel_id")
+				 || !chan["channel_id"].is_string()) {
+					curr[peer.first].insert(
+						"unidentified-"
+						+ std::to_string(unidentified++)
+					);
+					continue;
+				}
+				curr[peer.first].insert(
+					std::string(chan["channel_id"])
+				);
+			}
+		}
+
+		/* The current channeled peers.  */
 		auto curr_channeled = std::set<Ln::NodeId>();
-		std::set_union( r.connected_channeled.begin()
-			      , r.connected_channeled.end()
-			      , r.disconnected_channeled.begin()
-			      , r.disconnected_channeled.end()
-			      , std::inserter( curr_channeled
-					     , curr_channeled.begin()
-					     )
-			      );
+		for (auto const& e : curr)
+			curr_channeled.insert(e.first);
+		open_channels = std::move(curr);
 
 		/* If initial, we have to initialize our channeled.  */
 		if (r.initial) {
@@ -168,11 +208,14 @@ void ChannelCreateDestroyMonitor::start() {
 	};
 	auto on_channel_state_changed = [this](Jsmn::Object const& params) {
 		auto n = Ln::NodeId();
+		auto channel_id = std::string();
 		auto old_state = std::string();
 		auto new_state = std::string();
 		try {
 			auto payload = params["channel_state_changed"];
 			n = Ln::NodeId(std::string(payload["peer_id"]));
+			if (payload.has("channel_id"))
+				channel_id = std::string(payload["channel_id"]);
 			/* `old_state` may be omitted: as of CLN v26.06 the
 			 * previously-deprecated sentinel value "unknown"
 			 * is no longer emitted; the field is simply
@@ -207,12 +250,42 @@ void ChannelCreateDestroyMonitor::start() {
 			    || state == "CHANNELD_AWAITING_SPLICE"
 			     ;
 		};
-		if ( !( ( live(old_state) && !live(new_state) )
-		     || ( old_state == "CHANNELD_AWAITING_LOCKIN"
-		       && !live(new_state)
-			)
-		      ))
+		auto leaving = ( live(old_state) && !live(new_state) )
+			    || ( old_state == "CHANNELD_AWAITING_LOCKIN"
+			      && !live(new_state)
+			       );
+
+		/* Keep the per-channel view current, so a later closure
+		 * of another channel to this peer sees this one.  */
+		if (!channel_id.empty()) {
+			if (!leaving && open_state(new_state))
+				open_channels[n].insert(channel_id);
+			else {
+				auto oit = open_channels.find(n);
+				if (oit != open_channels.end()) {
+					oit->second.erase(channel_id);
+					if (oit->second.empty())
+						open_channels.erase(oit);
+				}
+			}
+		}
+
+		if (!leaving)
 			return Ev::lift();
+
+		/* Another channel to the same peer is still open, so the
+		 * peer is still channeled: nothing was destroyed at the
+		 * peer level.  */
+		if (!channel_id.empty() && open_channels.count(n) != 0)
+			return Boss::log( bus, Debug
+					, "ChannelCreateDestroyMonitor: "
+					  "channel %s to %s left %s, "
+					  "but the peer still has an "
+					  "open channel"
+					, channel_id.c_str()
+					, std::string(n).c_str()
+					, old_state.c_str()
+					);
 
 		/* Is it already gone from the channeled set?  */
 		auto it = channeled.find(n);

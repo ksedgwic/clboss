@@ -9,7 +9,9 @@ namespace Boss { namespace Msg {
  *
  * @brief Broadcast before `init` completes (before RPC
  * and DB are available) with all the various settings
- * related to how large the node is.
+ * related to how large the node is, and again whenever
+ * one of the amount options changes via `setconfig`.
+ * Consumers copy the fields they use on every delivery.
  */
 struct AmountSettings {
 	/* Minimum and maximum channel size.  */

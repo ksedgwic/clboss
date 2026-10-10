@@ -6,13 +6,106 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.17.2] - Unreleased
 
+### Added
+
+- `contrib/clboss-recent-earnings --group` arranges the rows in three
+  groups, each sorted by net earnings: balanced, fills (peers the
+  rebalancer mostly topped up) and sources (peers it mostly drew
+  from).
+- `contrib/clboss-earnings-history` accepts a short channel id as the
+  peer argument, as well as a node id or an alias.
+- `contrib/clboss-channel-sizing` shows which channels want more
+  capacity on our side and which carry capital that never moves, from
+  CLBOSS's balance samples and CLN's forwards.  Rows are grouped as
+  Grow, Shrink, Spent, Right-sized, Liquidity-limited, Too young and
+  Little or no traffic, with a proposed splice amount and what holds
+  each row back.
+
+### Changed
+
+- The six remaining startup-only options are dynamic:
+  `clboss-min-onchain`, `clboss-min-channel`, `clboss-max-channel`,
+  `clboss-auto-close`, `clboss-zerobasefee` and
+  `clboss-min-nodes-to-process` change at runtime with
+  `lightning-cli setconfig`, so every CLBOSS option except
+  `clboss-skip-cln-version-check` does.  A `setconfig` value that
+  the startup validation would have adjusted (an amount below its
+  floor, a channel-size pair the planner cannot use) or cannot
+  parse is refused with the reason, so the value `lightningd`
+  persists is always the one in effect; the startup path keeps
+  forcing such values, so existing configuration files still load.
+  An unknown `clboss-zerobasefee` word, which used to mean `allow`
+  silently, now keeps the current setting and logs a warning.
+- The contrib scripts show a peer's newest short channel id in place
+  of its node id when the peer has no alias.
+- `contrib/clboss-routing-stats` keeps a channel awaiting splice
+  lock-in in its table; the channel forwards until the splice locks
+  in.
+- `contrib/clboss-recent-earnings` prints PPM values with underscore
+  separators, like the amount columns.
+- `contrib/cln-plugin-bounce` is the plain bounce again: ordered
+  stops, reverse starts.  It no longer re-reads config files and
+  passes edited values on the `plugin start` line; a restarted plugin
+  gets the values `lightningd` holds, those read at its own startup
+  as changed since with `setconfig`.  A config-file edit takes effect
+  when `lightningd` restarts.  The warning about a configured option
+  that a newly installed build no longer registers stays, since
+  `lightningd` keeps a stale configvar for it until it restarts.
+
 ### Fixed
+
+- Timestamps and other non-integer numbers in command output keep
+  their full precision.  They were printed with six significant
+  digits, so `clboss-status` showed a `now` of 1721640000 beside a
+  `now_human` of 08:29:41.  Issue #224.
+- The channel creator no longer logs an error for a candidate without
+  a node_announcement, or whose only address is of type `dns`; both
+  count as having no address for IP binning.  Issue #257.
+- CLBOSS again keeps at most three connections to peers without
+  channels.  Since 0.13.2 the peer list came from `listpeerchannels`,
+  which has no entry for a peer without a channel, so the limit never
+  applied and every channel candidate that was tested for uptime
+  stayed connected.  The peer list now takes those peers from
+  `listpeers` (#355).
+- The uptime test of a channel candidate no longer leaves a
+  connection behind: it disconnects after a successful connect, and
+  a candidate that is already connected counts as online without a
+  connect (#355).
+- The channel creator checks `listpeerchannels` again right before
+  `multifundchannel`.  A plan takes minutes to make and to connect
+  for, and a planned peer could get a channel with us in that time
+  (an inbound open, a manual one); it would then have been funded a
+  second time.
+- The channel creator runs one creation cycle at a time.  Onchain
+  funds are announced on every block, and a cycle can outlast the gap
+  between two blocks, so a second cycle could plan the same funds for
+  the same peers.
+- With two or more channels to one peer, closing one of them no
+  longer announces the peer's channel as destroyed while another
+  is still open, which archived its complaint history, reset its
+  channel age and flushed its fee state.  The create/destroy
+  monitor now tracks open channels per channel id (#354).
+- A cooperative close no longer reports the peer as destroyed,
+  re-created and destroyed again: the create/destroy monitor's
+  ten-minute reconciliation uses the same rule as its notifications,
+  so a channel shutting down does not make the peer channeled again
+  (#366).
 
 - `clboss-auto-close` on a peer with more than one channel issued
   `close id=<node>`, which lightningd refuses ("Peer has multiple
   channels"); the error was logged and the close retried every
   cycle.  It now closes each of the peer's channels by channel id
   (#352).
+
+### Credits
+
+Thanks to the contributors to this release:
+- @Mohil-Ahuja: the create/destroy monitor's per-channel liveness
+  (#365) and its reconciliation by the monitor's own rule (#367).
+- @johngribbin: reported the wrong human-readable dates in
+  `clboss-status` (#224).
+- @tsjk: reported the candidate whose only address is of type `dns`
+  (#257).
 
 ## [0.17.1] - 2026-10-07: "Waitin' on a Sunny Day"
 

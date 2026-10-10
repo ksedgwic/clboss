@@ -2,6 +2,7 @@
 #include"Boss/Mod/ChanneledPeers.hpp"
 #include"Boss/Mod/ChannelCreator/Carpenter.hpp"
 #include"Boss/Mod/ChannelCreator/Manager.hpp"
+#include"Boss/Mod/ChannelCreator/NodeAddress.hpp"
 #include"Boss/Mod/ChannelCreator/Planner.hpp"
 #include"Boss/Mod/ChannelCreator/RearrangerBySize.hpp"
 #include"Boss/Mod/Rpc.hpp"
@@ -29,6 +30,7 @@
 #include<algorithm>
 #include<assert.h>
 #include<cmath>
+#include<exception>
 #include<sstream>
 
 namespace {
@@ -137,9 +139,35 @@ void Manager::start() {
 		     >([this](Msg::RequestChannelCreation const& rcc) {
 		if (!rpc)
 			return Ev::lift();
-		return Boss::concurrent(
-			on_request_channel_creation(rcc.amount)
-		);
+		/* Onchain funds are announced on every block, and a
+		 * cycle can outlast the gap between two blocks: the
+		 * dowser probes every candidate, and the connects before
+		 * multifundchannel can take minutes.  A second cycle would
+		 * plan the same funds for the same candidates.  The next
+		 * block announces the funds again, so nothing is lost by
+		 * skipping.  */
+		if (cycle_running)
+			return Boss::log( bus, Debug
+					, "ChannelCreator: a cycle is "
+					  "running, not starting another."
+					);
+		cycle_running = true;
+		return Boss::concurrent(run_cycle(rcc.amount));
+	});
+}
+
+Ev::Io<void> Manager::run_cycle(Ln::Amount amt) {
+	return on_request_channel_creation(amt
+		/* An error would otherwise leave cycle_running set for
+		 * good, and reach stderr only.  */
+		).catching<std::exception>([this](std::exception const& e) {
+		return Boss::log( bus, Warn
+				, "ChannelCreator: cycle error: %s"
+				, e.what()
+				);
+	}).then([this]() {
+		cycle_running = false;
+		return Ev::lift();
 	});
 }
 
@@ -335,21 +363,8 @@ Manager::get_node_addr(Ln::NodeId n) {
 					.end_object()
 				   );
 	}).then([this](Jsmn::Object res) {
-		auto rv = Net::IPAddrOrOnion();
 		try {
-			auto nodes = res["nodes"];
-			/* Node not known?  */
-			if (nodes.length() == 0)
-				return Ev::lift(std::unique_ptr<Net::IPAddrOrOnion>());
-			auto node = nodes[0];
-			auto addrs = node["addresses"];
-			/* No addresses known for node?  */
-			if (addrs.length() == 0)
-				return Ev::lift(std::unique_ptr<Net::IPAddrOrOnion>());
-			/* Report first address.  */
-			auto addr_j = addrs[0];
-			auto addr_s = std::string(addr_j["address"]);
-			rv = Net::IPAddrOrOnion(addr_s);
+			return Ev::lift(node_address(res));
 		} catch (...) {
 			return Boss::log( bus, Error
 					, "ChannelCreator: Unexpected result from "
@@ -359,7 +374,6 @@ Manager::get_node_addr(Ln::NodeId n) {
 				return Ev::lift(std::unique_ptr<Net::IPAddrOrOnion>());
 			});
 		}
-		return Ev::lift(Util::make_unique<Net::IPAddrOrOnion>(std::move(rv)));
 	});
 }
 Ev::Io<std::vector<Ln::NodeId>>

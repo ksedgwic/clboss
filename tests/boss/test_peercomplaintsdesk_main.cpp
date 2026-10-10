@@ -36,6 +36,7 @@
 #include<errno.h>
 #include<fcntl.h>
 #include<iostream>
+#include<memory>
 #include<string>
 #include<sys/socket.h>
 #include<sys/types.h>
@@ -324,10 +325,28 @@ int main() {
 			connector, signer, "", false
 		});
 	}).then([&]() {
-		/* Enable auto-close.  */
+		/* A value that is neither true nor false is refused
+		 * from setconfig.  */
+		auto reason = std::make_shared<std::string>();
 		return bus.raise(Boss::Msg::Option{
 			"clboss-auto-close",
-			Jsmn::Object::parse_json("{\"enabled\": true}")["enabled"]
+			Jsmn::Object::parse_json("\"maybe\""),
+			reason
+		}).then([reason]() {
+			assert(!reason->empty());
+			return Ev::lift();
+		});
+	}).then([&]() {
+		/* Enable auto-close, in the string form setconfig
+		 * delivers.  */
+		auto reason = std::make_shared<std::string>();
+		return bus.raise(Boss::Msg::Option{
+			"clboss-auto-close",
+			Jsmn::Object::parse_json("\"true\""),
+			reason
+		}).then([reason]() {
+			assert(reason->empty());
+			return Ev::lift();
 		});
 
 	/* A connected peer is closed immediately, regardless of

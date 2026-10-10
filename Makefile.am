@@ -117,6 +117,8 @@ libclboss_la_SOURCES = \
 	Boss/Mod/ChannelCreator/Main.hpp \
 	Boss/Mod/ChannelCreator/Manager.cpp \
 	Boss/Mod/ChannelCreator/Manager.hpp \
+	Boss/Mod/ChannelCreator/NodeAddress.cpp \
+	Boss/Mod/ChannelCreator/NodeAddress.hpp \
 	Boss/Mod/ChannelCreator/Planner.cpp \
 	Boss/Mod/ChannelCreator/Planner.hpp \
 	Boss/Mod/ChannelCreator/RearrangerBySize.cpp \
@@ -610,11 +612,18 @@ TESTS = \
 	tests/boss/test_availablerpccommandsannouncer \
 	tests/boss/test_channelbalance \
 	tests/boss/test_channel_create_destroy_monitor_missing_old_state \
+	tests/boss/test_channel_create_destroy_monitor_multichannel \
+	tests/boss/test_channel_create_destroy_monitor_shutting_down \
 	tests/boss/test_channelcreationdecider \
+	tests/boss/test_channelcreator_carpenter \
+	tests/boss/test_channelcreator_manager \
+	tests/boss/test_channelcreator_nodeaddress \
 	tests/boss/test_channelcreator_planner \
 	tests/boss/test_channelcreator_rearrangerbysize \
 	tests/boss/test_channelcreator_reprioritizer \
 	tests/boss/test_channeledpeers \
+	tests/boss/test_channelfeemanager_zerobasefee \
+	tests/boss/test_channelfinderbypopularity_option \
 	tests/boss/test_earningstracker \
 	tests/boss/test_feemon_history \
 	tests/boss/test_feemodderbypricetheory \
@@ -623,6 +632,7 @@ TESTS = \
 	tests/boss/test_getroutesfirsthop \
 	tests/boss/test_invoicepayer_decodepay \
 	tests/boss/test_listpeersanalyzer \
+	tests/boss/test_listpeersannouncer \
 	tests/boss/test_initiator_clnversion \
 	tests/boss/test_initiator_listconfigs \
 	tests/boss/test_needsconnectsolicitor \
@@ -666,6 +676,7 @@ TESTS = \
 	tests/ev/test_throw_in_then \
 	tests/graph/test_dijkstra \
 	tests/jsmn/test_equality \
+	tests/jsmn/test_from_double \
 	tests/jsmn/test_iterator \
 	tests/jsmn/test_parser \
 	tests/jsmn/test_performance \
