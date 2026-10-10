@@ -1,5 +1,8 @@
 # Contributed CLBOSS Utilities
 
+These tools are provisional.  They are released so operators can
+try them; their options and output may change between releases.
+
 ## Installing
 
 There are two ways to install the requirements:
@@ -56,6 +59,8 @@ cd contrib/
 
 ./clboss-forwarding-stats
 
+./clboss-channel-sizing
+
 ./recently-closed
 
 ./clboss-xrebalance-view
@@ -73,8 +78,119 @@ how many days of earnings history are considered when ranking channels.
   - `--csv-file <file>` writes the raw earnings data as CSV.
   - `--graph-file <file>` generates a PNG plot of net earnings.
   - `--bucket` lets you aggregate by `day`, `week`, `fortnight`, `month`, or `quarter`.
+- **`clboss-recent-earnings`** accepts `--group`, which arranges the
+  rows in three groups, each sorted by net earnings.  *Balanced*: peers
+  with no rebalance, or rebalance volume at most a tenth of the
+  round-trip volume (the smaller of in and out forwarded).  *Fills*:
+  peers the rebalancer mostly topped up (`Out Rebal`).  *Sources*: peers
+  it mostly drew from (`In Rebal`).  A peer rebalanced both ways goes
+  with the larger; the smaller shows as the only nonzero value in that
+  column within its group.
 - **`clboss-forwarding-stats`** summarizes channel forwarding data and can be
   restricted with `--days`.
+- **`clboss-channel-sizing`** shows which channels want more capacity on
+  our side and which carry capital that never moves.  Each hour of
+  CLBOSS's balance samples is labelled low (local side under `--edge`
+  percent of capacity, default 10), high (over 100 - edge) or interior;
+  settled forwards are credited to the state their channel was in, giving
+  an interior and an edge earn rate per direction (`%Low`/`%Int`/`%High`
+  are the shares of hours in each state; a rate over a state the channel
+  was never in prints as `-`).  `GainOut` is what the
+  low hours would have earned at the interior rate (our side ran dry) and
+  `GainIn` the same for the high hours (the peer's side ran dry): upper
+  bounds on what more capacity on that side recovers (run with `--edge 5`
+  for a lower bound).  They are only meaningful for `Class` `bidir`
+  channels (flow within 25% of balanced, rebalancing under 25% of
+  forwarded volume, not pinned at an edge); a sink or source drains to
+  the same floor at any size, and a channel at one edge 90% of the time
+  is classed by that edge because the flow it refuses there never shows
+  up in its net flow.  `?` marks a rate resting on under three days of
+  interior time.  `MinLoc` is the lowest the local side got during the
+  window, in M sat: capital that never moved, which a splice-out could
+  remove without changing any forward that happened.  A longer window can
+  only lower it, so read it at 60-90 days before removing capital; the
+  samples are hourly, so a dip that came and went within the hour is
+  missed.
+
+  The table is grouped.  *Grow*: `bidir` channels whose `GainOut` clears
+  `--min-gain` (default 1000 sat, about one on-chain transaction), or
+  which turn over `--grow-turns` of capacity per day (default 0.5) while
+  refusing at least `--grow-refused` of the outbound volume they carry
+  (default 0.25) -- a fast-cycling channel never parks at an edge long
+  enough to accrue `GainOut`; its shortage shows as refusals in
+  mid-range, and that signal is readable early, so such a channel joins
+  Grow even under `--min-days` (with a `young` hold).  By `GainOut`.  *Shrink*: channels whose `MinLoc` is at least `--idle-frac`
+  of capacity (default 0.4) and 1M sat, by `MinLoc`.  *Spent*: peer-funded
+  channels the peer spent through us -- our side holds `--spent-frac`
+  (0.8) of capacity after one inbound rise within the window from 50%
+  or under (a young remote open started at zero), the flow was inbound
+  (out at most a seventh of in), and inbound forwards rather than CLBOSS
+  fills account for at least half of our side -- by `Cap`.  A node that
+  wants inbound liquidity starts the same way and is told apart only by
+  what follows, payments to the peer, so the row is actionable once
+  `--spent-quiet` (30) days have passed without a forward either way;
+  `Quiet` is the days since the last one.  `Age` is the
+  current short channel id's age in days (since the last splice or open)
+  and, after a slash when the peer goes back further, the days since our
+  earliest channel with it, closed ones and pre-splice fundings included;
+  `Sampled` is the days of balance samples in the window, the evidence
+  behind the balance columns.
+  *Right-sized*: the
+  other `bidir` channels, by `NetEarn` (forwarding fees less rebalance
+  expenditures, both from CLBOSS's per-peer earnings record over the
+  window: the figure `clboss-forwarding-stats` prints).  *Liquidity-limited*: sinks,
+  sources and rebalance-carried channels, where refills rather than size
+  are the lever -- sinks together by `Refused`, then sources by `GainIn`
+  (inbound refusals happen at the peer, so that estimate is all there
+  is), then rebalance-carried by `NetEarn`.  *Too young*: under `--min-days` (30, the
+  default window) of samples, since a new channel's balance is its
+  opening state rather than its behavior, by `Sampled`; a channel with no
+  samples at all (CLBOSS samples a peer's balance when it sets the
+  channel's fee, so a private channel has none) stays here unless it is
+  Spent, with `Sampled` and the shares printed as `-`.  *Little or no traffic*: under `--min-turns`
+  (0.1) of capacity forwarded in the window -- a probe still waiting for
+  flow, or a dead channel, told apart by `Age` and `Sampled` -- by `Cap`.  `Change` is the proposed splice in M sat: for
+  Shrink, remove enough that the window's lowest local balance lands at
+  the edge threshold of the smaller channel (in parentheses when under 1M sat
+  would be left: consider closing instead, which is
+  `clboss-forwarding-stats --days 90 --sort tral`'s call); for Spent, the whole
+  capacity: a close the peer pays for, their balance landing in our
+  wallet; for Grow, add the current capacity -- a step rather
+  than a measurement, since refused volume is inflated by retries, so
+  double and read the next window.  In Grow, Shrink and Spent two columns
+  name what holds a row back -- advice, not a veto.  `Wait` lists what
+  resolves itself with time: `young` (under `--min-days` of samples) or
+  `thin` evidence, `resized` (the capacity changed under `--min-days`
+  ago -- a splice, or a sibling channel of the peer opened or closed,
+  since the samples are per peer -- so `MinLoc` and `Change` rest on
+  the samples since the change), `quiet` (a spent channel's last
+  forward is under `--spent-quiet` days old), peer `offline` or `flaky`
+  (3-day connect rate under 90%).  `Cost` lists the price of acting now, a person's to accept:
+  when the peer cannot splice a resize means a close, so `inbound`
+  marks the inbound liquidity the close would forfeit (`Inb` over a
+  quarter of `Cap`).  On a terminal the
+  triggering stat is tinted and actionable rows -- both columns empty
+  -- are bold (`--color` forces this, `--no-color` disables it).
+
+  `Turns` is forwarded volume over capacity for the window, the capacity
+  being the window's mean of the sampled total when a splice changed it.
+  A splice keeps the channel's history: forwards recorded under the old
+  short channel id are attributed through CLN's lookup of old ids, and a
+  channel awaiting splice lock-in stays in the table.  `Inb` is the
+  peer's side of the channel now, in M sat: the inbound liquidity a
+  close-and-reopen gives up and a splice keeps.  `PeerPpm` is the peer's
+  fee rate toward us from its channel update: what a fill, or moving
+  `Inb` to a replacement channel, pays on the peer's hop (base fee left
+  out; under 1 ppm at these sizes).  `Up`/`Up3d` show whether
+  the peer is connected now and its 3-day connect rate, `Splice` whether
+  it negotiates or announces splicing (feature bit 62/63), so a candidate
+  can be resized in place instead of closed and reopened.  `--days` sets
+  the window (default 30; a candidate should also show at 60 before
+  acting; balance samples exist since CLBOSS started recording them),
+  `--since`/`--before` fix it in unix seconds, `--wide` adds the edge
+  earn rates, the share of refused forwards that happened at the edge and
+  the balance range used, `--sort` picks a flat order instead of groups,
+  `--json` dumps the rows with their group and holds.
 - **`clboss-routing-stats`** ranks peers using recent earnings data and also
   accepts the `--days` option.
 - **`recently-closed`** lists channels that closed within the last N days, also
@@ -95,16 +211,18 @@ how many days of earnings history are considered when ranking channels.
   order, so the list order encodes any shutdown dependency between
   them.  Restarts use the unversioned sibling path when one exists
   (usually a symlink maintained by the install script), so a repointed
-  symlink brings up the new version.  Config-file edits made since
-  `lightningd` started are applied in a second phase, which is skipped
-  with a warning naming the option and file when any config-file
-  option is no longer registered -- including one a newly installed
-  build dropped, which leaves `lightningd` holding a stale configvar
-  until it restarts.  Plugin names are the arguments
-  not starting with `-`; every other argument is passed to
-  `lightning-cli` (e.g. `--signet --lightning-dir=...`), so names and
-  options may appear in any order.  Plain POSIX sh plus `jq`, so unlike
-  a shell alias it also works under `sudo`.
+  symlink brings up the new version.  A restarted plugin gets the
+  option values `lightningd` holds: those it read from its config
+  files at its own startup, as changed since with `setconfig`.  A
+  live change is made with `setconfig`; a config-file edit takes
+  effect when `lightningd` restarts.  After the restart the script
+  warns about any configured option the new build no longer
+  registers, since `lightningd` keeps a stale configvar for it until
+  it restarts and a `setconfig` before then can crash it.  Plugin
+  names are the arguments not starting with `-`; every other argument
+  is passed to `lightning-cli` (e.g. `--signet --lightning-dir=...`),
+  so names and options may appear in any order.  Plain POSIX sh plus
+  `jq`, so unlike a shell alias it also works under `sudo`.
 - **`fee-log-parser`** is a parser that streams DEBUG-level logging and writes
   a sqlite database containing fee algorithm information. CLBOSS now records
   the same schema in its internal database (`data.clboss`, tables

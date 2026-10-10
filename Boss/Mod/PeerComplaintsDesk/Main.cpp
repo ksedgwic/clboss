@@ -31,6 +31,7 @@
 #include<algorithm>
 #include<assert.h>
 #include<memory>
+#include<string>
 
 namespace {
 
@@ -101,7 +102,10 @@ private:
 				Json::Out::direct(default_enabled),
 				"Whether CLBOSS should automatically close "
 				"bad channels (EXPERIMENTAL).  "
-				"Set 'true' to enable, 'false' to disable."
+				"Set 'true' to enable, 'false' to disable.  "
+				"Dynamic: settable at runtime via "
+				"`lightning-cli setconfig`.",
+				/* dynamic = */ true
 			});
 		});
 		bus.subscribe<Msg::Option
@@ -109,15 +113,36 @@ private:
 			if (o.name != "clboss-auto-close")
 				return Ev::lift();
 
-			enabled = bool(o.value);
-			if (enabled != default_enabled)
-				return Boss::log( bus, Info
+			/* A bool at startup, a string via setconfig.  */
+			auto value = false;
+			if (o.value.is_boolean())
+				value = bool(o.value);
+			else if ( o.value.is_string()
+			       && ( std::string(o.value) == "true"
+				 || std::string(o.value) == "false"
+				  ))
+				value = (std::string(o.value) == "true");
+			else {
+				o.reject( "clboss-auto-close: expected "
+					  "true or false"
+					);
+				return Boss::log( bus, Warn
 						, "PeerComplaintsDesk: "
-						  "Auto-close: %s."
+						  "clboss-auto-close: expected "
+						  "true or false; keeping %s."
 						, enabled ? "enabled" :
 							    "disabled"
 						);
-			return Ev::lift();
+			}
+			if (value == enabled)
+				return Ev::lift();
+			enabled = value;
+			return Boss::log( bus, Info
+					, "PeerComplaintsDesk: "
+					  "Auto-close: %s."
+					, enabled ? "enabled" :
+						    "disabled"
+					);
 		});
 
 		bus.subscribe<Msg::DbResource
