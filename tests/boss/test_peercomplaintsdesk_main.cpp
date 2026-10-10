@@ -28,6 +28,7 @@
 #include"Sha256/fun.hpp"
 #include"Sqlite3.hpp"
 #include"Util/stringify.hpp"
+#include<algorithm>
 #include<array>
 #include<assert.h>
 #include<cctype>
@@ -40,6 +41,7 @@
 #include<sys/socket.h>
 #include<sys/types.h>
 #include<unistd.h>
+#include<vector>
 
 namespace {
 
@@ -91,10 +93,43 @@ private:
 		});
 	}
 
+	/* Rpc can queue several requests before the mock reads,
+	 * for example the per-channel closes, which run in
+	 * parallel, so one read may hold more than one request.
+	 * Return the length of the first one.  */
+	static std::size_t first_request_size(std::string const& s) {
+		auto depth = 0;
+		auto in_string = false;
+		auto escaped = false;
+		for (auto i = std::size_t(0); i < s.size(); ++i) {
+			auto c = s[i];
+			if (in_string) {
+				if (escaped)
+					escaped = false;
+				else if (c == '\\')
+					escaped = true;
+				else if (c == '"')
+					in_string = false;
+			} else if (c == '"')
+				in_string = true;
+			else if (c == '{')
+				++depth;
+			else if (c == '}' && --depth == 0)
+				return i + 1;
+		}
+		return s.size();
+	}
+
 	Ev::Io<void> handle(std::string req_s) {
 		if (req_s.empty())
 			return Ev::lift();
-		/* Strip the trailing record separators.  */
+		/* Strip the record separators around the request.  */
+		while (!req_s.empty() && isspace(req_s.front()))
+			req_s.erase(req_s.begin());
+		if (req_s.empty())
+			return serve();
+		auto rest = req_s.substr(first_request_size(req_s));
+		req_s.resize(req_s.size() - rest.size());
 		while ( isspace(req_s.back())
 		      )
 			req_s.pop_back();
@@ -106,9 +141,18 @@ private:
 		auto robj = result.start_object();
 		if (method == "listpeerchannels") {
 			auto cs = robj.start_array("channels");
-			{
+			if (channel_ids.empty()) {
 				auto c = cs.start_object();
 				c.field("peer_connected", connected_flag);
+				c.end_object();
+			}
+			for (auto i = std::size_t(0); i < channel_ids.size(); ++i) {
+				auto c = cs.start_object();
+				c.field("peer_connected", connected_flag);
+				c.field("channel_id", channel_ids[i]);
+				c.field("state", i < channel_states.size()
+						 ? channel_states[i]
+						 : std::string("CHANNELD_NORMAL"));
 				c.end_object();
 			}
 			cs.end_array();
@@ -116,6 +160,7 @@ private:
 			++close_calls;
 			auto params = req["params"];
 			last_close_id = std::string(params["id"]);
+			close_ids.push_back(last_close_id);
 			last_close_timeout = std::uint64_t(double(
 				params["unilateraltimeout"]
 			));
@@ -134,8 +179,10 @@ private:
 			.end_object()
 			.output()
 			;
-		return writeloop(js).then([this]() {
-			return serve();
+		return writeloop(js).then([this, rest]() {
+			if (rest.find_first_not_of(" \t\r\n") == std::string::npos)
+				return serve();
+			return handle(rest);
 		});
 	}
 
@@ -144,6 +191,12 @@ public:
 	bool connected_flag = true;
 	std::size_t close_calls = 0;
 	std::string last_close_id;
+	std::vector<std::string> close_ids;
+	/* When set, listpeerchannels reports these channels for the
+	 * peer instead of one anonymous channel.  */
+	std::vector<std::string> channel_ids;
+	/* Per-channel state, CHANNELD_NORMAL where not given.  */
+	std::vector<std::string> channel_states;
 	std::uint64_t last_close_timeout = 0;
 
 	explicit
@@ -227,6 +280,12 @@ int main() {
 	));
 	auto peerC = Ln::NodeId(std::string(
 		"0200000000000000000000000000000000000000000000000000000000000000C3"
+	));
+	auto peerD = Ln::NodeId(std::string(
+		"0200000000000000000000000000000000000000000000000000000000000000D4"
+	));
+	auto peerE = Ln::NodeId(std::string(
+		"0200000000000000000000000000000000000000000000000000000000000000E5"
 	));
 
 	/* Enough non-ignored complaints to cross the close
@@ -436,6 +495,61 @@ int main() {
 		return cycle();
 	}).then([&]() {
 		assert(server.close_calls == 2);
+
+	/* A peer with two channels: `close id=<node>` would be
+	 * refused by lightningd ("Peer has multiple channels"), so
+	 * each channel is closed by its channel id (#352).
+	 */
+		return bus.raise(Boss::Msg::Option{
+			"clboss-auto-close",
+			Jsmn::Object::parse_json("{\"enabled\": true}")["enabled"]
+		});
+	}).then([&]() {
+		return bus.raise(Boss::Msg::ChannelDestruction{peerC});
+	}).then([&]() {
+		return Ev::yield(200);
+	}).then([&]() {
+		server.close_ids.clear();
+		server.channel_ids = {
+			std::string(64, '1'),
+			std::string(64, '2')
+		};
+		server.connected_flag = true;
+		return insert_complaints(peerD);
+	}).then([&]() {
+		return cycle();
+	}).then([&]() {
+		assert(server.close_calls == 4);
+		auto ids = server.close_ids;
+		std::sort(ids.begin(), ids.end());
+		assert(ids.size() == 2);
+		assert(ids[0] == std::string(64, '1'));
+		assert(ids[1] == std::string(64, '2'));
+		return bus.raise(Boss::Msg::ChannelDestruction{peerD});
+	}).then([&]() {
+		return Ev::yield(200);
+
+	/* One closable channel beside one already shutting down:
+	 * lightningd still refuses the node id, so the closable
+	 * channel is closed by its id and the other is left alone.
+	 */
+	}).then([&]() {
+		server.close_ids.clear();
+		server.channel_ids = {
+			std::string(64, '3'),
+			std::string(64, '4')
+		};
+		server.channel_states = {
+			std::string("CHANNELD_NORMAL"),
+			std::string("CHANNELD_SHUTTING_DOWN")
+		};
+		return insert_complaints(peerE);
+	}).then([&]() {
+		return cycle();
+	}).then([&]() {
+		assert(server.close_calls == 5);
+		assert(server.close_ids.size() == 1);
+		assert(server.close_ids[0] == std::string(64, '3'));
 
 		/* Stop the Rpc watchers so the event loop can
 		 * drain and Ev::start can return.
