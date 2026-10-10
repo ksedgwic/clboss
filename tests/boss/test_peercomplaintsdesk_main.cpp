@@ -93,10 +93,43 @@ private:
 		});
 	}
 
+	/* Rpc can queue several requests before the mock reads,
+	 * for example the per-channel closes, which run in
+	 * parallel, so one read may hold more than one request.
+	 * Return the length of the first one.  */
+	static std::size_t first_request_size(std::string const& s) {
+		auto depth = 0;
+		auto in_string = false;
+		auto escaped = false;
+		for (auto i = std::size_t(0); i < s.size(); ++i) {
+			auto c = s[i];
+			if (in_string) {
+				if (escaped)
+					escaped = false;
+				else if (c == '\\')
+					escaped = true;
+				else if (c == '"')
+					in_string = false;
+			} else if (c == '"')
+				in_string = true;
+			else if (c == '{')
+				++depth;
+			else if (c == '}' && --depth == 0)
+				return i + 1;
+		}
+		return s.size();
+	}
+
 	Ev::Io<void> handle(std::string req_s) {
 		if (req_s.empty())
 			return Ev::lift();
-		/* Strip the trailing record separators.  */
+		/* Strip the record separators around the request.  */
+		while (!req_s.empty() && isspace(req_s.front()))
+			req_s.erase(req_s.begin());
+		if (req_s.empty())
+			return serve();
+		auto rest = req_s.substr(first_request_size(req_s));
+		req_s.resize(req_s.size() - rest.size());
 		while ( isspace(req_s.back())
 		      )
 			req_s.pop_back();
@@ -146,8 +179,10 @@ private:
 			.end_object()
 			.output()
 			;
-		return writeloop(js).then([this]() {
-			return serve();
+		return writeloop(js).then([this, rest]() {
+			if (rest.find_first_not_of(" \t\r\n") == std::string::npos)
+				return serve();
+			return handle(rest);
 		});
 	}
 
