@@ -108,6 +108,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   failure other than "no route" is logged as an error; before, every
   error was read as no flow.
 
+- With two or more channels to one peer, the fee modifier by
+  balance read only the first live channel, applied the multiplier
+  it derived to all of them and recorded that one channel's balance
+  as the peer's.  It now sums our balance and the capacity over
+  the peer's live channels, so the multiplier reflects the whole
+  position and the balance samples `PeerTrackRecord` and the
+  contrib tools read are the peer's (#352).
+
 ### Credits
 
 Thanks to the contributors to this release:

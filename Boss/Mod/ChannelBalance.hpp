@@ -2,6 +2,7 @@
 #define BOSS_MOD_CHANNELBALANCE_HPP
 
 #include"Ln/Amount.hpp"
+#include<cstddef>
 
 namespace Jsmn { class Object; }
 
@@ -34,6 +35,21 @@ struct ChannelBalance {
  * missing or malformed, as a plain read would.
  */
 ChannelBalance channel_balance(Jsmn::Object const& channel);
+
+/** Boss::Mod::peer_live_balance
+ *
+ * @brief sums `channel_balance` over the live channels
+ * (`CHANNELD_NORMAL`, `CHANNELD_AWAITING_SPLICE`) in the
+ * `channels` array of a `listpeerchannels` result for one peer.
+ * A peer can have more than one channel, and the balance that
+ * matters for it is its whole position (#352).
+ * Returns the number of live channels summed into `out`; with
+ * none, `out` is left at zero.
+ * Throws as `channel_balance` does on a malformed live channel.
+ */
+std::size_t peer_live_balance( Jsmn::Object const& channels
+			     , ChannelBalance& out
+			     );
 
 }}
 
