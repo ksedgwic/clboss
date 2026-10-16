@@ -77,6 +77,19 @@ PKG_CHECK_MODULES([LIBUNWIND], [libunwind], [
   AC_MSG_ERROR([libunwind is required but not found])
 ])
 
+# Debian and Ubuntu build libunwind with its C++ exception unwinder, so
+# libunwind.so exports _Unwind_RaiseException and _Unwind_Resume.  With
+# -lunwind ahead of libstdc++ on the link line those symbols bind to
+# libunwind at run time instead of libgcc_s, and Ubuntu's default
+# --as-needed then leaves libgcc_s out of the executable entirely.
+# libunwind's unwinder makes valgrind report every throw.  Link libgcc_s
+# ahead of libunwind, exempt from --as-needed, so libgcc's unwinder
+# handles exceptions on every platform.  Linkers that reject the flag
+# skip it.
+AX_CHECK_LINK_FLAG([-Wl,--push-state,--no-as-needed,-lgcc_s,--pop-state], [
+  LIBUNWIND_LIBS="-Wl,--push-state,--no-as-needed,-lgcc_s,--pop-state $LIBUNWIND_LIBS"
+])
+
 # https://github.com/ZmnSCPxj/clboss/issues/245
 # Alpine and FreeBSD need explicit -lexecinfo for backtrace_symbols
 case "$host_os" in

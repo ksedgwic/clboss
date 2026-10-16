@@ -107,6 +107,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   channel size as the smallest flow worth measuring.  A `getroutes`
   failure other than "no route" is logged as an error; before, every
   error was read as no flow.
+- C++ exceptions are unwound by libgcc's unwinder on Debian and
+  Ubuntu builds.  Those distributions build libunwind with its own
+  exception unwinder, and with `-lunwind` ahead of libstdc++ on the
+  link line it took over every throw in CLBOSS and its tests, which
+  made `make check` fail under valgrind.  The build now links
+  libgcc_s explicitly ahead of libunwind.
 
 ### Credits
 
