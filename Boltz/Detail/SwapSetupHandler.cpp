@@ -270,10 +270,12 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		invoice = "";
 		timeoutBlockheight = 0;
 		return Ev::lift();
-	}).catching<Boltz::ApiError>([this](Boltz::ApiError const& _){
+	}).catching<Boltz::ApiError>([this](Boltz::ApiError const& e){
 		invoice = "";
 		timeoutBlockheight = 0;
-		return loge("Failed to access API endpoint.");
+		return loge( std::string("Failed to access API endpoint: ")
+			   + e.what()
+			   );
 	});
 }
 
