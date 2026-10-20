@@ -201,10 +201,12 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 		}
 	}).catching<Boltz::ApiError>([this, p_swapId](Boltz::ApiError e) {
 		/* Log that there is an error.  */
+		auto msg = std::make_shared<std::string>(e.what());
 		auto kont = std::function<Ev::Io<void>()>();
-		kont = [this, p_swapId]() {
+		kont = [this, p_swapId, msg]() {
 			return loge( std::string("/swapstatus \"")
-				   + *p_swapId + "\" not accessible."
+				   + *p_swapId + "\" not accessible: "
+				   + *msg
 				   );
 		};
 		return Ev::lift(kont);
@@ -393,7 +395,9 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 			offchainAmount - onchainAmount
 		));
 	}).catching<ApiError>([this](ApiError const& e) {
-		return logd("/getpairs not accessible.").then([]() {
+		return logd( std::string("/getpairs not accessible: ")
+			   + e.what()
+			   ).then([]() {
 			return Ev::lift(std::unique_ptr<Ln::Amount>());
 		});
 	});
