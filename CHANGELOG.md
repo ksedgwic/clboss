@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.17.3] - Unreleased
 
+### Changed
+
+- The vendored libsecp256k1 moves from 0.3.2 to 0.6.0, which carries
+  the MuSig2, extrakeys and schnorrsig modules that taproot swaps
+  need.
+
 ### Fixed
 
 - C++ exceptions are unwound by libgcc's unwinder on Debian and

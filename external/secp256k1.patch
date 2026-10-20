@@ -74,3 +74,23 @@ index 654fa2e..2fc623c 100644
  noinst_HEADERS += src/modules/schnorrsig/main_impl.h
  noinst_HEADERS += src/modules/schnorrsig/tests_impl.h
  noinst_HEADERS += src/modules/schnorrsig/tests_exhaustive_impl.h
+diff --git a/src/modules/ellswift/Makefile.am.include b/src/modules/ellswift/Makefile.am.include
+index 8251231..133fc12 100644
+--- a/src/modules/ellswift/Makefile.am.include
++++ b/src/modules/ellswift/Makefile.am.include
+@@ -1,4 +1,4 @@
+-include_HEADERS += include/secp256k1_ellswift.h
++noinst_HEADERS += include/secp256k1_ellswift.h
+ noinst_HEADERS += src/modules/ellswift/bench_impl.h
+ noinst_HEADERS += src/modules/ellswift/main_impl.h
+ noinst_HEADERS += src/modules/ellswift/tests_impl.h
+diff --git a/src/modules/musig/Makefile.am.include b/src/modules/musig/Makefile.am.include
+index 796443c..4e1136c 100644
+--- a/src/modules/musig/Makefile.am.include
++++ b/src/modules/musig/Makefile.am.include
+@@ -1,4 +1,4 @@
+-include_HEADERS += include/secp256k1_musig.h
++noinst_HEADERS += include/secp256k1_musig.h
+ noinst_HEADERS += src/modules/musig/main_impl.h
+ noinst_HEADERS += src/modules/musig/keyagg.h
+ noinst_HEADERS += src/modules/musig/keyagg_impl.h
