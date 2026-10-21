@@ -18,7 +18,7 @@ struct ProbeChannel {
 	Ln::Amount spendable;
 };
 
-/** Boss::Mod::probe_channel
+/** Boss::Mod::pick_probe_channel
  *
  * @brief picks the channel to probe a peer through from the
  * `channels` array of a `listpeerchannels` result for that peer:
@@ -36,7 +36,7 @@ struct ProbeChannel {
  * Throws `Jsmn::TypeError` on a malformed channel, as a plain read
  * would.
  */
-ProbeChannel probe_channel(Jsmn::Object const& channels);
+ProbeChannel pick_probe_channel(Jsmn::Object const& channels);
 
 }}
 

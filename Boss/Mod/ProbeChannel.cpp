@@ -4,7 +4,7 @@
 
 namespace Boss { namespace Mod {
 
-ProbeChannel probe_channel(Jsmn::Object const& channels) {
+ProbeChannel pick_probe_channel(Jsmn::Object const& channels) {
 	auto rv = ProbeChannel();
 	for (auto c : channels) {
 		if (!c.has("short_channel_id"))

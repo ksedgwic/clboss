@@ -141,7 +141,7 @@ private:
 				/* With several channels to the peer, go
 				 * out through the one with the most to
 				 * spend: see ProbeChannel.  */
-				auto pc = probe_channel(res["channels"]);
+				auto pc = pick_probe_channel(res["channels"]);
 				chan0 = pc.scid;
 				cap0 = pc.spendable;
 			} catch (Jsmn::TypeError const& _) {
