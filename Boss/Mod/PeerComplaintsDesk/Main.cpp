@@ -513,11 +513,12 @@ private:
 	 * has more than one channel ("Peer has multiple channels"),
 	 * and the close would then be retried every cycle forever
 	 * (#352), so with several channels close each closable one
-	 * by its channel id.  `nchannels` counts all of the peer's
-	 * channels, including ones already shutting down, since
-	 * lightningd refuses the node id whenever there is more than
-	 * one.  A failure on one channel is logged and does not stop
-	 * the others.  */
+	 * by its channel id.  `nchannels` counts every channel
+	 * `listpeerchannels` returns, while lightningd counts only
+	 * the ones `close` can act on, so a peer with one live
+	 * channel beside an on-chain one is closed by channel id
+	 * here, which is valid for any count.  A failure on one
+	 * channel is logged and does not stop the others.  */
 	Ev::Io<void> do_close( Ln::NodeId const& p
 			     , std::vector<std::string> const& ids
 			     , std::size_t nchannels
