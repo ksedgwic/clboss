@@ -47,6 +47,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   spend; the probe names that channel, so its amount stays within
   one channel (#352).
 
+- `clboss-auto-close` on a peer with more than one channel issued
+  `close id=<node>`, which lightningd refuses ("Peer has multiple
+  channels"); the error was logged and the close retried every
+  cycle.  It now closes each closable channel by channel id
+  (#352).
+
 ## [0.17.2] - 2026-10-19: "Lost in the Flow"
 
 ### Added
