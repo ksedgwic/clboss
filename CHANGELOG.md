@@ -41,6 +41,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   position and the balance samples `PeerTrackRecord` and the
   contrib tools read are the peer's (#352).
 
+- With two or more channels to one peer, the active prober sized
+  its probe from the first live channel listed, which could be the
+  smaller one.  It now probes through the channel with the most to
+  spend; the probe names that channel, so its amount stays within
+  one channel (#352).
+
 ## [0.17.2] - 2026-10-19: "Lost in the Flow"
 
 ### Added
