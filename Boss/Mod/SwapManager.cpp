@@ -598,8 +598,17 @@ private:
 				.bind(":provider", provider_name)
 				.execute();
 			tx.commit();
-			/* Now send the PayInvoice message.  */
-			return bus.raise(Msg::PayInvoice{swap->invoice});
+			/* Now send the PayInvoice message.  The
+			 * provider was asked for an invoice on the
+			 * hash of our preimage, for the swap amount
+			 * in whole satoshis; InvoicePayer pays only
+			 * an invoice that decodes to those (#329).
+			 */
+			return bus.raise(Msg::PayInvoice{
+				swap->invoice,
+				swap->hash,
+				Ln::Amount::sat(amount.to_sat())
+			});
 		}).then([this, swap]() {
 			auto uuid = needs_invoice.front();
 			return Boss::log( bus, Debug
