@@ -10,7 +10,9 @@
 #include"Json/Out.hpp"
 #include"Ln/Amount.hpp"
 #include"S/Bus.hpp"
+#include"Sha256/Hash.hpp"
 #include<memory>
+#include<string>
 
 namespace {
 
@@ -33,6 +35,12 @@ namespace {
 auto constexpr maxfee_divisor = std::uint64_t(100);
 auto constexpr maxfee_floor_msat = std::uint64_t(5000);
 
+/* Thrown when the decoded invoice is not the one we were asked
+ * to pay.  */
+struct Mismatch {
+	std::string reason;
+};
+
 }
 
 namespace Boss { namespace Mod {
@@ -42,8 +50,8 @@ void InvoicePayer::start() {
 		     >([this](Msg::Init const& init) {
 		rpc = &init.rpc;
 		/* Pay pending invoices.  */
-		auto f = [this](std::string invoice) {
-			return pay(std::move(invoice));
+		auto f = [this](Msg::PayInvoice p) {
+			return pay(std::move(p));
 		};
 		return Boss::concurrent(
 			Ev::foreach(f, std::move(pending_invoices))
@@ -54,37 +62,59 @@ void InvoicePayer::start() {
 		     >([this](Msg::PayInvoice const& p) {
 		if (!rpc) {
 			/* Not yet ready, add to pending.  */
-			pending_invoices.push_back(p.invoice);
+			pending_invoices.push_back(p);
 			return Ev::lift();
 		}
-		return Boss::concurrent(pay(p.invoice));
+		return Boss::concurrent(pay(p));
 	});
 }
 
-Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
-	auto inv = std::make_shared<std::string>(std::move(n_invoice));
-	return Ev::lift().then([this, inv]() {
+Ev::Io<void> InvoicePayer::pay(Msg::PayInvoice n_p) {
+	auto p = std::make_shared<Msg::PayInvoice>(std::move(n_p));
+	return Ev::lift().then([this, p]() {
 		return Boss::log( bus, Debug
 				, "InvoicePayer: Initiating: %s"
-				, inv->c_str()
+				, p->invoice.c_str()
 				);
-	}).then([this, inv]() {
+	}).then([this, p]() {
 		auto parms = Json::Out()
 			.start_object()
-				.field("string", *inv)
+				.field("string", p->invoice)
 			.end_object()
 			;
 		return rpc->command("decode", std::move(parms));
-	}).then([this, inv](Jsmn::Object res) {
+	}).then([this, p](Jsmn::Object res) {
 		if (!res.has("type")
 		|| std::string(res["type"]) != "bolt11 invoice"
 		|| !res.has("valid")
 		|| !res["valid"].is_boolean()
 		|| !bool(res["valid"])
 		|| !res.has("amount_msat")
+		|| !res.has("payment_hash")
+		|| !res["payment_hash"].is_string()
 		) {
 			throw Jsmn::TypeError();
 		}
+
+		/* Pay only the invoice we were asked to pay: the
+		 * one on the expected payment hash, for the
+		 * expected amount.  See Msg::PayInvoice.  */
+		auto hash_s = std::string(res["payment_hash"]);
+		if (!Sha256::Hash::valid_string(hash_s))
+			throw Jsmn::TypeError();
+		if (Sha256::Hash(hash_s) != p->expected_hash)
+			throw Mismatch{ std::string("payment_hash ")
+				      + hash_s
+				      + ", expected "
+				      + std::string(p->expected_hash)
+				      };
+		auto amount = Ln::Amount::object(res["amount_msat"]);
+		if (amount != p->expected_amount)
+			throw Mismatch{ std::string("amount ")
+				      + std::string(amount)
+				      + ", expected "
+				      + std::string(p->expected_amount)
+				      };
 
 		/* Compute an absolute maxfee from the invoice amount
 		 * (policy documented on maxfee_divisor above).  xpay's
@@ -92,7 +122,6 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 		 * branch unnecessary: askrene + xpay manage the fee
 		 * budget across parts internally.
 		 */
-		auto amount = Ln::Amount::object(res["amount_msat"]);
 		auto maxfee_msat = amount.to_msat() / maxfee_divisor;
 		if (maxfee_msat < maxfee_floor_msat)
 			maxfee_msat = maxfee_floor_msat;
@@ -104,27 +133,33 @@ Ev::Io<void> InvoicePayer::pay(std::string n_invoice) {
 
 		auto parms = Json::Out()
 			.start_object()
-				.field("invstring", *inv)
+				.field("invstring", p->invoice)
 				.field("retry_for", retry_for)
 				.field("maxfee", maxfee_msat)
 			.end_object()
 			;
 		return rpc->command("xpay", std::move(parms));
-	}).then([this, inv](Jsmn::Object _) {
+	}).then([this, p](Jsmn::Object _) {
 		return Boss::log( bus, Debug
 				, "InvoicePayer: Paid: %s"
-				, inv->c_str()
+				, p->invoice.c_str()
 				);
-	}).catching<RpcError>([this, inv](RpcError const& _) {
+	}).catching<RpcError>([this, p](RpcError const& _) {
 		return Boss::log( bus, Debug
 				, "InvoicePayer: Failed to pay: %s"
-				, inv->c_str()
+				, p->invoice.c_str()
 				);
-	}).catching<Jsmn::TypeError>([this, inv](Jsmn::TypeError const& _) {
+	}).catching<Jsmn::TypeError>([this, p](Jsmn::TypeError const& _) {
 		return Boss::log( bus, Error
 				, "InvoicePayer: "
 				  "Unexpected decode result for invoice: %s"
-				, inv->c_str()
+				, p->invoice.c_str()
+				);
+	}).catching<Mismatch>([this, p](Mismatch const& m) {
+		return Boss::log( bus, Error
+				, "InvoicePayer: Not paying %s: %s"
+				, p->invoice.c_str()
+				, m.reason.c_str()
 				);
 	});
 }
