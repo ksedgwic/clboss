@@ -1,8 +1,8 @@
 #ifndef BOSS_MOD_INVOICEPAYER_HPP
 #define BOSS_MOD_INVOICEPAYER_HPP
 
+#include"Boss/Msg/PayInvoice.hpp"
 #include<vector>
-#include<string>
 
 namespace Boss { namespace Mod { class Rpc; }}
 namespace Ev { template<typename a> class Io; }
@@ -13,10 +13,11 @@ namespace Boss { namespace Mod {
 /** class Boss::Mod::InvoicePayer
  *
  * @brief Handles `Boss::Msg::PayInvoice`
- * messages by actually doing the `pay`
- * command.
+ * messages by checking the invoice against
+ * the expected payment hash and amount, then
+ * actually doing the `xpay` command.
  *
- * @desc we do the `pay` command with long
+ * @desc we do the `xpay` command with long
  * `retry_for` timeouts; this is an automated
  * system and we do not particularly care
  * about how long timeouts are.
@@ -26,10 +27,10 @@ private:
 	S::Bus& bus;
 	Boss::Mod::Rpc* rpc;
 
-	std::vector<std::string> pending_invoices;
+	std::vector<Msg::PayInvoice> pending_invoices;
 
 	void start();
-	Ev::Io<void> pay(std::string);
+	Ev::Io<void> pay(Msg::PayInvoice);
 
 public:
 	InvoicePayer() =delete;
