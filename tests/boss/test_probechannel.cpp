@@ -7,7 +7,7 @@
 #include<sstream>
 #include<string>
 
-/* probe_channel picks the peer's CHANNELD_NORMAL channel with the most to
+/* pick_probe_channel picks the peer's CHANNELD_NORMAL channel with the most to
  * spend.  The probe is sent over that one channel by name, so with several
  * channels to a peer the amount must fit the channel, not the sum (#352).  */
 
@@ -36,7 +36,7 @@ int main() {
 		  }
 		]
 		)JSON");
-		auto pc = Boss::Mod::probe_channel(cs);
+		auto pc = Boss::Mod::pick_probe_channel(cs);
 		assert(pc.scid == Ln::Scid(std::string("200x2x0")));
 		assert(pc.spendable == Ln::Amount::msat(4500000000));
 	}
@@ -61,7 +61,7 @@ int main() {
 		  }
 		]
 		)JSON");
-		auto pc = Boss::Mod::probe_channel(cs);
+		auto pc = Boss::Mod::pick_probe_channel(cs);
 		assert(pc.scid == Ln::Scid(std::string("100x1x0")));
 		assert(pc.spendable == Ln::Amount::msat(700000000));
 	}
@@ -74,7 +74,7 @@ int main() {
 		  }
 		]
 		)JSON");
-		auto pc = Boss::Mod::probe_channel(cs);
+		auto pc = Boss::Mod::pick_probe_channel(cs);
 		assert(!pc.scid);
 	}
 	return 0;
