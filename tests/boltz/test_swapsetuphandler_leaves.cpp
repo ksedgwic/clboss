@@ -200,9 +200,10 @@ CREATE TABLE "BoltzServiceFactory_rsub"
      , preimage TEXT NOT NULL
      , destinationAddress TEXT NOT NULL
      , swapId TEXT NOT NULL
-     , claimScript TEXT NOT NULL
-     , refundScript TEXT NOT NULL
-     , refundPubkey TEXT NOT NULL
+     , redeemScript TEXT NOT NULL DEFAULT ''
+     , claimScript TEXT NOT NULL DEFAULT ''
+     , refundScript TEXT NOT NULL DEFAULT ''
+     , refundPubkey TEXT NOT NULL DEFAULT ''
      , timeoutBlockheight INTEGER NOT NULL
      , onchainAmount INTEGER NOT NULL
      , lockedUp INTEGER NOT NULL

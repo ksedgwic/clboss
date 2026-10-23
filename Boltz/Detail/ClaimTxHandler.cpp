@@ -146,6 +146,19 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 		}
 		tx.commit();
 
+		/* A row from the API v1 code has no tapscript leaves,
+		 * and the v1 claim went with that code: the swap ends
+		 * at its timeout, with the payment failing back to us.  */
+		if (claimScript.empty() || refundScript.empty()) {
+			return loge( "Swap predates API v2 and cannot be "
+				     "claimed by this version; it ends at "
+				     "its timeout."
+				   ).then([]() {
+				throw End();
+				return Ev::lift();
+			});
+		}
+
 		/* Is the timeout too near?  */
 		if (timeoutBlockheight <= blockheight + 10) {
 			auto os = std::ostringstream();

@@ -8,6 +8,8 @@
 #include"Secp256k1/SignerIF.hpp"
 #include"Sqlite3.hpp"
 #include"Util/make_unique.hpp"
+#include<set>
+#include<string>
 
 namespace Boltz {
 
@@ -40,7 +42,29 @@ private:
 			return do_initialize();
 		});
 	}
-	/** TODO migrate old db? new table? **/
+	/* Columns the API v2 code added.  A database from the v1
+	 * code gets them in place; the v1 column stays, so that
+	 * earlier releases still run on the upgraded database.  */
+	static void add_missing_columns(Sqlite3::Tx& tx) {
+		auto existing = std::set<std::string>();
+		auto fetch = tx.query(R"QRY(
+		SELECT name FROM pragma_table_info('BoltzServiceFactory_rsub');
+		)QRY").execute();
+		for (auto& r : fetch)
+			existing.insert(r.get<std::string>(0));
+		for (auto const& col : { "claimScript"
+				       , "refundScript"
+				       , "refundPubkey"
+				       }) {
+			if (existing.count(col))
+				continue;
+			tx.query_execute( std::string("ALTER TABLE \"BoltzServiceFactory_rsub\" ")
+					+ "ADD COLUMN " + col
+					+ " TEXT NOT NULL DEFAULT '';"
+					);
+		}
+	}
+
 	Ev::Io<void> do_initialize() {
 		/* Perform actual initialization.  */
 		return db.transact().then([this](Sqlite3::Tx tx) {
@@ -69,9 +93,16 @@ private:
 			     -- from exchange, before paying invoice.
 			     -- id from exchange.
 			     , swapId TEXT NOT NULL
-			     , claimScript TEXT NOT NULL
-			     , refundScript TEXT NOT NULL
-			     , refundPubkey TEXT NOT NULL
+			     -- API v1: the P2WSH script of the swap.
+			     -- Empty for v2 swaps; kept so that releases
+			     -- before API v2 run on this database.
+			     , redeemScript TEXT NOT NULL DEFAULT ''
+			     -- API v2: the two tapscript leaves and the
+			     -- provider's key, from the swap creation.
+			     -- Empty for v1 swaps.
+			     , claimScript TEXT NOT NULL DEFAULT ''
+			     , refundScript TEXT NOT NULL DEFAULT ''
+			     , refundPubkey TEXT NOT NULL DEFAULT ''
 			     , timeoutBlockheight INTEGER NOT NULL
 			     -- in satoshi.
 			     , onchainAmount INTEGER NOT NULL
@@ -107,6 +138,7 @@ private:
 			     , apiAccess
 			     );
 			)QRY");
+			add_missing_columns(tx);
 			tx.commit();
 
 			initted_flag = Util::make_unique<bool>(true);
