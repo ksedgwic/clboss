@@ -38,7 +38,7 @@ public:
 		load_partial_at(psig, boltzpub);
 	}
 	void load_pubnonce(std::string const& pnonce) {
-		load_partial_at(pnonce, boltzpub);
+		load_pubnonce_at(pnonce, boltzpub);
 	}
 };
 

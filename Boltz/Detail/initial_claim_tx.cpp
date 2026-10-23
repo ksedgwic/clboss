@@ -4,7 +4,6 @@
 #include"Bitcoin/sighash.hpp"
 #include"Boltz/Detail/initial_claim_tx.hpp"
 #include"Ln/Amount.hpp"
-#include"Ln/Preimage.hpp"
 #include"Secp256k1/Musig.hpp"
 #include"Secp256k1/PrivKey.hpp"
 #include"Secp256k1/PubKey.hpp"
@@ -43,8 +42,8 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 		, std::uint32_t lockup_outnum
 		, Ln::Amount lockup_amount
 
-		/* Witness details.  */
-		, std::vector<std::uint8_t> const& witnessScript
+		/* scriptPubKey of the lockup output.  */
+		, std::vector<std::uint8_t> const& lockup_scriptPubKey
 
 		/* Output address.  */
 		, std::string const& output_addr
@@ -60,8 +59,9 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 	claim_tx.inputs[0].prevTxid = lockup_txid;
 	claim_tx.inputs[0].prevOut = lockup_outnum;
 	claim_tx.inputs[0].scriptSig.resize(0);
-	/* signature, preimage, witnessScript */
-	claim_tx.inputs[0].witness.witnesses.resize(3);
+	/* A key-path spend: the witness is the aggregated signature
+	 * alone.  */
+	claim_tx.inputs[0].witness.witnesses.resize(1);
 
 	/* Set up output.  */
 	claim_tx.outputs[0].scriptPubKey = Bitcoin::addr_to_scriptPubKey(
@@ -69,14 +69,10 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 	);
 
 	/* Measure weight.  */
-	//TODO value of sig varint and size of signature itself must be schnorr/musig based
 	auto nonwitness_weight = get_nonwitness_weight(claim_tx);
-	auto witness_weight = 1 /* varint of signature */
-			    + 64 /* schnorr signature.  */
-			    + 1 /* varint of preimage */
-			    + 32 /* preimage */
-			    + 1 /* varint of witnessScript */
-			    + witnessScript.size()
+	auto witness_weight = 1 /* witness item count */
+			    + 1 /* varint of signature */
+			    + 64 /* schnorr signature, SIGHASH_DEFAULT */
 			    + 2 /* marker+flag */
 			    ;
 	auto weight = nonwitness_weight + witness_weight
@@ -103,18 +99,13 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 		claim_tx.outputs[0].amount = lockup_amount - claim_tx_fees;
 	}
 
-	/* Sign!  */
-	/* FIXME: I am not at all certain exactly what the first byte of
-	 * scriptCode is *actually* supposed to be.
-	 * It might be a `varint`, or it might be an `OP_PUSHDATA`.
-	 * The below works in practice, so it is considered "okay"
-	 * for now.
-	 * That took several hours of spinning....
-	 */
-	auto scriptPubkey = std::vector<std::uint8_t>(witnessScript.size() + 1);
-	scriptPubkey[0] = std::uint8_t(witnessScript.size());
-	std::copy( witnessScript.begin(), witnessScript.end()
-		 , scriptPubkey.begin() + 1
+	/* The BIP341 sighash covers each spent scriptPubKey with
+	 * its CompactSize length prefix, the way a TxOut serializes
+	 * it; the lockup scriptPubKey is 34 bytes, so one byte.  */
+	auto prefixed = std::vector<std::uint8_t>(lockup_scriptPubKey.size() + 1);
+	prefixed[0] = std::uint8_t(lockup_scriptPubKey.size());
+	std::copy( lockup_scriptPubKey.begin(), lockup_scriptPubKey.end()
+		 , prefixed.begin() + 1
 		 );
 
 	return Bitcoin::p2tr_sighash
@@ -122,31 +113,19 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 		, Bitcoin::SIGHASH_DEFAULT
 		, 0
 		, std::vector<Ln::Amount>{lockup_amount}
-		, std::vector<std::vector<std::uint8_t>>{scriptPubkey}
+		, std::vector<std::vector<std::uint8_t>>{prefixed}
 		, Bitcoin::KEYPATH
 		);
 }
 
 void
 affix_aggregated_signature( Bitcoin::Tx& claim_tx
-		/* Witness details.  */
-		, Ln::Preimage const& preimage
-		, std::vector<std::uint8_t> const& witnessScript
 		, std::vector<std::uint8_t> const& aggregatesig
 		) {
-	auto scriptPubkey = std::vector<std::uint8_t>(witnessScript.size() + 1);
-	scriptPubkey[0] = std::uint8_t(witnessScript.size());
-	std::copy( witnessScript.begin(), witnessScript.end()
-		 , scriptPubkey.begin() + 1
-		 );
-
-	/* Load up the witnesses.  */ // TODO structured the same in bip341 ?
-	auto& witnesses = claim_tx.inputs[0].witness.witnesses;
-	witnesses[0] = aggregatesig;
-	witnesses[0].push_back(std::uint8_t(Bitcoin::SIGHASH_DEFAULT));
-	witnesses[1].resize(32);
-	preimage.to_buffer(&witnesses[1][0]);
-	witnesses[2] = witnessScript;
+	/* BIP341 key path: one witness item, the 64-byte signature.
+	 * SIGHASH_DEFAULT is implied by the length; a 65th byte of
+	 * 0x00 would make the input invalid.  */
+	claim_tx.inputs[0].witness.witnesses[0] = aggregatesig;
 }
 
 }}
