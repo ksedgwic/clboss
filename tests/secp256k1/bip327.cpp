@@ -11,6 +11,7 @@
 #include"Util/Str.hpp"
 #include"external/basicsecure/basicsecure.h"
 #include<assert.h>
+#include<cstring>
 #include<iostream>
 #include<iterator>
 #include<sstream>
