@@ -11,6 +11,7 @@
 #include"Jsmn/Object.hpp"
 #include"Jsmn/Parser.hpp"
 #include"Json/Out.hpp"
+#include"Ln/Amount.hpp"
 #include"Ln/NodeId.hpp"
 #include"Net/Connector.hpp"
 #include"Net/Fd.hpp"
@@ -159,13 +160,31 @@ public:
 		assert(fcntl_result == 0);
 	}
 
-	Ev::Io<void> run(std::string const& invoice) {
+	/* Asserts that no request arrives for `rounds` yields.  */
+	Ev::Io<void> assert_quiet(std::size_t rounds) {
+		return Ev::yield().then([this, rounds]() {
+			assert(requests.empty());
+			char buf[512];
+			auto rd = ssize_t();
+			do {
+				rd = read(socket.get(), buf, sizeof(buf));
+			} while (rd < 0 && errno == EINTR);
+			assert(rd < 0 && (errno == EWOULDBLOCK || errno == EAGAIN));
+			if (rounds == 0)
+				return Ev::lift();
+			return assert_quiet(rounds - 1);
+		});
+	}
+
+	Ev::Io<void> expect_decode(std::string const& invoice) {
 		return read_request().then([this, invoice](Jsmn::Object req) {
 			auto id = assert_method(req, "decode");
 			auto params = req["params"];
 			assert(params.is_object());
 			assert(params.has("string"));
 			assert(std::string(params["string"]) == invoice);
+			/* The same decode result for every invoice:
+			 * payment_hash 7814...09a3, 1,000,000 msat.  */
 			return reply_result(id, R"({
 			   "type": "bolt11 invoice",
 			   "currency": "tb",
@@ -192,26 +211,48 @@ public:
 			   "signature": "3045022100e745b9b7fe8133c7385e40561217e4717f7a2868c60d794b160047512c8d3a79022074619d6d2ee5c07b3099ca3684f896886aab04854bfade8f5a0f9014d5418ab6",
 			   "valid": true
 			})");
-		}).then([this, invoice]() {
-			return read_request().then([this, invoice](Jsmn::Object req) {
-				auto id = assert_method(req, "xpay");
-				auto params = req["params"];
-				assert(params.is_object());
-				assert(params.has("invstring"));
-				assert(std::string(params["invstring"]) == invoice);
-				assert(params.has("retry_for"));
-				assert(params["retry_for"].is_number());
-				assert(double(params["retry_for"]) == 1000.0);
-				assert(params.has("maxfee"));
-				assert(params["maxfee"].is_number());
-				/* 1% of the 1,000,000 msat invoice above;
-				 * the 5000 msat floor does not bind here.  */
-				assert(double(params["maxfee"]) == 10000.0);
-				return reply_result(id, "{}");
-			}).then([this]() {
-				*pay_replied = true;
-				return Ev::lift();
-			});
+		});
+	}
+
+	Ev::Io<void> expect_xpay(std::string const& invoice) {
+		return read_request().then([this, invoice](Jsmn::Object req) {
+			auto id = assert_method(req, "xpay");
+			auto params = req["params"];
+			assert(params.is_object());
+			assert(params.has("invstring"));
+			assert(std::string(params["invstring"]) == invoice);
+			assert(params.has("retry_for"));
+			assert(params["retry_for"].is_number());
+			assert(double(params["retry_for"]) == 1000.0);
+			assert(params.has("maxfee"));
+			assert(params["maxfee"].is_number());
+			/* 1% of the 1,000,000 msat invoice above;
+			 * the 5000 msat floor does not bind here.  */
+			assert(double(params["maxfee"]) == 10000.0);
+			return reply_result(id, "{}");
+		});
+	}
+
+	/* The invoices are raised in this order.  The two whose
+	 * expectations do not match the decode result get no
+	 * `xpay`; the matching one is paid (#329).  */
+	Ev::Io<void> run( std::string const& wrong_hash
+			, std::string const& wrong_amount
+			, std::string const& good
+			) {
+		return expect_decode(wrong_hash).then([this, wrong_amount]() {
+			return expect_decode(wrong_amount);
+		}).then([this, good]() {
+			return expect_decode(good);
+		}).then([this, good]() {
+			return expect_xpay(good);
+		}).then([this]() {
+			/* Nor does an `xpay` for a rejected invoice
+			 * arrive late.  */
+			return assert_quiet(200);
+		}).then([this]() {
+			*pay_replied = true;
+			return Ev::lift();
 		});
 	}
 };
@@ -228,13 +269,32 @@ Ev::Io<void> wait_for_pay_reply(std::shared_ptr<bool> pay_replied,
 	});
 }
 
+Ev::Io<void> yield_n(std::size_t n) {
+	if (n == 0)
+		return Ev::lift();
+	return Ev::yield().then([n]() {
+		return yield_n(n - 1);
+	});
+}
+
 } // namespace
 
 int main() {
 	auto bus = S::Bus();
 	auto payer = Boss::Mod::InvoicePayer(bus);
 
-	auto const invoice = std::string("lnbc1qtestinvoice");
+	/* What the mock's decode result carries.  */
+	auto const decoded_hash = Sha256::Hash(
+		"7814817188071aec26c943f4864ef150aaff45def81b36b0dd4bc6ce8f1809a3"
+	);
+	auto const decoded_amount = Ln::Amount::msat(1000000);
+	auto const other_hash = Sha256::Hash(
+		"0000000000000000000000000000000000000000000000000000000000000001"
+	);
+	auto const wrong_hash_invoice = std::string("lnbc1wronghash");
+	auto const wrong_amount_invoice = std::string("lnbc1wrongamount");
+	auto const good_invoice = std::string("lnbc1qtestinvoice");
+
 	auto connector = DummyConnector();
 	auto signer = DummySigner();
 	auto db = Sqlite3::Db(":memory:");
@@ -261,11 +321,29 @@ int main() {
 			false
 		});
 	}).then([&]() {
-		return bus.raise(Boss::Msg::PayInvoice{invoice});
+		return bus.raise(Boss::Msg::PayInvoice{
+			wrong_hash_invoice, other_hash, decoded_amount
+		});
+	}).then([&]() {
+		return yield_n(100);
+	}).then([&]() {
+		return bus.raise(Boss::Msg::PayInvoice{
+			wrong_amount_invoice, decoded_hash,
+			Ln::Amount::msat(999000)
+		});
+	}).then([&]() {
+		return yield_n(100);
+	}).then([&]() {
+		return bus.raise(Boss::Msg::PayInvoice{
+			good_invoice, decoded_hash, decoded_amount
+		});
 	});
 
 	auto code = Ev::lift().then([&]() {
-		return Ev::concurrent(server.run(invoice));
+		return Ev::concurrent(server.run( wrong_hash_invoice
+						, wrong_amount_invoice
+						, good_invoice
+						));
 	}).then([&]() {
 		return Ev::concurrent(client_code);
 	}).then([&]() {

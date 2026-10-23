@@ -14,6 +14,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   link line it took over every throw in CLBOSS and its tests, which
   made `make check` fail under valgrind.  The build now links
   libgcc_s explicitly ahead of libunwind.
+- A swap whose newaddr or swap-provider conversation died
+  mid-flight could wedge SwapManager for the process lifetime:
+  the flag serializing each processing loop was only cleared when
+  the loop's queue drained, and the response that would have
+  advanced it sometimes never arrives.  The periodic tick now
+  clears a flag stuck longer than 30 minutes and restarts the
+  loop; the previous remedy was restarting Core Lightning.
+- A swap invoice from the provider was paid as received.  The
+  payer now checks the decoded invoice against the swap: the
+  payment hash must be of the preimage CLBOSS generated and the
+  amount must be the one the provider was asked for; any other
+  invoice is logged and left unpaid.  Before this check, anyone
+  able to impersonate the provider's HTTPS endpoint, for example
+  with a certificate issued under a compromised certificate
+  authority, could have had CLBOSS pay an invoice of their
+  choosing for the swap amount (#329).
 
 ## [0.17.2] - 2026-10-19: "Lost in the Flow"
 
