@@ -710,8 +710,8 @@ TESTS = \
 	tests/s/test_bus \
 	tests/sha256/test_hash \
 	tests/sha256/test_hasher \
-	tests/secp256k1/bip327 \
-	tests/secp256k1/bip341sighash \
+	tests/secp256k1/test_bip327 \
+	tests/secp256k1/test_bip341sighash \
 	tests/sqlite3/test_sqlite3 \
 	tests/stats/test_reservoir_sampler \
 	tests/stats/test_running_mean \
