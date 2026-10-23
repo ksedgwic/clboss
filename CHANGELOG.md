@@ -14,6 +14,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- A Boltz endpoint answering with something other than JSON, such
+  as an HTML error page or an empty body, surfaced as an unhandled
+  "Parse error near character '<'" with a backtrace and no hint of
+  which request failed, and a `feerates` response without the
+  opening estimate failed the same way.  The connection now reports
+  a parse failure or a missing result as an API error naming the
+  endpoint, the handlers log that text with the response, and the
+  fee lookup warns and falls back to 2000 perkw (#269).
 - C++ exceptions are unwound by libgcc's unwinder on Debian and
   Ubuntu builds.  Those distributions build libunwind with its own
   exception unwinder, and with `-lunwind` ahead of libstdc++ on the
