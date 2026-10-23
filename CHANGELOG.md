@@ -25,8 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the flag serializing each processing loop was only cleared when
   the loop's queue drained, and the response that would have
   advanced it sometimes never arrives.  The periodic tick now
-  clears a flag stuck longer than 30 minutes and restarts the
-  loop; the previous remedy was restarting Core Lightning.
+  restarts a loop whose current request has had no answer for
+  30 minutes; the previous remedy was restarting Core Lightning.
 - A swap invoice from the provider was paid as received.  The
   payer now checks the decoded invoice against the swap: the
   payment hash must be of the preimage CLBOSS generated and the
