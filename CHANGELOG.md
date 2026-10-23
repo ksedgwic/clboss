@@ -31,7 +31,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   payer now checks the decoded invoice against the swap: the
   payment hash must be of the preimage CLBOSS generated and the
   amount must be the one the provider was asked for; any other
-  invoice is logged and left unpaid (#329).
+  invoice is logged and left unpaid.  Before this check, anyone
+  able to impersonate the provider's HTTPS endpoint, for example
+  with a certificate issued under a compromised certificate
+  authority, could have had CLBOSS pay an invoice of their
+  choosing for the swap amount (#329).
 
 - With two or more channels to one peer, the fee modifier by
   balance read only the first live channel, applied the multiplier
