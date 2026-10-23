@@ -20,6 +20,7 @@
 #include"Sqlite3/Db.hpp"
 #include"Util/make_unique.hpp"
 #include<algorithm>
+#include<cstdlib>
 #include<basicsecure.h>
 #include<iomanip>
 #include<iostream>
@@ -30,13 +31,17 @@
 
 namespace {
 
+/* Fees and broadcasts go to the provider's chain endpoints; in
+ * CLBOSS itself they go to lightningd.  */
 class Env : public Boltz::EnvIF {
 private:
 	Boltz::Connection conn;
 
 public:
-	explicit
-	Env(Ev::ThreadPool& threadpool) : conn(threadpool) { }
+	Env( Ev::ThreadPool& threadpool
+	   , std::string const& base
+	   , std::string const& proxy
+	   ) : conn(threadpool, base, proxy) { }
 
 	Ev::Io<void> logd(std::string msg) override {
 		return Ev::lift().then([msg]() {
@@ -52,10 +57,11 @@ public:
 	}
 
 	Ev::Io<std::uint32_t> get_feerate() override {
-		return conn.api("/getfeeestimation", nullptr
+		return conn.api("/v2/chain/fees", nullptr
 			       ).then([](Jsmn::Object res) {
-			auto perb = (double) res["BTC"];
-			auto perkw = std::uint32_t(perb * 1000 / 4);
+			/* sat/vbyte to sat/kw.  */
+			auto pervb = (double) res["BTC"];
+			auto perkw = std::uint32_t(pervb * 1000 / 4);
 			return Ev::lift(perkw);
 		});
 	}
@@ -64,11 +70,10 @@ public:
 		auto str = std::string(tx);
 		auto params = Json::Out()
 			.start_object()
-				.field("currency", "BTC")
-				.field("transactionHex", str)
+				.field("hex", str)
 			.end_object()
 			;
-		return conn.api( "/broadcasttransaction"
+		return conn.api( "/v2/chain/BTC/transaction"
 			       , Util::make_unique<Json::Out>(
 					std::move(params)
 				 )
@@ -80,7 +85,7 @@ public:
 					return Ev::lift(false);
 				});
 			}
-			if (res.has("transactionId")) {
+			if (res.has("id")) {
 				return Ev::lift(true);
 			}
 			return Ev::lift(false);
@@ -135,6 +140,15 @@ std::uint64_t to_number(std::string const& s) {
 
 }
 
+/* Drives one reverse swap against a provider without CLBOSS or
+ * lightningd: `swap` creates it and prints the invoice to pay by
+ * other means, `on-block` polls it and claims once the lockup has
+ * confirmed.  State is in data.dev-boltz in the current directory.
+ *
+ * Environment overrides, as for dev-boltz-api:
+ *   BOLTZ_API_BASE  API root (default: https://api.boltz.exchange)
+ *   BOLTZ_PROXY     SOCKS5 proxy (e.g. socks5h://127.0.0.1:9050)
+ */
 int main(int argc, char** c_argv) {
 	auto argv = std::vector<std::string>();
 	std::copy( c_argv, c_argv + argc
@@ -149,15 +163,22 @@ int main(int argc, char** c_argv) {
 		return 0;
 	}
 
+	auto base = std::string("https://api.boltz.exchange");
+	if (auto e = std::getenv("BOLTZ_API_BASE")) base = e;
+	auto proxy = std::string("");
+	if (auto e = std::getenv("BOLTZ_PROXY")) proxy = e;
+
 	Ev::ThreadPool threadpool;
 	auto db = Sqlite3::Db("data.dev-boltz");
 	auto signer = Signer();
-	auto env = Env(threadpool);
+	auto env = Env(threadpool, base, proxy);
 	auto factory = Boltz::ServiceFactory
 		( threadpool
 		, db
 		, signer
 		, env
+		, proxy
+		, !proxy.empty()
 		);
 
 	auto service = std::shared_ptr<Boltz::Service>();
@@ -165,7 +186,7 @@ int main(int argc, char** c_argv) {
 	auto code = Ev::lift().then([&]() {
 
 		/* Create service.  */
-		return factory.create_service("https://boltz.exchange/api");
+		return factory.create_service(base);
 	}).then([&](std::unique_ptr<Boltz::Service> n_service) {
 		service = std::move(n_service);
 
