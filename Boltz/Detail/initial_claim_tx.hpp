@@ -9,7 +9,6 @@
 namespace Bitcoin { class Tx; }
 namespace Bitcoin { class TxId; }
 namespace Ln { class Amount; }
-namespace Ln { class Preimage; }
 
 namespace Boltz { namespace Detail {
 
@@ -34,20 +33,21 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 		, std::uint32_t lockup_outnum
 		, Ln::Amount lockup_amount
 
-		/* Witness script.  */
-		, std::vector<std::uint8_t> const& witnessScript
+		/* scriptPubKey of the lockup output, for the sighash.  */
+		, std::vector<std::uint8_t> const& lockup_scriptPubKey
 
 		/* Output address.  */
 		, std::string const& output_addr
 		);
 
+/** Boltz::Detail::affix_aggregated_signature
+ *
+ * @brief completes the claim transaction from
+ * initial_claim_tx with the MuSig2 aggregated
+ * signature over its sighash (a key-path spend).
+ */
 void
 affix_aggregated_signature(Bitcoin::Tx& claim_tx /* written by function */
-		/* Arguments to the function.  */
-
-		/* Witness details.  */
-		, Ln::Preimage const& preimage
-		, std::vector<std::uint8_t> const& witnessScript
 		, std::vector<std::uint8_t> const& aggregatesig
 		);
 }}

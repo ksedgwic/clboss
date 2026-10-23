@@ -15,7 +15,6 @@
 #include"Sqlite3.hpp"
 #include"Util/Str.hpp"
 #include"Util/make_unique.hpp"
-#include<string.h>
 #include<sstream>
 
 namespace {
@@ -210,15 +209,6 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 
 		auto const& lockupoutput = lockup_tx.outputs[lockupOut];
 
-		/* compare locally computed lockscript hash with what Boltz expects.  */
-		if (memcmp(redeemScript.data(), lockupoutput.scriptPubKey.data() +2, 32) != 0) {
-			auto msg = std::string("Unexpected lockscript received from Boltz");
-			return loge(msg).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
-
 		/* Check the onchain amount is correct.  */
 		if (lockupoutput.amount != onchainAmount) {
 			auto msg = std::string("Service lockup tx ")
@@ -271,11 +261,15 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 
 		return Ev::lift();
 	}).then([this]() {
-		/* send preimage, public nonce and the unsigned claim tx to Boltz.  */
+		/* Send the preimage, our public nonce and the unsigned
+		 * claim tx to the provider.  The preimage is the real
+		 * one: its SHA-256 is the hash the swap was created with
+		 * and the one in the provider's invoice; the in-database
+		 * value is only the material it is derived from.  */
 		auto params = Json::Out()
 			.start_object()
 				.field( "preimage"
-				      , std::string(preimage)
+				      , std::string(real_preimage)
 					  )
 				.field( "pubNonce"
 				      , local_pubnonce
@@ -365,10 +359,8 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 			});
 		}
 		affix_aggregated_signature( claim_tx
-								  , real_preimage
-								  , redeemScript
-								  , aggregatesig.to_buffer()
-								  );
+					  , aggregatesig.to_buffer()
+					  );
 		/* Log it.  */
 		auto msg = std::string("Broadcasting claim tx: ")
 			 + std::string(claim_tx)
