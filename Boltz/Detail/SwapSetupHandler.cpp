@@ -8,6 +8,7 @@
 #include"Ev/Io.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
+#include"Secp256k1/PubKey.hpp"
 #include"Secp256k1/SignerIF.hpp"
 #include"Sha256/fun.hpp"
 #include"Sqlite3.hpp"
@@ -140,7 +141,11 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		}
 		auto tmp_refundScript = Util::Str::hexread(tmp_s_refundScript);
 
-		/* Validate the two taptree leaf scripts are correct.  */
+		/* Validate the two taptree leaf scripts.  The claim leaf
+		 * must pay to our key on our preimage hash: with any
+		 * other key the unilateral claim would belong to someone
+		 * else, and the cooperative claim would be the only way
+		 * to the funds.  */
 		auto script_hash160 = Ripemd160::Hash();
 		auto claim_pubkey = Secp256k1::XonlyPubKey();
 		auto ok = match_claimscript( script_hash160
@@ -148,10 +153,27 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 								   , tmp_claimScript
 								   );
 		ok = ok && (script_hash160 == preimageHash160);
+		ok = ok && ( claim_pubkey
+			  == Secp256k1::XonlyPubKey::from_ecdsa_pk(tweakPubKey)
+			   );
 
 		if (!ok) {
 			return loge( std::string("invalid claimScript: ")
 				   + tmp_s_claimScript
+				   ).then([]() {
+				throw Fail();
+				return Ev::lift();
+			});
+		}
+		/* The refund leaf must carry the swap's timeout and the
+		 * provider's refund key, the same key the claim later
+		 * aggregates with ours for the key path.  */
+		auto provider_pubkey = Secp256k1::PubKey();
+		try {
+			provider_pubkey = Secp256k1::PubKey(tmp_refundPubkey);
+		} catch (Secp256k1::InvalidPubKey const& _) {
+			return loge( std::string("invalid refundPublicKey: ")
+				   + tmp_refundPubkey
 				   ).then([]() {
 				throw Fail();
 				return Ev::lift();
@@ -164,6 +186,9 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 							   , tmp_refundScript
 							   );
 		ok = ok && (script_locktime == tmp_timeoutBlockheight);
+		ok = ok && ( refund_pubkey
+			  == Secp256k1::XonlyPubKey::from_ecdsa_pk(provider_pubkey)
+			   );
 
 		if (!ok) {
 			return loge( std::string("invalid refundScript: ")
