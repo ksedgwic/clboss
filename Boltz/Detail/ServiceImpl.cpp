@@ -94,14 +94,14 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 				       , std::string swapId
 				       ) {
 	auto p_swapId = std::make_shared<std::string>(std::move(swapId));
-	return conn->api( "/swap/" + *p_swapId, nullptr
+	return conn->api( "/v2/swap/" + *p_swapId, nullptr
 			).then([this, p_swapId](Jsmn::Object sres) {
 			/* Save, then log.  */
 			auto tmp_sres = std::make_shared<Jsmn::Object>(
 				std::move(sres)
 			);
 			auto os = std::ostringstream();
-			os << "/swap \"" << *p_swapId << "\" => "
+			os << "/v2/swap/" << *p_swapId << " => "
 			   << *tmp_sres
 			    ;
 			return logd(os.str()).then([tmp_sres]() {
@@ -162,7 +162,6 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 				return Ev::lift(kont);
 			}
 
-			// TODO TODO check this status exists in v2 API
 			if (status == "transaction.confirmed") {
 				auto txhex = std::string(
 					sres["transaction"]["hex"]
@@ -185,7 +184,7 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 		} catch (Jsmn::TypeError const& t) {
 			/* Log invalid JSON.  */
 			auto os = std::ostringstream();
-			os << "/swapstatus \"" << *p_swapId << "\" "
+			os << "/v2/swap/" << *p_swapId << " "
 			   << "returned invalid JSON: "
 			   << sres
 			    ;
@@ -199,8 +198,8 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 		/* Log that there is an error.  */
 		auto kont = std::function<Ev::Io<void>()>();
 		kont = [this, p_swapId]() {
-			return loge( std::string("/swapstatus \"")
-				   + *p_swapId + "\" not accessible."
+			return loge( std::string("/v2/swap/")
+				   + *p_swapId + " not accessible."
 				   );
 		};
 		return Ev::lift(kont);
@@ -296,7 +295,7 @@ ServiceImpl::swap( Ln::Amount offchainAmount
 
 Ev::Io<std::unique_ptr<Ln::Amount>>
 ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
-	return conn->api("/getpairs", nullptr
+	return conn->api("/v2/swap/reverse", nullptr
 			).then([this, offchainAmount](Jsmn::Object res) {
 
 		auto rate = double();
@@ -305,41 +304,12 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 		auto minimal = Ln::Amount();
 		auto maximal = Ln::Amount();
 
+		/* The pairs are keyed by the asset sent on Lightning,
+		 * then by the asset received onchain.  A pair the
+		 * provider does not offer is simply absent, which the
+		 * TypeError below reports.  */
 		try {
-			auto info = res["info"];
-			for (auto i = std::size_t(0); i < info.size(); ++i) {
-				auto inf = info[i];
-				if (!inf.is_string())
-					continue;
-				if (std::string(inf) == "prepay.minerfee") {
-					/* Not supported yet.  */
-					return loge("prepay.minerfee needed "
-						    "by server, "
-						    "not supported by client."
-						   ).then([]() {
-						return Ev::lift(
-							std::unique_ptr<Ln::Amount>()
-						);
-					});
-				}
-			}
-			auto ws = res["warnings"];
-			for (auto i = std::size_t(0); i < ws.size(); ++i) {
-				auto w = ws[i];
-				if (!w.is_string())
-					continue;
-				if (std::string(w) == "reverse.swaps.disabled") {
-					return loge("reverse.swaps.disabled "
-						    "by server."
-						   ).then([]() {
-						return Ev::lift(
-							std::unique_ptr<Ln::Amount>()
-						);
-					});
-				}
-			}
-
-			auto pair = res["pairs"]["BTC/BTC"];
+			auto pair = res["BTC"]["BTC"];
 			rate = (double) pair["rate"];
 			minimal = Ln::Amount::sat(
 				(double) pair["limits"]["minimal"]
@@ -349,16 +319,11 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 			);
 			fee_percent = (double) pair["fees"]["percentage"];
 			fee_lockup = Ln::Amount::sat((double)
-				pair
-				["fees"]
-				["minerFees"]
-				["baseAsset"]
-				["reverse"]
-				["lockup"]
+				pair["fees"]["minerFees"]["lockup"]
 			);
 		} catch (Jsmn::TypeError const& _) {
 			auto os = std::ostringstream();
-			os << "/getpairs unexpected result: " << res;
+			os << "/v2/swap/reverse unexpected result: " << res;
 			return loge(os.str()).then([]() {
 				return Ev::lift(std::unique_ptr<Ln::Amount>());
 			});
@@ -367,7 +332,7 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 		/* Check range.  */
 		if (minimal > offchainAmount || maximal < offchainAmount) {
 			auto os = std::ostringstream();
-			os << "/getpairs out-of-range "
+			os << "/v2/swap/reverse out-of-range "
 			   << minimal.to_sat() << " < "
 			   << offchainAmount.to_sat() << " < "
 			   << maximal.to_sat()
@@ -391,7 +356,7 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 			offchainAmount - onchainAmount
 		));
 	}).catching<ApiError>([this](ApiError const& e) {
-		return logd("/getpairs not accessible.").then([]() {
+		return logd("/v2/swap/reverse not accessible.").then([]() {
 			return Ev::lift(std::unique_ptr<Ln::Amount>());
 		});
 	});
