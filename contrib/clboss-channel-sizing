@@ -115,7 +115,10 @@
 # without a close.
 #
 # Balance samples are per peer, so a peer with several channels shares one
-# state across them.
+# state across them.  Samples recorded before CLBOSS 0.17.3 describe only
+# the peer's first channel: while the newest sample's total matches one
+# channel's capacity rather than the peer's sum, that channel alone reads
+# the samples and the peer's other channels are Young.
 #
 # A splice keeps the channel and its history.  Forwards recorded under the
 # pre-splice short channel id are attributed through CLN's own lookup of
@@ -738,7 +741,6 @@ def main():
             "opener": ch.get("opener"),
             "channel_id": ch.get("channel_id"),
         }
-    scid2peer = {scid: c["peer_id"] for scid, c in channels.items()}
     peers = sorted({c["peer_id"] for c in channels.values()})
     peer_cap = {}
     peer_channels = {}
@@ -857,6 +859,29 @@ def main():
         records = hist.get("history", []) if hist else []
         balances[peer_id] = PeerBalance(records, since, before)
 
+    # Which channels each peer's samples describe, and the capacity they
+    # cover.  A sample's total is the peer's summed capacity since CLBOSS
+    # 0.17.3; before that it was the first live channel's alone.  So when
+    # the newest sample's total is not the peer's summed capacity, the
+    # samples belong to the channel whose capacity matches, and the
+    # peer's other channels have no balance evidence: they read as young.
+    # No channel matching leaves all of them without evidence.
+    no_samples = PeerBalance([], since, before)
+    chan_bal = {}
+    sampled_cap = {}
+    for peer_id, scids in peer_channels.items():
+        bal = balances[peer_id]
+        if len(scids) < 2 or not bal or bal.total[-1] == peer_cap[peer_id]:
+            for scid in scids:
+                chan_bal[scid] = bal
+                sampled_cap[scid] = peer_cap[peer_id]
+            continue
+        owner = next((s for s in scids
+                      if channels[s]["cap"] == bal.total[-1]), None)
+        for scid in scids:
+            chan_bal[scid] = bal if scid == owner else no_samples
+            sampled_cap[scid] = channels[scid]["cap"]
+
     # forwards
     last_index = forwards_last_index(cli)
     if last_index is None:
@@ -870,10 +895,10 @@ def main():
         "ref_msat", "ref_low_msat", "last_fwd_t")} for scid in channels}
 
     def state(scid, t):
-        peer = scid2peer.get(scid)
-        if peer is None:
+        bal = chan_bal.get(scid)
+        if bal is None:
             return None
-        return balances[peer].at(t)
+        return bal.at(t)
 
     for fwd in iter_forwards(cli, "settled", start, before, args.page):
         fee = msat(fwd.get("fee_msat"))
@@ -910,16 +935,16 @@ def main():
     rows = []
     for scid, ch in channels.items():
         peer_id = ch["peer_id"]
-        bal = balances[peer_id]
-        # the capacity the channel had over the window: the peer's mean
-        # sampled capacity, apportioned by this channel's share of the
-        # peer's capacity now (the samples are per peer and may lag a
-        # splice by an hour; the current capacity alone would divide
-        # pre-splice volume by post-splice size)
+        bal = chan_bal[scid]
+        # the capacity the channel had over the window: the mean sampled
+        # capacity, apportioned by this channel's share of the capacity
+        # the samples cover now (they may lag a splice by an hour; the
+        # current capacity alone would divide pre-splice volume by
+        # post-splice size)
         mean_total = bal.mean_total_msat() if bal else None
         window_cap = ch["cap"]
-        if mean_total and peer_cap.get(peer_id):
-            window_cap = mean_total * ch["cap"] / peer_cap[peer_id]
+        if mean_total and sampled_cap.get(scid):
+            window_cap = mean_total * ch["cap"] / sampled_cap[scid]
         # CLBOSS samples a peer's balance when it sets the channel's fee,
         # which it does for channels it sees in gossip; a private channel
         # (or an unmanaged peer's) has no samples.  Such a channel keeps
