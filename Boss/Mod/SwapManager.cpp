@@ -307,7 +307,6 @@ private:
 		if (getting_address)
 			return Ev::lift();
 		getting_address = true;
-		getting_address_start = Ev::now();
 		return loop_needs_address();
 	}
 	Ev::Io<void> loop_needs_address() {
@@ -318,6 +317,10 @@ private:
 					  "no more swaps need addresses"
 					);
 		}
+		/* The watchdog measures the current item, not the
+		 * loop: a queue of several swaps progresses one
+		 * round trip at a time and must not read as stalled.  */
+		getting_address_start = Ev::now();
 		auto uuid = needs_address.front();
 		return Boss::log( bus, Debug
 				, "SwapManager: Swap %s getting address."
@@ -432,7 +435,6 @@ private:
 		if (getting_invoice)
 			return Ev::lift();
 		getting_invoice = true;
-		getting_invoice_start = Ev::now();
 		return loop_needs_invoice();
 	}
 
@@ -458,6 +460,8 @@ private:
 			getting_invoice = false;
 			return Ev::lift();
 		}
+		/* Per item, as in loop_needs_address.  */
+		getting_invoice_start = Ev::now();
 		quotations.clear();
 		return db.transact().then([this](Sqlite3::Tx tx) {
 			/* Get the amount of the swap.  */
