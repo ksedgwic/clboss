@@ -14,6 +14,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   link line it took over every throw in CLBOSS and its tests, which
   made `make check` fail under valgrind.  The build now links
   libgcc_s explicitly ahead of libunwind.
+- A swap whose newaddr or swap-provider conversation died
+  mid-flight could wedge SwapManager for the process lifetime:
+  the flag serializing each processing loop was only cleared when
+  the loop's queue drained, and the response that would have
+  advanced it sometimes never arrives.  The periodic tick now
+  restarts a loop whose current request has had no answer for
+  30 minutes; the previous remedy was restarting Core Lightning.
 
 ## [0.17.2] - 2026-10-19: "Lost in the Flow"
 
