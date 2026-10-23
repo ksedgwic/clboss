@@ -615,6 +615,7 @@ TESTS = \
 	tests/bitcoin/test_tx \
 	tests/boltz/test_claimtxhandler_scoped_update \
 	tests/boltz/test_match_lockscript \
+	tests/boltz/test_swapsetuphandler_leaves \
 	tests/boss/channelcandidateinvestigator/test_evictionpolicy \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
 	tests/boss/channelcandidateinvestigator/test_manager_offline \
