@@ -277,9 +277,12 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		     , preimage
 		     , destinationAddress
 		     , swapId
+		     -- The API v1 column, NOT NULL without a default
+		     -- in databases from before v2.
+		     , redeemScript
 		     , claimScript
 		     , refundScript
-			 , refundPubkey
+		     , refundPubkey
 		     , timeoutBlockheight
 		     , onchainAmount
 		     , lockedUp
@@ -291,9 +294,10 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		     , :preimage
 		     , :destinationAddress
 		     , :swapId
+		     , ''
 		     , :claimScript
 		     , :refundScript
-			 , :refundPubkey
+		     , :refundPubkey
 		     , :timeoutBlockheight
 		     , :onchainAmount
 		     , :lockedUp
