@@ -172,23 +172,18 @@ private:
 			auto to_us = Ln::Amount();
 			auto total = Ln::Amount();
 			try {
-				auto cs = res["channels"];
-				for (auto c : cs) {
-					auto state = std::string(
-						c["state"]
-					);
-					if ( state != "CHANNELD_NORMAL"
-					  && state != "CHANNELD_AWAITING_SPLICE"
-					   )
-						continue;
-					found = true;
-					/* A pending splice-out is
-					 * deducted: see ChannelBalance.  */
-					auto bal = channel_balance(c);
-					to_us = bal.to_us;
-					total = bal.total;
-					break;
-				}
+				/* Sum over every live channel of the
+				 * peer, not just the first: with two
+				 * channels the multiplier is applied to
+				 * both, so it has to come from the whole
+				 * position (#352).  A pending splice-out
+				 * is deducted: see ChannelBalance.  */
+				auto bal = ChannelBalance();
+				found = peer_live_balance( res["channels"]
+							 , bal
+							 ) != 0;
+				to_us = bal.to_us;
+				total = bal.total;
 			} catch (std::exception const& ex) {
 				found = false;
 				act = Boss::log( bus, Error

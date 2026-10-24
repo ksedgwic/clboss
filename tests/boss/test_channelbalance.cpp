@@ -133,5 +133,77 @@ int main() {
 		assert(bal.to_us == Ln::Amount::msat(1000000000));
 		assert(bal.total == Ln::Amount::msat(2000000000));
 	}
+
+	/* peer_live_balance: a peer opened a 5M channel beside our
+	 * 1M one (#352).  Both count; the result is the peer's whole
+	 * position, not the first channel's.  */
+	{
+		auto cs = parse(R"JSON(
+		[ { "state": "CHANNELD_NORMAL"
+		  , "to_us_msat": "900000000msat"
+		  , "total_msat": "1000000000msat"
+		  }
+		, { "state": "CHANNELD_NORMAL"
+		  , "to_us_msat": "0msat"
+		  , "total_msat": "5000000000msat"
+		  }
+		]
+		)JSON");
+		auto bal = Boss::Mod::ChannelBalance();
+		auto n = Boss::Mod::peer_live_balance(cs, bal);
+		assert(n == 2);
+		assert(bal.to_us == Ln::Amount::msat(900000000));
+		assert(bal.total == Ln::Amount::msat(6000000000));
+	}
+	/* Channels that are not live are skipped, and a pending
+	 * splice-out is still deducted per channel.  */
+	{
+		auto cs = parse(R"JSON(
+		[ { "state": "CHANNELD_AWAITING_SPLICE"
+		  , "to_us_msat": "1000000000msat"
+		  , "total_msat": "2000000000msat"
+		  , "inflight":
+		    [ { "total_funding_msat": "1800000000msat"
+		      , "splice_amount": -200000
+		      }
+		    ]
+		  }
+		, { "state": "ONCHAIN"
+		  , "to_us_msat": "7000000000msat"
+		  , "total_msat": "7000000000msat"
+		  }
+		, { "state": "CHANNELD_SHUTTING_DOWN"
+		  , "to_us_msat": "3000000000msat"
+		  , "total_msat": "3000000000msat"
+		  }
+		, { "state": "CHANNELD_NORMAL"
+		  , "to_us_msat": "500000000msat"
+		  , "total_msat": "1000000000msat"
+		  }
+		]
+		)JSON");
+		auto bal = Boss::Mod::ChannelBalance();
+		auto n = Boss::Mod::peer_live_balance(cs, bal);
+		assert(n == 2);
+		assert(bal.to_us == Ln::Amount::msat(1300000000));
+		assert(bal.total == Ln::Amount::msat(2800000000));
+	}
+	/* No live channel: zero, and `out` is reset.  */
+	{
+		auto cs = parse(R"JSON(
+		[ { "state": "CLOSINGD_COMPLETE"
+		  , "to_us_msat": "1000000000msat"
+		  , "total_msat": "2000000000msat"
+		  }
+		]
+		)JSON");
+		auto bal = Boss::Mod::ChannelBalance();
+		bal.to_us = Ln::Amount::msat(1);
+		bal.total = Ln::Amount::msat(1);
+		auto n = Boss::Mod::peer_live_balance(cs, bal);
+		assert(n == 0);
+		assert(bal.to_us == Ln::Amount::msat(0));
+		assert(bal.total == Ln::Amount::msat(0));
+	}
 	return 0;
 }
