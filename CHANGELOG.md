@@ -65,6 +65,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   cycle.  It now closes each closable channel by channel id
   (#352).
 
+- `contrib/clboss-channel-sizing` reads a peer's balance history
+  recorded before 0.17.3 against the one channel it describes.  Those
+  samples carry the first channel's balance and capacity, not the
+  peer's sum, and the tool apportioned them over all of the peer's
+  channels, so a peer that opened a 5M channel beside a 1M one showed
+  the 1M channel at several times its real turns.  When the newest
+  sample's total is not the peer's summed capacity, the channel whose
+  capacity matches reads the samples and the peer's other channels
+  read as young (#352).
+
 ## [0.17.2] - 2026-10-19: "Lost in the Flow"
 
 ### Added

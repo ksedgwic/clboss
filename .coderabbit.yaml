@@ -3,7 +3,7 @@ language: "en-US"
 early_access: false
 
 reviews:
-  profile: "chill"
+  profile: "quiet"
   request_changes_workflow: false
   high_level_summary: true
   high_level_summary_instructions: >
@@ -25,6 +25,15 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # One review per PR, on open.  A rebase or a fix pushed later does not
+    # start another; ask with "@coderabbitai review" when one is wanted.
+    auto_incremental_review: false
+
+  # CLBOSS does not document every function; the coverage warning on each
+  # walkthrough was never acted on.
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
 
   tools:
     github-checks:
@@ -47,6 +56,21 @@ reviews:
     - "!clboss-*.tar.gz"
 
   path_instructions:
+    - path: "**"
+      instructions: >
+        Report a finding only when you can name a plausible, reachable failure
+        scenario and its consequence.  Do not report formatting, naming, minor
+        refactoring, speculative optimizations, or missing comments.
+        Read the existing PR discussion first and do not repeat a point a human
+        reviewer has already made.
+        Look hardest at: lifetime of objects captured across Ev::Io chains
+        (`this`, shared_ptr ownership, exceptions escaping a chain); handlers
+        that assume a bus response belongs to the request in flight (late or
+        duplicate responses); state written outside the sqlite transaction that
+        decided it, and recovery from persisted state after a restart; CLN RPC
+        error paths and missing response fields; and anything that moves funds
+        (amounts, fee limits, payment hashes and preimages, timeouts).
+        Treat swap providers and peers as untrusted.
     - path: "**/*.cpp"
       instructions: >
         Prefer small, targeted changes; keep behavior stable unless the PR is explicitly a refactor.
