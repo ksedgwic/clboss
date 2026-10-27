@@ -5,8 +5,10 @@
 #include"Boltz/Detail/initial_claim_tx.hpp"
 #include"Boltz/Detail/swaptree.hpp"
 #include"Boltz/EnvIF.hpp"
+#include"Bitcoin/Block.hpp"
 #include"Bitcoin/pubkey_to_scriptPubKey.hpp"
 #include"Ev/Io.hpp"
+#include"Ev/coroutine.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
 #include"Secp256k1/SignerIF.hpp"
@@ -21,6 +23,22 @@ namespace {
 
 /* Throw to early-out of the run.  */
 struct End { };
+
+/* The lockup must be this deep in our own node's chain before
+ * the preimage leaves the node.  The provider's report that it
+ * confirmed is not enough: with the preimage it can settle our
+ * payment, so the lockup must exist first, and deep enough that
+ * a reorganization cannot take it back; the same depth
+ * OnchainFundsAnnouncer asks of our own funds.  */
+auto const lockup_confirmations = std::uint32_t(3);
+/* A row without a creation height is searched from this far
+ * before its timeout, the widest window the setup accepts.  */
+auto const search_floor_blocks = std::uint32_t(288);
+/* The search starts this many blocks below the swap's creation
+ * height and, while the lockup is unfound, resumes this many
+ * blocks below where it stopped, so that a reorganization no
+ * deeper than this cannot move the lockup out of its sight.  */
+auto const search_margin_blocks = std::uint32_t(6);
 
 }
 
@@ -120,6 +138,9 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 		     , timeoutBlockheight -- 5
 		     , onchainAmount -- 6
 		     , refundPubKey -- 7
+		     , createdHeight -- 8
+		     , COALESCE(lockupConfirmedHeight, 0) -- 9
+		     , COALESCE(lockupSearchedHeight, 0) -- 10
 		  FROM "BoltzServiceFactory_rsub"
 		 WHERE apiAccess = :apiAccess
 		   AND swapId = :swapId
@@ -143,6 +164,9 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 				r.get<std::uint64_t>(6)
 			);
 			refund_pubkey = Secp256k1::PubKey(r.get<std::string>(7));
+			createdHeight = r.get<std::uint32_t>(8);
+			lockupConfirmedHeight = r.get<std::uint32_t>(9);
+			lockupSearchedHeight = r.get<std::uint32_t>(10);
 		}
 		tx.commit();
 
@@ -234,13 +258,14 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 			});
 		}
 
+		/* The provider reports the lockup confirmed.  The
+		 * preimage leaves this node only once our own node
+		 * has the lockup in a block.  */
+		return confirm_lockup();
+	}).then([this]() {
 		/* Now compute the real preimage from the signer key
 		 * and the in-database preimage.  */
-
 		real_preimage = Detail::compute_preimage(signer, preimage);
-
-		return Ev::lift();
-	}).then([this]() {
 
 		/* Now look up the feerate.  */
 		return env.get_feerate();
@@ -404,7 +429,6 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 		   SET lockedUp = 1
 		     , lockupTxid = :lockup_txid
 		     , lockupOut = :lockupOut
-		     , lockupConfirmedHeight = :blockheight
 		     , lockupClaimFees = :lockupClaimFees
 		 WHERE apiAccess = :apiAccess
 		   AND swapId = :swapId
@@ -412,7 +436,6 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 		)QRY")
 			.bind(":lockup_txid", std::string(lockup_txid))
 			.bind(":lockupOut", lockupOut)
-			.bind(":blockheight", blockheight)
 			.bind(":lockupClaimFees", lockupClaimFees.to_sat())
 			.bind(":apiAccess", api_endpoint)
 			.bind(":swapId", swapId)
@@ -424,6 +447,100 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 		/* Lambda, the ultimate Swiss Army Knife.... */
 		return Ev::lift();
 	});
+}
+
+Ev::Io<void> ClaimTxHandler::confirm_lockup() {
+	if (lockupConfirmedHeight == 0) {
+		/* The lockup was mined after the swap was created, so
+		 * the search starts at the creation height less the
+		 * reorganization margin, and resumes that margin below
+		 * where the last search stopped.  */
+		auto floor = std::uint32_t(1);
+		if (createdHeight > search_margin_blocks)
+			floor = createdHeight - search_margin_blocks;
+		else if (createdHeight == 0
+		      && timeoutBlockheight > search_floor_blocks)
+			floor = timeoutBlockheight - search_floor_blocks;
+		auto from = floor;
+		if (lockupSearchedHeight > search_margin_blocks + floor)
+			from = lockupSearchedHeight + 1 - search_margin_blocks;
+
+		for (auto h = from; h <= blockheight; ++h) {
+			auto hex = co_await env.get_block(h);
+			if (hex.empty())
+				/* Our node does not have that block yet;
+				 * search again at the next block.  */
+				break;
+			auto block = Bitcoin::Block();
+			auto parsed = true;
+			auto parse_error = std::string();
+			try {
+				block = Bitcoin::Block(hex);
+			} catch (std::exception const& e) {
+				parsed = false;
+				parse_error = e.what();
+			}
+			if (!parsed) {
+				co_await loge( std::string("Block ")
+					     + std::to_string(h)
+					     + " did not parse: "
+					     + parse_error
+					     );
+				break;
+			}
+			lockupSearchedHeight = h;
+			if (block.contains(lockup_txid)) {
+				lockupConfirmedHeight = h;
+				break;
+			}
+		}
+
+		auto tx = co_await db.transact();
+		tx.query(R"QRY(
+		UPDATE "BoltzServiceFactory_rsub"
+		   SET lockupSearchedHeight = NULLIF(:searched, 0)
+		     , lockupConfirmedHeight = NULLIF(:confirmed, 0)
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = :swapId
+		     ;
+		)QRY")
+			.bind(":searched", lockupSearchedHeight)
+			.bind(":confirmed", lockupConfirmedHeight)
+			.bind(":apiAccess", api_endpoint)
+			.bind(":swapId", swapId)
+			.execute();
+		tx.commit();
+
+		if (lockupConfirmedHeight == 0) {
+			co_await logd( std::string("Lockup transaction ")
+				     + std::string(lockup_txid)
+				     + " is not in a block up to height "
+				     + std::to_string(lockupSearchedHeight)
+				     + "; not claiming yet."
+				     );
+			throw End();
+		}
+		co_await logd( std::string("Lockup transaction ")
+			     + std::string(lockup_txid)
+			     + " is in block "
+			     + std::to_string(lockupConfirmedHeight)
+			     + "."
+			     );
+	}
+
+	auto depth = blockheight >= lockupConfirmedHeight
+		   ? blockheight + 1 - lockupConfirmedHeight
+		   : std::uint32_t(0)
+		   ;
+	if (depth < lockup_confirmations) {
+		co_await logd( std::string("Lockup has ")
+			     + std::to_string(depth)
+			     + " of "
+			     + std::to_string(lockup_confirmations)
+			     + " confirmations; not claiming yet."
+			     );
+		throw End();
+	}
 }
 
 }}

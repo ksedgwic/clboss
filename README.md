@@ -342,7 +342,9 @@ honors two environment variables: set `BOLTZ_PROXY=socks5h://127.0.0.1:4447`
 and `BOLTZ_API_BASE=http://boltz7c3f7bb5pe7k25uv2wdd57oayoazacorwdvzksz6q7hicxq.b32.i2p`
 to reach the service directly over I2P.  The `dev-boltz` helper, which
 drives one whole swap (create it, pay the invoice by other means, then
-claim it with `on-block`), honors the same two variables.
+claim it with `on-block`), honors the same two variables, and reads
+blocks through `BITCOIN_CLI` (default `bitcoin-cli`; for example
+`bitcoin-cli -signet`), since it has no lightningd to ask.
 
 ### Contributed Utilities
 

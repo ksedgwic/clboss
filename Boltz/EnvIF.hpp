@@ -25,6 +25,18 @@ public:
 	virtual
 	Ev::Io<std::uint32_t> get_feerate() =0;
 
+	/** Boltz::EnvIF::get_block
+	 *
+	 * @brief get the block at the given height from
+	 * our own node, as the hex serialization of the
+	 * block.
+	 *
+	 * @return "" if our node has no block at that
+	 * height yet, or the fetch failed.
+	 */
+	virtual
+	Ev::Io<std::string> get_block(std::uint32_t height) =0;
+
 	/** Boltz::EnvIF::broadcast_tx
 	 *
 	 * @brief broadcasts the transaction.

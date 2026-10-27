@@ -1,5 +1,6 @@
 #undef NDEBUG
 #include"Bitcoin/Tx.hpp"
+#include"Bitcoin/Block.hpp"
 #include"Bitcoin/TxId.hpp"
 #include"Bitcoin/hash160.hpp"
 #include"Bitcoin/pubkey_to_scriptPubKey.hpp"
@@ -30,7 +31,9 @@
 #include<assert.h>
 #include<cstdint>
 #include<iostream>
+#include<map>
 #include<memory>
+#include<sstream>
 #include<string>
 #include<vector>
 
@@ -52,7 +55,8 @@
 namespace {
 
 /* Mock environment: fixed feerate, broadcast always succeeds
- * and keeps the transaction it was handed.
+ * and keeps the transaction it was handed, and the blocks the
+ * test put in `blocks` are our node's chain.
  */
 class MockEnv : public Boltz::EnvIF {
 private:
@@ -60,6 +64,8 @@ private:
 	Bitcoin::Tx& broadcast_tx_seen;
 
 public:
+	std::map<std::uint32_t, std::string> blocks;
+
 	MockEnv( bool& broadcast_called_
 	       , Bitcoin::Tx& broadcast_tx_seen_
 	       ) : broadcast_called(broadcast_called_)
@@ -68,6 +74,12 @@ public:
 
 	Ev::Io<std::uint32_t> get_feerate() override {
 		return Ev::lift(std::uint32_t(1000));
+	}
+	Ev::Io<std::string> get_block(std::uint32_t height) override {
+		auto it = blocks.find(height);
+		if (it == blocks.end())
+			return Ev::lift(std::string());
+		return Ev::lift(it->second);
 	}
 	Ev::Io<bool> broadcast_tx(Bitcoin::Tx tx) override {
 		broadcast_called = true;
@@ -229,10 +241,12 @@ CREATE TABLE "BoltzServiceFactory_rsub"
      , refundPubkey TEXT NOT NULL DEFAULT ''
      , timeoutBlockheight INTEGER NOT NULL
      , onchainAmount INTEGER NOT NULL
+     , createdHeight INTEGER NOT NULL DEFAULT 0
      , lockedUp INTEGER NOT NULL
      , lockupTxid TEXT NULL
      , lockupOut INTEGER NULL
      , lockupConfirmedHeight INTEGER NULL
+     , lockupSearchedHeight INTEGER NULL
      , lockupClaimFees INTEGER NULL
      , comment TEXT
      );
@@ -261,6 +275,8 @@ int main() {
 	auto const timeout = std::uint32_t(1000);
 	auto const amount = Ln::Amount::sat(100000);
 	auto const blockheight = std::uint32_t(100);
+	/* The swap was created two blocks ago.  */
+	auto const created_height = std::uint32_t(98);
 
 	auto signer = MockSigner();
 	auto const client_pub = signer.get_pubkey_tweak(
@@ -329,6 +345,18 @@ int main() {
 	lockup_tx.outputs[0].scriptPubKey = lockup_scriptPubKey;
 	lockup_tx.outputs[0].amount = amount;
 
+	/* Our node's blocks: one holding the lockup, one without.  */
+	auto block_hex = [](std::vector<Bitcoin::Tx> txs) {
+		auto block = Bitcoin::Block();
+		block.txs = std::move(txs);
+		auto os = std::ostringstream();
+		os << block;
+		auto bytes = os.str();
+		return Util::Str::hexdump(bytes.data(), bytes.size());
+	};
+	auto const lockup_block_hex = block_hex({lockup_tx});
+	auto const empty_block_hex = block_hex({});
+
 	auto broadcast_called = bool(false);
 	auto broadcast_tx = Bitcoin::Tx();
 	auto env = MockEnv(broadcast_called, broadcast_tx);
@@ -354,6 +382,7 @@ int main() {
 			     , refundPubkey
 			     , timeoutBlockheight
 			     , onchainAmount
+			     , createdHeight
 			     , lockedUp
 			     , comment
 			     )
@@ -368,6 +397,7 @@ int main() {
 			     , :refundPubkey
 			     , :timeoutBlockheight
 			     , :onchainAmount
+			     , :createdHeight
 			     , 0
 			     , ''
 			     );
@@ -382,6 +412,7 @@ int main() {
 				.bind(":refundPubkey", std::string(provider_keys.pub()))
 				.bind(":timeoutBlockheight", timeout)
 				.bind(":onchainAmount", amount.to_sat())
+				.bind(":createdHeight", created_height)
 				.execute();
 			tx.commit();
 			return Ev::lift();
@@ -404,10 +435,82 @@ int main() {
 		 */
 		return insert_swap("other-api", "swapA");
 	}).then([&]() {
-		/* Claim the first swap.  */
+		/* The provider says the lockup confirmed, but our node
+		 * has only the blocks up to the one before the tip,
+		 * none with the lockup.  The search starts a margin
+		 * below the creation height, so those blocks exist.  */
+		for (auto h = created_height - 6; h < blockheight; ++h)
+			env.blocks[h] = empty_block_hex;
 		auto handler = Boltz::Detail::ClaimTxHandler::create(
 			signer, db, env, api, provider, random
 		      , "swapA", blockheight, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		/* Nothing was sent to the provider or the chain, and
+		 * the search remembers where it stopped.  */
+		assert(provider.path_seen == "");
+		assert(!broadcast_called);
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto rows = tx.query(R"QRY(
+		SELECT COALESCE(lockupSearchedHeight, 0)
+		     , COALESCE(lockupConfirmedHeight, 0)
+		     , lockedUp
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapA'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : rows) {
+			found = true;
+			assert(r.get<std::uint32_t>(0) == created_height + 1);
+			assert(r.get<std::uint32_t>(1) == 0);
+			assert(!r.get<bool>(2));
+		}
+		assert(found);
+		tx.commit();
+
+		/* The block at the tip arrives with the lockup in it.
+		 * The search resumes there and finds it, but one block
+		 * is not deep enough to claim.  */
+		env.blocks[blockheight] = lockup_block_hex;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapA", blockheight, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(provider.path_seen == "");
+		assert(!broadcast_called);
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto rows = tx.query(R"QRY(
+		SELECT COALESCE(lockupConfirmedHeight, 0), lockedUp
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapA'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : rows) {
+			found = true;
+			assert(r.get<std::uint32_t>(0) == blockheight);
+			assert(!r.get<bool>(1));
+		}
+		assert(found);
+		tx.commit();
+
+		/* Two blocks later the lockup is three deep and the
+		 * claim proceeds.  */
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapA", blockheight + 2, lockup_tx
 		);
 		return handler->run();
 	}).then([&]() {
@@ -451,9 +554,10 @@ int main() {
 
 		return db.transact();
 	}).then([&](Sqlite3::Tx tx) {
-		/* Sanity: the claimed swap was stamped.  */
+		/* Sanity: the claimed swap was stamped, and the lockup's
+		 * block was recorded by the search.  */
 		auto stamped = tx.query(R"QRY(
-		SELECT lockedUp, lockupTxid
+		SELECT lockedUp, lockupTxid, COALESCE(lockupConfirmedHeight, 0)
 		  FROM "BoltzServiceFactory_rsub"
 		 WHERE apiAccess = :apiAccess
 		   AND swapId = 'swapA'
@@ -466,6 +570,7 @@ int main() {
 			found = true;
 			assert(r.get<bool>(0));
 			assert(!r.get<std::string>(1).empty());
+			assert(r.get<std::uint32_t>(2) == blockheight);
 		}
 		assert(found);
 

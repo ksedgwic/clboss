@@ -6,6 +6,7 @@
 #include"Boltz/SwapInfo.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/ThreadPool.hpp"
+#include"Ev/runcmd.hpp"
 #include"Ev/start.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
@@ -18,8 +19,10 @@
 #include"Sha256/Hash.hpp"
 #include"Sha256/Hasher.hpp"
 #include"Sqlite3/Db.hpp"
+#include"Util/Str.hpp"
 #include"Util/make_unique.hpp"
 #include<algorithm>
+#include<cctype>
 #include<cstdlib>
 #include<basicsecure.h>
 #include<iomanip>
@@ -31,8 +34,31 @@
 
 namespace {
 
-/* Fees and broadcasts go to the provider's chain endpoints; in
- * CLBOSS itself they go to lightningd.  */
+std::string trim(std::string s) {
+	while (!s.empty() && std::isspace((unsigned char) s.back()))
+		s.pop_back();
+	auto i = std::size_t(0);
+	while (i < s.size() && std::isspace((unsigned char) s[i]))
+		++i;
+	return s.substr(i);
+}
+
+/* BITCOIN_CLI split on spaces: the command and its arguments.  */
+std::vector<std::string> bitcoin_cli_command() {
+	auto env = std::getenv("BITCOIN_CLI");
+	auto is = std::istringstream(std::string(env ? env : "bitcoin-cli"));
+	auto rv = std::vector<std::string>();
+	auto word = std::string();
+	while (is >> word)
+		rv.push_back(word);
+	if (rv.empty())
+		rv.push_back("bitcoin-cli");
+	return rv;
+}
+
+/* Fees and broadcasts go to the provider's chain endpoints, and
+ * blocks come from bitcoin-cli; in CLBOSS itself all three go to
+ * lightningd.  */
 class Env : public Boltz::EnvIF {
 private:
 	Boltz::Connection conn;
@@ -63,6 +89,39 @@ public:
 			auto pervb = (double) res["BTC"];
 			auto perkw = std::uint32_t(pervb * 1000 / 4);
 			return Ev::lift(perkw);
+		});
+	}
+
+	Ev::Io<std::string> get_block(std::uint32_t height) override {
+		auto cli = bitcoin_cli_command();
+		auto command = cli.front();
+		auto args = std::vector<std::string>(cli.begin() + 1, cli.end());
+		auto hash_args = args;
+		hash_args.push_back("getblockhash");
+		hash_args.push_back(std::to_string(height));
+		return Ev::runcmd(command, hash_args
+				 ).then([this, command, args, height](std::string hash) {
+			hash = trim(hash);
+			if (hash.size() != 64 || !Util::Str::ishex(hash)) {
+				return logd( std::string("get_block: no block hash for height ")
+					   + std::to_string(height)
+					   + " from " + command
+					   + " (set BITCOIN_CLI)."
+					   ).then([]() {
+					return Ev::lift(std::string());
+				});
+			}
+			auto block_args = args;
+			block_args.push_back("getblock");
+			block_args.push_back(hash);
+			block_args.push_back("0");
+			return Ev::runcmd(command, block_args
+					 ).then([](std::string block) {
+				block = trim(block);
+				if (block.empty() || !Util::Str::ishex(block))
+					return Ev::lift(std::string());
+				return Ev::lift(block);
+			});
 		});
 	}
 
@@ -145,9 +204,11 @@ std::uint64_t to_number(std::string const& s) {
  * other means, `on-block` polls it and claims once the lockup has
  * confirmed.  State is in data.dev-boltz in the current directory.
  *
- * Environment overrides, as for dev-boltz-api:
+ * Environment overrides, the first two as for dev-boltz-api:
  *   BOLTZ_API_BASE  API root (default: https://api.boltz.exchange)
  *   BOLTZ_PROXY     SOCKS5 proxy (e.g. socks5h://127.0.0.1:9050)
+ *   BITCOIN_CLI     command that fetches blocks, with any arguments
+ *                   (default: bitcoin-cli; e.g. "bitcoin-cli -signet")
  */
 int main(int argc, char** c_argv) {
 	auto argv = std::vector<std::string>();

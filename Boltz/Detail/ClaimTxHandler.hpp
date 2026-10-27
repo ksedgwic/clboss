@@ -96,6 +96,9 @@ public:
 	Ev::Io<void> run();
 private:
 	Ev::Io<void> core_run();
+	/* Finds the lockup in our own node's blocks and waits for
+	 * its depth, or ends the run without revealing anything.  */
+	Ev::Io<void> confirm_lockup();
 
 	/* Wrappers.  */
 	Ev::Io<void> logd(std::string);
@@ -110,6 +113,11 @@ private:
 	Secp256k1::PubKey refund_pubkey;
 	std::uint32_t timeoutBlockheight;
 	Ln::Amount onchainAmount;
+	std::uint32_t createdHeight;
+	/* 0 until the lockup is found in one of our node's blocks.  */
+	std::uint32_t lockupConfirmedHeight;
+	/* 0 until a block has been searched for it.  */
+	std::uint32_t lockupSearchedHeight;
 
 	/* Data we generate.	*/
 	std::vector<std::uint8_t> redeemScript;
