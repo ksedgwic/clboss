@@ -52,15 +52,18 @@ private:
 		)QRY").execute();
 		for (auto& r : fetch)
 			existing.insert(r.get<std::string>(0));
-		for (auto const& col : { "claimScript"
-				       , "refundScript"
-				       , "refundPubkey"
+		struct Column { char const* name; char const* type; };
+		for (auto const& col : { Column{"claimScript", "TEXT NOT NULL DEFAULT ''"}
+				       , Column{"refundScript", "TEXT NOT NULL DEFAULT ''"}
+				       , Column{"refundPubkey", "TEXT NOT NULL DEFAULT ''"}
+				       , Column{"createdHeight", "INTEGER NOT NULL DEFAULT 0"}
+				       , Column{"lockupSearchedHeight", "INTEGER NULL"}
 				       }) {
-			if (existing.count(col))
+			if (existing.count(col.name))
 				continue;
 			tx.query_execute( std::string("ALTER TABLE \"BoltzServiceFactory_rsub\" ")
-					+ "ADD COLUMN " + col
-					+ " TEXT NOT NULL DEFAULT '';"
+					+ "ADD COLUMN " + col.name
+					+ " " + col.type + ";"
 					);
 		}
 	}
@@ -106,6 +109,11 @@ private:
 			     , timeoutBlockheight INTEGER NOT NULL
 			     -- in satoshi.
 			     , onchainAmount INTEGER NOT NULL
+			     -- The block height when the swap was
+			     -- created.  The search of our own node's
+			     -- blocks for the lockup transaction starts
+			     -- there.
+			     , createdHeight INTEGER NOT NULL DEFAULT 0
 
 			     -- whether lockup fields have been set.
 			     -- 0 == false, 1 == true
@@ -118,9 +126,14 @@ private:
 			     -- The output of the lockupTxid that contains
 			     -- the value spendable by the redeem script.
 			     , lockupOut INTEGER NULL
-			     -- The blockheight at which we believe the
-			     -- tx was confirmed.
+			     -- The height of the block that holds the
+			     -- lockup transaction, found by searching
+			     -- our own node's blocks; NULL until found.
 			     , lockupConfirmedHeight INTEGER NULL
+			     -- Blocks up to and including this height
+			     -- were searched for the lockup transaction
+			     -- without finding it; NULL when none were.
+			     , lockupSearchedHeight INTEGER NULL
 
 			     -- We generated these on seeing that
 			     -- the transaction from the service

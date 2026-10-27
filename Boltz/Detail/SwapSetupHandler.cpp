@@ -285,6 +285,7 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		     , refundPubkey
 		     , timeoutBlockheight
 		     , onchainAmount
+		     , createdHeight
 		     , lockedUp
 		     , comment
 		     )
@@ -300,6 +301,7 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		     , :refundPubkey
 		     , :timeoutBlockheight
 		     , :onchainAmount
+		     , :createdHeight
 		     , :lockedUp
 		     , :comment
 		     );
@@ -322,6 +324,7 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 			.bind(":refundPubkey", refundPubkey)
 			.bind(":timeoutBlockheight", timeoutBlockheight)
 			.bind(":onchainAmount", onchainAmount.to_sat())
+			.bind(":createdHeight", current_blockheight)
 			.bind(":lockedUp", 0)
 			.bind(":comment", "")
 			.execute()

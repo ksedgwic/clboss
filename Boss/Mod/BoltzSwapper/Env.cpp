@@ -37,6 +37,29 @@ Ev::Io<std::uint32_t> Env::get_feerate() {
 	});
 }
 
+Ev::Io<std::string> Env::get_block(std::uint32_t height) {
+	return Ev::yield().then([this, height]() {
+		/* Should not happen.  */
+		if (!rpc)
+			return Ev::lift(std::string());
+
+		/* The bitcoin backend plugin's command; "block" is
+		 * null past our node's tip.  */
+		return rpc->command( "getrawblockbyheight"
+				   , Json::Out()
+					.start_object()
+						.field("height", height)
+					.end_object()
+		).then([](Jsmn::Object res) {
+			if (!res.has("block") || !res["block"].is_string())
+				return Ev::lift(std::string());
+			return Ev::lift(std::string(res["block"]));
+		}).catching<RpcError>([](RpcError const& _) {
+			return Ev::lift(std::string());
+		});
+	});
+}
+
 Ev::Io<bool> Env::broadcast_tx(Bitcoin::Tx n_tx) {
 	auto tx = std::make_shared<Bitcoin::Tx>(std::move(n_tx));
 	return Ev::yield().then([this, tx]() {

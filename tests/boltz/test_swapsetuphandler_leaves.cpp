@@ -49,6 +49,9 @@ public:
 	Ev::Io<std::uint32_t> get_feerate() override {
 		return Ev::lift(std::uint32_t(1000));
 	}
+	Ev::Io<std::string> get_block(std::uint32_t) override {
+		return Ev::lift(std::string());
+	}
 	Ev::Io<bool> broadcast_tx(Bitcoin::Tx) override {
 		return Ev::lift(true);
 	}
@@ -206,10 +209,12 @@ CREATE TABLE "BoltzServiceFactory_rsub"
      , refundPubkey TEXT NOT NULL DEFAULT ''
      , timeoutBlockheight INTEGER NOT NULL
      , onchainAmount INTEGER NOT NULL
+     , createdHeight INTEGER NOT NULL DEFAULT 0
      , lockedUp INTEGER NOT NULL
      , lockupTxid TEXT NULL
      , lockupOut INTEGER NULL
      , lockupConfirmedHeight INTEGER NULL
+     , lockupSearchedHeight INTEGER NULL
      , lockupClaimFees INTEGER NULL
      , comment TEXT
      );
