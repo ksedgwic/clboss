@@ -19,6 +19,13 @@ public:
 std::vector<std::uint8_t>
 encoded_leaf(std::vector<std::uint8_t> const&);
 
+/* The BIP341 tapleaf hash of a tapscript: the tagged
+ * hash of its encoded leaf.  This is what a script-path
+ * signature commits to, and what the control block's
+ * merkle path is built from.  */
+std::vector<std::uint8_t>
+leaf_hash(std::vector<std::uint8_t> const& script);
+
 struct LeafPair {
 	std::vector<std::uint8_t> a;
 	std::vector<std::uint8_t> b;

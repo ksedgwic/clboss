@@ -227,7 +227,6 @@ public:
 			, 0
 			, std::vector<Ln::Amount>{lockup_amount}
 			, std::vector<std::vector<std::uint8_t>>{prefixed}
-			, Bitcoin::KEYPATH
 			);
 
 		auto session = ProviderSession(keys, client);
@@ -615,7 +614,6 @@ int main() {
 			, 0
 			, std::vector<Ln::Amount>{amount}
 			, std::vector<std::vector<std::uint8_t>>{prefixed}
-			, Bitcoin::KEYPATH
 			);
 		std::uint8_t sig_buf[64];
 		std::copy(witness[0].begin(), witness[0].end(), sig_buf);

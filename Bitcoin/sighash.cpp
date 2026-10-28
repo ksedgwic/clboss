@@ -23,9 +23,7 @@ using ::Bitcoin::SIGHASH_NONE;
 using ::Bitcoin::SIGHASH_SINGLE;
 using ::Bitcoin::SIGHASH_ANYONECANPAY;
 using ::Bitcoin::InvalidSighash;
-using ::Bitcoin::p2trSpendType;
-using ::Bitcoin::KEYPATH;
-using ::Bitcoin::SCRIPTPATH;
+using ::Bitcoin::TapscriptExtension;
 
 void
 sighash_core( Bitcoin::Tx const& tx
@@ -114,18 +112,19 @@ sighash_core( Bitcoin::Tx const& tx
 		;
 }
 
+/* `extension` is null for a key-path spend.  */
 void
 p2tr_sighash_core( Bitcoin::Tx const& tx
-	    , SighashFlags flags
-	    , std::uint32_t nIn
-		, std::vector<Ln::Amount> in_amounts
-		, std::vector<std::vector<std::uint8_t>> const& scriptPubKeys
-		, p2trSpendType spendtype
-	    , std::ostream& hasher
-	    ) {
-	/* spend type cannot exceed 7 bits to conform to bip341.  */
-	if (spendtype & 0x80)
-		throw InvalidSighash("p2tr SpendType flag exceeds 0x7F");
+		 , SighashFlags flags
+		 , std::uint32_t nIn
+		 , std::vector<Ln::Amount> in_amounts
+		 , std::vector<std::vector<std::uint8_t>> const& scriptPubKeys
+		 , TapscriptExtension const* extension
+		 , std::ostream& hasher
+		 ) {
+	/* bip341 spend_type = ext_flag * 2 + annex_present; the
+	 * extension of bip342 is ext_flag 1, and no annex.  */
+	auto spendtype = std::uint8_t(extension ? 0x02 : 0x00);
 
 	auto loflags = flags & 0x1F;
 	auto hiflags = flags & 0xE0;
@@ -149,6 +148,10 @@ p2tr_sighash_core( Bitcoin::Tx const& tx
 
 	if (nIn >= tx.inputs.size())
 		throw InvalidSighash("nIn out of range");
+	if ( in_amounts.size() != tx.inputs.size()
+	  || scriptPubKeys.size() != tx.inputs.size()
+	   )
+		throw InvalidSighash("one amount and one scriptPubKey per input");
 
 	auto hashPrevouts = Sha256::Hash();
 	if (!(hiflags & SIGHASH_ANYONECANPAY)) {
@@ -197,10 +200,10 @@ p2tr_sighash_core( Bitcoin::Tx const& tx
 
 	/* Hashing sequence.  */
 	/* 1. tx data */
-	hasher << std::uint8_t(0x00) /* sighash epoch 	*/
-		   << std::uint8_t(flags) /* taproot spend type  */
-		   << Bitcoin::le(tx.nVersion)
-		   << Bitcoin::le(tx.nLockTime);
+	hasher << std::uint8_t(0x00) /* sighash epoch */
+	       << std::uint8_t(flags) /* hash type */
+	       << Bitcoin::le(tx.nVersion)
+	       << Bitcoin::le(tx.nLockTime);
 
 	if (!(hiflags & SIGHASH_ANYONECANPAY)) {
 		feed_hash(hasher, hashPrevouts);
@@ -216,11 +219,9 @@ p2tr_sighash_core( Bitcoin::Tx const& tx
 	}
 
 	/* 2. input data */
-	/* spend type (bip341 ext_flag + optional annex flag).
-	 * NOTE: as of the present Bitcoin Core (v.28.0), there
-	 * is no support for interpreting annex data, and so
-	 * we cannot either.  */
-	hasher << std::uint8_t(spendtype);
+	/* spend type.  The annex has no defined use yet, so
+	 * none is ever present.  */
+	hasher << spendtype;
 
 	if (hiflags & SIGHASH_ANYONECANPAY) {
 		auto const& input = tx.inputs[nIn];
@@ -257,6 +258,13 @@ p2tr_sighash_core( Bitcoin::Tx const& tx
 
 		feed_hash(hasher, hashOutputs);
 	}
+
+	/* 4. bip342 extension: the leaf being run.  */
+	if (extension) {
+		feed_hash(hasher, extension->leaf_hash);
+		hasher << extension->key_version
+		       << Bitcoin::le(extension->codesep_pos);
+	}
 }
 
 }
@@ -277,15 +285,31 @@ sighash( Bitcoin::Tx const& tx
 
 Sha256::Hash
 p2tr_sighash( Bitcoin::Tx const& tx
-			, SighashFlags flags
-			, std::uint32_t nIn
-			, std::vector<Ln::Amount> in_amounts
-			, std::vector<std::vector<std::uint8_t>> const& scriptPubKeys
-			, p2trSpendType spendtype
-			) {
+	    , SighashFlags flags
+	    , std::uint32_t nIn
+	    , std::vector<Ln::Amount> in_amounts
+	    , std::vector<std::vector<std::uint8_t>> const& scriptPubKeys
+	    ) {
 	auto hasher = Sha256::HasherStream(Tag::SIGHASH);
-	p2tr_sighash_core(tx, flags, nIn, std::move(in_amounts), scriptPubKeys, spendtype, hasher);
+	p2tr_sighash_core( tx, flags, nIn, std::move(in_amounts), scriptPubKeys
+			 , nullptr, hasher
+			 );
 	/* bip341 specifies single sha256 over sighash input data.  */
+	return std::move(hasher).finalize();
+}
+
+Sha256::Hash
+p2tr_sighash( Bitcoin::Tx const& tx
+	    , SighashFlags flags
+	    , std::uint32_t nIn
+	    , std::vector<Ln::Amount> in_amounts
+	    , std::vector<std::vector<std::uint8_t>> const& scriptPubKeys
+	    , TapscriptExtension const& extension
+	    ) {
+	auto hasher = Sha256::HasherStream(Tag::SIGHASH);
+	p2tr_sighash_core( tx, flags, nIn, std::move(in_amounts), scriptPubKeys
+			 , &extension, hasher
+			 );
 	return std::move(hasher).finalize();
 }
 

@@ -79,7 +79,6 @@ int main() {
 											, i
 											, amsvec
 											, spkvec
-											, Bitcoin::KEYPATH
 											);
 		if (i == 2 || i == 5) /* <-- HACK */
 			continue;

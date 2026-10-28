@@ -6,9 +6,11 @@
 #include<stdexcept>
 #include<vector>
 
+#include"Sha256/Hash.hpp"
+#include"Util/BacktraceException.hpp"
+
 namespace Bitcoin { class Tx; }
 namespace Ln { class Amount; }
-namespace Sha256 { class Hash; }
 
 namespace Bitcoin {
 
@@ -20,9 +22,23 @@ enum SighashFlags
 , SIGHASH_ANYONECANPAY = 0x80
 };
 
-enum p2trSpendType
-{ KEYPATH = 0
-, SCRIPTPATH = 1
+/** struct Bitcoin::TapscriptExtension
+ *
+ * @brief what a script-path signature commits to
+ * besides the transaction: the BIP342 common
+ * signature message extension.
+ *
+ * @desc `leaf_hash` is the tapleaf hash of the
+ * script being run.  `key_version` is 0 for the
+ * only key type BIP342 defines.  `codesep_pos` is
+ * the position of the last OP_CODESEPARATOR run
+ * before the signature check, 0xFFFFFFFF when there
+ * was none.
+ */
+struct TapscriptExtension {
+	Sha256::Hash leaf_hash;
+	std::uint8_t key_version = 0x00;
+	std::uint32_t codesep_pos = 0xFFFFFFFF;
 };
 
 struct InvalidSighash : public Util::BacktraceException<std::invalid_argument> {
@@ -70,8 +86,14 @@ sighash( Bitcoin::Tx const& tx
  *
  * @desc taproot/schnorr spends require an
  * altogether different sighash type, specified
- * in bip 341. `spend_type` values higher than
- * 127 throw `Bitcoin::InvalidSighash`.
+ * in bip 341.  The first form is for a key-path
+ * spend.  The second is for a script-path spend:
+ * its message carries the extension of bip 342,
+ * which binds the signature to the leaf being run.
+ *
+ * `scriptPubKeys` are the spent outputs' scripts
+ * with their CompactSize length prefix, as a
+ * TxOut serializes them.
  *
  * bip341 signature digest:
  *
@@ -113,15 +135,28 @@ sighash( Bitcoin::Tx const& tx
  *
  * if (hashtype & 0x03 == SIGHASH_SINGLE)
  *		[32] sha256(nominatedoutput)
+ *
+ * script path only (bip342 extension; spendtype
+ * has ext_flag 1, so 0x02):
+ *		[32] tapleaf hash
+ *		[1]  key version (0x00)
+ *		[4]  codeseparator position
  */
 Sha256::Hash
 p2tr_sighash( Bitcoin::Tx const& tx
-			, SighashFlags flags
-			, std::uint32_t nIn
-			, std::vector<Ln::Amount> in_amounts
-			, std::vector<std::vector<std::uint8_t>> const& scriptPubKeys
-			, p2trSpendType spendtype
-			);
+	    , SighashFlags flags
+	    , std::uint32_t nIn
+	    , std::vector<Ln::Amount> in_amounts
+	    , std::vector<std::vector<std::uint8_t>> const& scriptPubKeys
+	    );
+Sha256::Hash
+p2tr_sighash( Bitcoin::Tx const& tx
+	    , SighashFlags flags
+	    , std::uint32_t nIn
+	    , std::vector<Ln::Amount> in_amounts
+	    , std::vector<std::vector<std::uint8_t>> const& scriptPubKeys
+	    , TapscriptExtension const& extension
+	    );
 }
 
 #endif /* !defined(BITCOIN_SIGHASH_HPP) */
