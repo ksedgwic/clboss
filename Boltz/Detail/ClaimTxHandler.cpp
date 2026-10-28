@@ -419,6 +419,13 @@ Ev::Io<void> ClaimTxHandler::claim( Sha256::Hash keypath_sighash
 	/* The preimage is recorded as out, so the provider can
 	 * settle our payment whatever happens next; the claim must
 	 * go through with or without it.  */
+	if (!env.cooperative_claims()) {
+		co_await logd( "Cooperative claims are off; claiming "
+			       "through the script path."
+			     );
+		co_await script_path_claim(feerate);
+		co_return;
+	}
 	if (co_await cooperative_claim(keypath_sighash))
 		co_return;
 	co_await script_path_claim(feerate);

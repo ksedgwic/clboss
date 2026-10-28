@@ -65,7 +65,9 @@
  *   lockup output; it is rebroadcast without asking the provider;
  * - once revealed, the swap ends when our blocks show the lockup
  *   spent: by a transaction paying our address, done; by any
- *   other, lost; or when nothing spends it long after the timeout.
+ *   other, lost; or when nothing spends it long after the timeout;
+ * - with cooperative claims switched off in the environment, the
+ *   provider is not asked and the claim goes through the leaf.
  */
 
 namespace {
@@ -85,6 +87,7 @@ public:
 	std::set<std::string> confirmed;
 	std::string last_asked;
 	std::uint32_t feerate = 1000;
+	bool cooperative = true;
 
 	MockEnv( bool& broadcast_called_
 	       , Bitcoin::Tx& broadcast_tx_seen_
@@ -94,6 +97,9 @@ public:
 
 	Ev::Io<std::uint32_t> get_feerate() override {
 		return Ev::lift(feerate);
+	}
+	bool cooperative_claims() override {
+		return cooperative;
 	}
 	Ev::Io<std::string> get_block(std::uint32_t height) override {
 		auto it = blocks.find(height);
@@ -1046,6 +1052,25 @@ int main() {
 		for (auto& r : gone)
 			assert(r.get<int>(0) == 0);
 		tx.commit();
+
+		/* With cooperative claims switched off, a willing
+		 * provider is not asked and the claim goes through the
+		 * leaf at once.  */
+		return insert_swap(api, "swapF");
+	}).then([&]() {
+		env.cooperative = false;
+		provider.fail = false;
+		provider.path_seen = "";
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapF", blockheight + 12, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(broadcast_called);
+		assert(provider.path_seen == "");
+		assert(broadcast_tx.inputs[0].witness.witnesses.size() == 4);
 		return Ev::lift(0);
 	});
 

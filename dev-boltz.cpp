@@ -153,6 +153,13 @@ public:
 		});
 	}
 
+	/* BOLTZ_SCRIPT_PATH_ONLY set to anything makes every claim
+	 * go through the claim leaf without asking the provider.  */
+	bool cooperative_claims() override {
+		auto e = std::getenv("BOLTZ_SCRIPT_PATH_ONLY");
+		return !(e && *e);
+	}
+
 	Ev::Io<bool> broadcast_tx(Bitcoin::Tx tx) override {
 		auto str = std::string(tx);
 		auto params = Json::Out()
@@ -237,6 +244,9 @@ std::uint64_t to_number(std::string const& s) {
  *   BOLTZ_PROXY     SOCKS5 proxy (e.g. socks5h://127.0.0.1:9050)
  *   BITCOIN_CLI     command that fetches blocks, with any arguments
  *                   (default: bitcoin-cli; e.g. "bitcoin-cli -signet")
+ *   BOLTZ_SCRIPT_PATH_ONLY
+ *                   set to anything: claim through the claim leaf
+ *                   without asking the provider to co-sign
  */
 int main(int argc, char** c_argv) {
 	auto argv = std::vector<std::string>();
