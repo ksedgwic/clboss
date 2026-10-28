@@ -18,6 +18,7 @@
 #include"Util/Str.hpp"
 #include"Util/make_unique.hpp"
 #include<sstream>
+#include<stdexcept>
 
 namespace {
 
@@ -64,389 +65,192 @@ Ev::Io<void> ClaimTxHandler::run() {
 	/* Keep self alive until the run ends.  */
 	return Ev::lift().then([self]() {
 		return self->core_run();
-	}).then([self]() {
+	}).catching<End>([self](End const&) {
 		return Ev::lift();
 	});
 }
 
 Ev::Io<void> ClaimTxHandler::core_run() {
-	return Ev::lift().then([this]() {
+	co_await load_row();
 
-		/* Fetch data from database.  */
-		return db.transact();
-	}).then([this](Sqlite3::Tx tx) {
-		/* First do a quick check.  */
-		auto check1 = tx.query(R"QRY(
-		SELECT lockedUp, timeoutBlockheight, destinationAddress
-		  FROM "BoltzServiceFactory_rsub"
-		 WHERE apiAccess = :apiAccess
-		   AND swapId = :swapId
-		     ;
-		)QRY")
-			.bind(":apiAccess", api_endpoint)
-			.bind(":swapId", swapId)
-			.execute();
-		auto found = 0;
-		auto lockedUp = false;
-		for (auto& r : check1) {
-			++found;
-			lockedUp = r.get<bool>(0);
-			timeoutBlockheight = r.get<std::uint32_t>(1);
-			destinationAddress = r.get<std::string>(2);
-			break;
-		}
-		if (found == 0) {
-			/* Unexpected not found!  */
-			return loge("Swap ID not in table.").then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
-		if (found > 1) {
-			/* Unexpected duplicate!  */
-			return loge("Swap ID duplicated??").then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
-		if (lockedUp) {
-			/* TODO: Bump up instead of doing nothing.  */
-			return logd( "Already broadcasted claim tx."
-				   ).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
-		if (destinationAddress.empty()) {
-			return loge("Swap destination address is empty??"
-				   ).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
-		// TODO: Check for validity of destination address?
+	if (preimageRevealed) {
+		/* The provider may already hold the preimage, so from
+		 * here on its status is advisory and the claim is
+		 * tracked from our own node.  */
+		co_await track_claim();
+		co_return;
+	}
 
-		auto claimScript = std::vector<std::uint8_t>();
-		auto refundScript = std::vector<std::uint8_t>();
-		/* Perform the actual fetch of the data.  */
-		auto fetch = tx.query(R"QRY(
-		SELECT tweak -- 0
-		     , preimage -- 1
-		     , destinationAddress -- 2
-		     , claimScript -- 3
-		     , refundScript -- 4
-		     , timeoutBlockheight -- 5
-		     , onchainAmount -- 6
-		     , refundPubKey -- 7
-		     , createdHeight -- 8
-		     , COALESCE(lockupConfirmedHeight, 0) -- 9
-		     , COALESCE(lockupSearchedHeight, 0) -- 10
-		  FROM "BoltzServiceFactory_rsub"
-		 WHERE apiAccess = :apiAccess
-		   AND swapId = :swapId
-		     ;
-		)QRY")
-			.bind(":apiAccess", api_endpoint)
-			.bind(":swapId", swapId)
-			.execute();
-		for (auto& r : fetch) {
-			tweak = Secp256k1::PrivKey(r.get<std::string>(0));
-			preimage = Ln::Preimage(r.get<std::string>(1));
-			destinationAddress = r.get<std::string>(2);
-			claimScript = Util::Str::hexread(
-				r.get<std::string>(3)
-			);
-			refundScript = Util::Str::hexread(
-				r.get<std::string>(4)
-			);
-			timeoutBlockheight = r.get<std::uint32_t>(5);
-			onchainAmount = Ln::Amount::sat(
-				r.get<std::uint64_t>(6)
-			);
-			refund_pubkey = Secp256k1::PubKey(r.get<std::string>(7));
-			createdHeight = r.get<std::uint32_t>(8);
-			lockupConfirmedHeight = r.get<std::uint32_t>(9);
-			lockupSearchedHeight = r.get<std::uint32_t>(10);
-		}
-		tx.commit();
+	/* Too near the timeout to start a claim: it would race the
+	 * provider's refund.  Nothing has been revealed, so the swap
+	 * is left to end at its timeout with the payment failing back.
+	 * This repeats each block until the row goes.  */
+	if (timeoutBlockheight <= blockheight + 10) {
+		auto os = std::ostringstream();
+		os << "Timeout " << timeoutBlockheight
+		   << " is within 10 blocks of height " << blockheight
+		   << "; not claiming, the swap ends at its timeout."
+		    ;
+		co_await logd(os.str());
+		throw End();
+	}
 
-		/* A row from the API v1 code has no tapscript leaves,
-		 * and the v1 claim went with that code: the swap ends
-		 * at its timeout, with the payment failing back to us.  */
-		if (claimScript.empty() || refundScript.empty()) {
-			return loge( "Swap predates API v2 and cannot be "
-				     "claimed by this version; it ends at "
-				     "its timeout."
-				   ).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
+	co_await prepare_keys();
 
-		/* Is the timeout too near?  */
-		if (timeoutBlockheight <= blockheight + 10) {
-			auto os = std::ostringstream();
-			os << "Timeout " << timeoutBlockheight
-			   << " too near to current time "
-			   << blockheight
-			    ;
-			return logd(os.str()).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
+	/* Find the outnum from the lockup_tx.  */
+	auto outnum = Detail::find_lockup_outnum(lockup_tx, redeemScript);
+	if (outnum < 0) {
+		co_await loge( std::string("Service lockup tx ")
+			     + std::string(lockup_tx) + " "
+			     + "does not pay to lockscript."
+			     );
+		throw End();
+	}
+	lockupOut = std::size_t(outnum);
 
-		/* create aggregate pubkey
-		 * role ordered: boltz key #0, our key #1.  */
-		try {
-			musigsession = Boltz::MusigSession(tweak, refund_pubkey, signer);
-		} catch (Secp256k1::InvalidPubKey const& e) {
-			return loge(e.what()).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		} catch (Musig::InvalidArg const& e) {
-			return loge(e.what()).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
+	/* Check the onchain amount is correct.  */
+	if (lockup_tx.outputs[lockupOut].amount != onchainAmount) {
+		co_await loge( std::string("Service lockup tx ")
+			     + std::string(lockup_tx) + " "
+			     + "does not pay expected amount."
+			     );
+		throw End();
+	}
 
-		/* compute script hash (represented as an x-only pubkey) that constitutes
-		 * the redeem script for signing the cooperative (key) path of the swap. */
-		auto roothash = compute_root_hash(claimScript, refundScript);
+	/* The provider reports the lockup confirmed.  The preimage
+	 * leaves this node only once our own node has the lockup in
+	 * a block.  */
+	co_await confirm_lockup();
 
-		try {
-			/* apply (add to generator point, muliply by the internal key) the
-			 * taptweak hash to the aggregate (internal) key.	*/
-			musigsession.apply_xonly_tweak(roothash);
-			redeemScript = Bitcoin::pk_to_scriptpk(musigsession.get_output_key());
-		} catch (Musig::InvalidArg const& e) {
-			return loge(e.what()).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
+	/* Build the claim before anything is revealed: a claim the
+	 * fee would consume waits for lower fees instead.  */
+	auto feerate = co_await env.get_feerate();
+	auto sighash = co_await build_claim(feerate);
 
-		/* Find the outnum from the lockup_tx.  */
-		auto outnum = Detail::find_lockup_outnum( lockup_tx
-							, redeemScript
-							);
-		if (outnum < 0) {
-			auto msg = std::string("Service lockup tx ")
-				 + std::string(lockup_tx) + " "
-				 + "does not pay to lockscript."
-				 ;
-			return loge(msg).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
-		lockupOut = std::size_t(outnum);
+	/* From the next step on the provider can settle our payment,
+	 * so the row says so first: whatever stops the claim after
+	 * this, a crash, a refusal, a rejected broadcast, is retried
+	 * at each block until our node sees the claim confirmed.  */
+	co_await persist_reveal();
 
-		auto const& lockupoutput = lockup_tx.outputs[lockupOut];
+	co_await cooperative_claim(sighash);
+}
 
-		/* Check the onchain amount is correct.  */
-		if (lockupoutput.amount != onchainAmount) {
-			auto msg = std::string("Service lockup tx ")
-				 + std::string(lockup_tx) + " "
-				 + "does not pay expected amount."
-				 ;
-			return loge(msg).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
+Ev::Io<void> ClaimTxHandler::load_row() {
+	auto tx = co_await db.transact();
+	auto fetch = tx.query(R"QRY(
+	SELECT tweak -- 0
+	     , preimage -- 1
+	     , destinationAddress -- 2
+	     , claimScript -- 3
+	     , refundScript -- 4
+	     , timeoutBlockheight -- 5
+	     , onchainAmount -- 6
+	     , refundPubKey -- 7
+	     , createdHeight -- 8
+	     , COALESCE(lockupConfirmedHeight, 0) -- 9
+	     , COALESCE(lockupSearchedHeight, 0) -- 10
+	     , preimageRevealed -- 11
+	     , lockupTx -- 12
+	     , COALESCE(lockupOut, 0) -- 13
+	     , claimTx -- 14
+	     , claimFeerate -- 15
+	  FROM "BoltzServiceFactory_rsub"
+	 WHERE apiAccess = :apiAccess
+	   AND swapId = :swapId
+	     ;
+	)QRY")
+		.bind(":apiAccess", api_endpoint)
+		.bind(":swapId", swapId)
+		.execute();
+	auto found = 0;
+	auto db_lockupOut = std::uint32_t(0);
+	for (auto& r : fetch) {
+		++found;
+		tweak = Secp256k1::PrivKey(r.get<std::string>(0));
+		preimage = Ln::Preimage(r.get<std::string>(1));
+		destinationAddress = r.get<std::string>(2);
+		claimScript = Util::Str::hexread(r.get<std::string>(3));
+		refundScript = Util::Str::hexread(r.get<std::string>(4));
+		timeoutBlockheight = r.get<std::uint32_t>(5);
+		onchainAmount = Ln::Amount::sat(r.get<std::uint64_t>(6));
+		refund_pubkey = Secp256k1::PubKey(r.get<std::string>(7));
+		createdHeight = r.get<std::uint32_t>(8);
+		lockupConfirmedHeight = r.get<std::uint32_t>(9);
+		lockupSearchedHeight = r.get<std::uint32_t>(10);
+		preimageRevealed = r.get<bool>(11);
+		stored_lockup_tx = r.get<std::string>(12);
+		db_lockupOut = r.get<std::uint32_t>(13);
+		claimTxHex = r.get<std::string>(14);
+		claimFeerate = r.get<std::uint32_t>(15);
+	}
+	tx.commit();
 
-		/* The provider reports the lockup confirmed.  The
-		 * preimage leaves this node only once our own node
-		 * has the lockup in a block.  */
-		return confirm_lockup();
-	}).then([this]() {
-		/* Now compute the real preimage from the signer key
-		 * and the in-database preimage.  */
-		real_preimage = Detail::compute_preimage(signer, preimage);
+	if (found == 0) {
+		co_await loge("Swap ID not in table.");
+		throw End();
+	}
+	if (found > 1) {
+		co_await loge("Swap ID duplicated??");
+		throw End();
+	}
+	if (destinationAddress.empty()) {
+		co_await loge("Swap destination address is empty??");
+		throw End();
+	}
 
-		/* Now look up the feerate.  */
-		return env.get_feerate();
-	}).then([this](std::uint32_t feerate) {
-		/* Generate the claim tx.  */
-		auto sighash = Detail::initial_claim_tx( claim_tx
-						, lockupClaimFees
+	/* A row from the API v1 code has no tapscript leaves, and
+	 * the v1 claim went with that code: the swap ends at its
+	 * timeout, with the payment failing back to us.  */
+	if (claimScript.empty() || refundScript.empty()) {
+		co_await loge( "Swap predates API v2 and cannot be "
+			       "claimed by this version; it ends at "
+			       "its timeout."
+			     );
+		throw End();
+	}
 
-						, feerate
-						, blockheight
-						, lockup_txid
-						, lockupOut
-						, onchainAmount
-
-						, redeemScript
-
-						, destinationAddress
-						);
-
-		try {
-			musigsession.load_sighash(sighash);
-
-			/* Create our nonce pair for the musig session.  */
-			local_pubnonce = musigsession.generate_local_nonces(random);
-		} catch (Musig::InvalidArg const& e) {
-			return loge(e.what()).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
-
-		return Ev::lift();
-	}).then([this]() {
-		/* Send the preimage, our public nonce and the unsigned
-		 * claim tx to the provider.  The preimage is the real
-		 * one: its SHA-256 is the hash the swap was created with
-		 * and the one in the provider's invoice; the in-database
-		 * value is only the material it is derived from.  */
-		auto params = Json::Out()
-			.start_object()
-				.field( "preimage"
-				      , std::string(real_preimage)
-					  )
-				.field( "pubNonce"
-				      , local_pubnonce
-					  )
-				.field( "transaction"
-				      , std::string(claim_tx)
-				      )
-				.field( "index", 0)
-			.end_object()
-			;
-
-		return conn.api( "/v2/swap/reverse/" + swapId + "/claim"
-					   , Util::make_unique<Json::Out>(
-							std::move(params)
-					     )
-					   );
-	}).then([this](Jsmn::Object res) {
-		/* Parse result.  */
-		std::string boltzpubnonce;
-		std::string boltzpartialsig;
-
-		/* we receive from Boltz their partial sig and public nonce in reply.	*/
-		try {
-			boltzpubnonce = (std::string) res["pubNonce"];
-			boltzpartialsig = (std::string) res["partialSignature"];
-		} catch (Jsmn::TypeError const& e) {
-			auto os = std::ostringstream();
-			os << "Unexpected result from service: "
-			   << res
-			    ;
-			return loge(os.str()).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
-
-		/* Validate pubnonce from Boltz is hex.   */
-		if (!Util::Str::ishex(boltzpubnonce)) {
-			return loge( std::string("invalid pubnonce from boltz: ")
-				   + boltzpubnonce
-				   ).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
-
-		/* Validate partial sig from Boltz is hex.   */
-		if (!Util::Str::ishex(boltzpartialsig)) {
-			return loge( std::string("invalid partialsig from boltz: ")
-				   + boltzpartialsig
-				   ).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
-
-		std::uint8_t aggsig_buffer[64];
-		auto aggregatesig = Secp256k1::SchnorrSig();
-		try {
-			/* aggregate our public nonce with Boltz's, initiate session.  */
-			musigsession.load_pubnonce(boltzpubnonce);
-			musigsession.aggregate_pubnonces();
-
-			/* sign our partial signature and combine into a single sig.  */
-			musigsession.load_partial(boltzpartialsig);
-			musigsession.sign_partial();
-			musigsession.verify_part_sigs();
-			musigsession.aggregate_partials(aggsig_buffer);
-			aggregatesig = SchnorrSig::from_buffer(aggsig_buffer);
-			if (!aggregatesig.valid( musigsession.get_output_key()
-								   , musigsession.get_sighash() )) {
-				return loge( std::string("invalid aggsig for given sighash and output key")
-					   ).then([]() {
-					throw End();
-					return Ev::lift();
-				});
+	/* A revealed swap works from the lockup recorded at the
+	 * reveal, not from whatever the provider reports now.  */
+	if (preimageRevealed) {
+		if (!stored_lockup_tx.empty()) {
+			auto error = std::string();
+			try {
+				lockup_tx = Bitcoin::Tx(stored_lockup_tx);
+				lockup_txid = lockup_tx.get_txid();
+			} catch (std::exception const& e) {
+				error = e.what();
 			}
-		} catch (Musig::InvalidArg const& e) {
-			return loge(e.what()).then([]() {
+			if (!error.empty()) {
+				co_await loge( "Stored lockup transaction did "
+					       "not parse: " + error
+					     );
 				throw End();
-				return Ev::lift();
-			});
-		} catch (Secp256k1::InvalidPrivKey const& e) {
-			return loge(e.what()).then([]() {
-				throw End();
-				return Ev::lift();
-			});
+			}
 		}
-		affix_aggregated_signature( claim_tx
-					  , aggregatesig.to_buffer()
-					  );
-		/* Log it.  */
-		auto msg = std::string("Broadcasting claim tx: ")
-			 + std::string(claim_tx)
-			 ;
-		return logd(msg);
-	}).then([this]() {
+		lockupOut = db_lockupOut;
+	}
+}
 
-		/* Do the broadcast.  */
-		return env.broadcast_tx(claim_tx);
-	}).then([this](bool success) {
-		if (!success) {
-			auto msg = std::string("Broadcast failed! ")
-				 + std::string(claim_tx)
-				 ;
-			return loge(msg).then([]() {
-				throw End();
-				return Ev::lift();
-			});
-		}
-		return Ev::lift();
-	}).then([this]() {
-
-		/* Update the db.  */
-		return db.transact();
-	}).then([this](Sqlite3::Tx tx) {
-		tx.query(R"QRY(
-		UPDATE "BoltzServiceFactory_rsub"
-		   SET lockedUp = 1
-		     , lockupTxid = :lockup_txid
-		     , lockupOut = :lockupOut
-		     , lockupClaimFees = :lockupClaimFees
-		 WHERE apiAccess = :apiAccess
-		   AND swapId = :swapId
-		     ;
-		)QRY")
-			.bind(":lockup_txid", std::string(lockup_txid))
-			.bind(":lockupOut", lockupOut)
-			.bind(":lockupClaimFees", lockupClaimFees.to_sat())
-			.bind(":apiAccess", api_endpoint)
-			.bind(":swapId", swapId)
-			.execute();
-		tx.commit();
-
-		return Ev::lift();
-	}).catching<End>([](End const&) {
-		/* Lambda, the ultimate Swiss Army Knife.... */
-		return Ev::lift();
-	});
+Ev::Io<void> ClaimTxHandler::prepare_keys() {
+	/* The aggregate key, provider's key first, ours second as
+	 * the API v2 orders them, tweaked by the tree root, is the
+	 * lockup's output key.  */
+	auto error = std::string();
+	try {
+		musigsession = Boltz::MusigSession(tweak, refund_pubkey, signer);
+		auto roothash = compute_root_hash(claimScript, refundScript);
+		musigsession.apply_xonly_tweak(roothash);
+		redeemScript = Bitcoin::pk_to_scriptpk(musigsession.get_output_key());
+	} catch (Secp256k1::InvalidPubKey const& e) {
+		error = e.what();
+	} catch (Musig::InvalidArg const& e) {
+		error = e.what();
+	}
+	if (!error.empty()) {
+		co_await loge(error);
+		throw End();
+	}
 }
 
 Ev::Io<void> ClaimTxHandler::confirm_lockup() {
@@ -541,6 +345,253 @@ Ev::Io<void> ClaimTxHandler::confirm_lockup() {
 			     );
 		throw End();
 	}
+}
+
+Ev::Io<Sha256::Hash> ClaimTxHandler::build_claim(std::uint32_t feerate) {
+	auto sighash = Detail::initial_claim_tx( claim_tx
+					       , lockupClaimFees
+					       , feerate
+					       , blockheight
+					       , lockup_txid
+					       , lockupOut
+					       , onchainAmount
+					       , redeemScript
+					       , destinationAddress
+					       );
+	if (claim_tx.outputs[0].amount == Ln::Amount::sat(0)) {
+		/* The fee would consume the lockup.  Nothing is
+		 * signed; fees may fall before the timeout.  */
+		co_await logd( std::string("Claim fee ")
+			     + std::string(lockupClaimFees)
+			     + " at " + std::to_string(feerate)
+			     + " perkw would consume the "
+			     + std::string(onchainAmount)
+			     + " lockup; waiting for lower fees."
+			     );
+		throw End();
+	}
+	claimFeerate = feerate;
+	co_return sighash;
+}
+
+Ev::Io<void> ClaimTxHandler::persist_reveal() {
+	auto tx = co_await db.transact();
+	tx.query(R"QRY(
+	UPDATE "BoltzServiceFactory_rsub"
+	   SET preimageRevealed = 1
+	     , lockupTxid = :lockup_txid
+	     , lockupOut = :lockupOut
+	     , lockupTx = :lockupTx
+	 WHERE apiAccess = :apiAccess
+	   AND swapId = :swapId
+	     ;
+	)QRY")
+		.bind(":lockup_txid", std::string(lockup_txid))
+		.bind(":lockupOut", lockupOut)
+		.bind(":lockupTx", std::string(lockup_tx))
+		.bind(":apiAccess", api_endpoint)
+		.bind(":swapId", swapId)
+		.execute();
+	tx.commit();
+	preimageRevealed = true;
+}
+
+Ev::Io<void> ClaimTxHandler::cooperative_claim(Sha256::Hash sighash) {
+	/* Now compute the real preimage from the signer key and the
+	 * in-database preimage.  */
+	real_preimage = Detail::compute_preimage(signer, preimage);
+
+	auto error = std::string();
+	try {
+		musigsession.load_sighash(sighash);
+		/* Create our nonce pair for the musig session.  Nonces
+		 * are never stored or reused: every attempt makes new
+		 * ones.  */
+		local_pubnonce = musigsession.generate_local_nonces(random);
+	} catch (Musig::InvalidArg const& e) {
+		error = e.what();
+	}
+	if (!error.empty()) {
+		co_await loge(error);
+		throw End();
+	}
+
+	/* Send the preimage, our public nonce and the unsigned claim
+	 * tx to the provider.  The preimage is the real one: its
+	 * SHA-256 is the hash the swap was created with and the one
+	 * in the provider's invoice; the in-database value is only
+	 * the material it is derived from.  */
+	auto params = Json::Out()
+		.start_object()
+			.field("preimage", std::string(real_preimage))
+			.field("pubNonce", local_pubnonce)
+			.field("transaction", std::string(claim_tx))
+			.field("index", 0)
+		.end_object()
+		;
+	auto res = std::unique_ptr<Jsmn::Object>();
+	try {
+		res = Util::make_unique<Jsmn::Object>(co_await conn.api(
+			"/v2/swap/reverse/" + swapId + "/claim"
+		      , Util::make_unique<Json::Out>(std::move(params))
+		));
+	} catch (Boltz::ApiError const& e) {
+		error = e.what();
+	}
+	if (!res) {
+		co_await loge( "Claim request failed: " + error
+			     + "; trying again next block."
+			     );
+		throw End();
+	}
+
+	/* We receive from the provider their partial sig and public
+	 * nonce in reply.  */
+	auto boltzpubnonce = std::string();
+	auto boltzpartialsig = std::string();
+	try {
+		boltzpubnonce = (std::string) (*res)["pubNonce"];
+		boltzpartialsig = (std::string) (*res)["partialSignature"];
+	} catch (Jsmn::TypeError const& e) {
+		auto os = std::ostringstream();
+		os << "Unexpected result from service: " << *res;
+		error = os.str();
+	}
+	if (!error.empty()) {
+		co_await loge(error);
+		throw End();
+	}
+	if (!Util::Str::ishex(boltzpubnonce)) {
+		co_await loge( std::string("invalid pubnonce from boltz: ")
+			     + boltzpubnonce
+			     );
+		throw End();
+	}
+	if (!Util::Str::ishex(boltzpartialsig)) {
+		co_await loge( std::string("invalid partialsig from boltz: ")
+			     + boltzpartialsig
+			     );
+		throw End();
+	}
+
+	std::uint8_t aggsig_buffer[64];
+	auto aggregatesig = Secp256k1::SchnorrSig();
+	try {
+		/* Aggregate our public nonce with the provider's.  */
+		musigsession.load_pubnonce(boltzpubnonce);
+		musigsession.aggregate_pubnonces();
+		/* Sign our partial signature and combine into a
+		 * single signature.  */
+		musigsession.load_partial(boltzpartialsig);
+		musigsession.sign_partial();
+		musigsession.verify_part_sigs();
+		musigsession.aggregate_partials(aggsig_buffer);
+		aggregatesig = SchnorrSig::from_buffer(aggsig_buffer);
+		if (!aggregatesig.valid( musigsession.get_output_key()
+				       , musigsession.get_sighash()
+				       ))
+			error = "invalid aggsig for given sighash and output key";
+	} catch (Musig::InvalidArg const& e) {
+		error = e.what();
+	} catch (Secp256k1::InvalidPrivKey const& e) {
+		error = e.what();
+	}
+	if (!error.empty()) {
+		co_await loge(error);
+		throw End();
+	}
+	affix_aggregated_signature(claim_tx, aggregatesig.to_buffer());
+
+	co_await logd( std::string("Broadcasting claim tx: ")
+		     + std::string(claim_tx)
+		     );
+	auto success = co_await env.broadcast_tx(claim_tx);
+	if (!success) {
+		co_await loge( std::string("Broadcast failed! ")
+			     + std::string(claim_tx)
+			     );
+		throw End();
+	}
+
+	/* Record the signed claim for rebroadcast until our node
+	 * sees it confirmed.  */
+	auto tx = co_await db.transact();
+	tx.query(R"QRY(
+	UPDATE "BoltzServiceFactory_rsub"
+	   SET lockedUp = 1
+	     , lockupClaimFees = :lockupClaimFees
+	     , claimTx = :claimTx
+	     , claimFeerate = :claimFeerate
+	 WHERE apiAccess = :apiAccess
+	   AND swapId = :swapId
+	     ;
+	)QRY")
+		.bind(":lockupClaimFees", lockupClaimFees.to_sat())
+		.bind(":claimTx", std::string(claim_tx))
+		.bind(":claimFeerate", claimFeerate)
+		.bind(":apiAccess", api_endpoint)
+		.bind(":swapId", swapId)
+		.execute();
+	tx.commit();
+}
+
+Ev::Io<void> ClaimTxHandler::track_claim() {
+	if (claimTxHex.empty()) {
+		/* The preimage is out but no claim was ever broadcast:
+		 * the provider did not co-sign, or we stopped before
+		 * the broadcast.  Ask again, with new nonces.  */
+		co_await prepare_keys();
+		auto feerate = co_await env.get_feerate();
+		auto sighash = co_await build_claim(feerate);
+		co_await cooperative_claim(sighash);
+		co_return;
+	}
+
+	auto error = std::string();
+	auto claim = Bitcoin::Tx();
+	try {
+		claim = Bitcoin::Tx(claimTxHex);
+	} catch (std::exception const& e) {
+		error = e.what();
+	}
+	if (!error.empty()) {
+		co_await loge( "Stored claim transaction did not "
+			       "parse: " + error
+			     );
+		throw End();
+	}
+	auto claim_txid = claim.get_txid();
+
+	/* Done once our own wallet holds the claim's output,
+	 * confirmed.  The output is named by the claim's transaction
+	 * id: the provider learns the destination address from the
+	 * claim request, and a payment of its own to that address
+	 * must not pass for the claim.  */
+	if (co_await env.has_confirmed_output(claim_txid, 0)) {
+		co_await logd( "Claim " + std::string(claim_txid)
+			     + " confirmed; swap done."
+			     );
+		auto tx = co_await db.transact();
+		tx.query(R"QRY(
+		DELETE FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = :swapId
+		     ;
+		)QRY")
+			.bind(":apiAccess", api_endpoint)
+			.bind(":swapId", swapId)
+			.execute();
+		tx.commit();
+		co_return;
+	}
+
+	/* Keep the signed claim in mempools until it confirms.  A
+	 * rejection here is usual: the node already has it.  */
+	auto accepted = co_await env.broadcast_tx(claim);
+	co_await logd( std::string("Claim ") + std::string(claim_txid)
+		     + " not yet confirmed; rebroadcast "
+		     + (accepted ? "accepted." : "not accepted.")
+		     );
 }
 
 }}

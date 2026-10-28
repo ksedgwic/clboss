@@ -30,6 +30,23 @@ Ev::Io<void> ServiceImpl::loge(std::string msg) {
 
 Ev::Io<void> ServiceImpl::on_block(std::uint32_t blockheight) {
 	return db.transact().then([this, blockheight](Sqlite3::Tx dbtx) {
+		/* Swaps dropped at their timeout with the preimage out and
+		 * no claim confirmed: the provider has our payment and may
+		 * now take the lockup back.  */
+		auto lost_rows = dbtx.query(R"QRY(
+		SELECT swapId FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND timeoutBlockheight <= :blockheight
+		   AND preimageRevealed <> 0
+		     ;
+		)QRY")
+			.bind(":apiAccess", label)
+			.bind(":blockheight", blockheight)
+			.execute();
+		auto lost = std::vector<std::string>();
+		for (auto& r : lost_rows)
+			lost.push_back(r.get<std::string>(0));
+
 		/* Filter out rows we created that have completely finished
 		 * the locktime.
 		 */
@@ -57,7 +74,19 @@ Ev::Io<void> ServiceImpl::on_block(std::uint32_t blockheight) {
 
 		dbtx.commit();
 
-		return Ev::lift(std::move(swapIds));
+		auto act = Ev::lift();
+		for (auto const& id : lost)
+			act += loge( "\"" + id + "\": reached its timeout with "
+				     "the preimage revealed and no confirmed "
+				     "claim; the provider may now refund the "
+				     "lockup."
+				   );
+		auto p_swapIds = std::make_shared<std::vector<std::string>>(
+			std::move(swapIds)
+		);
+		return std::move(act).then([p_swapIds]() {
+			return Ev::lift(std::move(*p_swapIds));
+		});
 	}).then([this](std::vector<std::string> swapIds) {
 
 		/* Do not pollute log if nothing to swap anyway.  */
@@ -94,6 +123,37 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 				       , std::string swapId
 				       ) {
 	auto p_swapId = std::make_shared<std::string>(std::move(swapId));
+	return db.transact().then([this, p_swapId](Sqlite3::Tx tx) {
+		auto fetch = tx.query(R"QRY(
+		SELECT preimageRevealed FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = :swapId
+		     ;
+		)QRY")
+			.bind(":apiAccess", label)
+			.bind(":swapId", *p_swapId)
+			.execute();
+		auto revealed = false;
+		for (auto& r : fetch)
+			revealed = r.get<bool>(0);
+		tx.commit();
+		return Ev::lift(revealed);
+	}).then([this, blockheight, p_swapId](bool revealed) {
+		/* Once the preimage is out the provider's status is
+		 * advisory: the claim is tracked from our own node until
+		 * it is confirmed there.  The handler works from the
+		 * lockup recorded at the reveal.  */
+		if (revealed)
+			return swap_onchain( p_swapId, blockheight
+					   , std::make_shared<Bitcoin::Tx>()
+					   );
+		return swap_poll(blockheight, p_swapId);
+	});
+}
+
+Ev::Io<void> ServiceImpl::swap_poll( std::uint32_t blockheight
+				   , std::shared_ptr<std::string> p_swapId
+				   ) {
 	return conn->api( "/v2/swap/" + *p_swapId, nullptr
 			).then([this, p_swapId](Jsmn::Object sres) {
 			/* Save, then log.  */
@@ -152,12 +212,17 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 				return Ev::lift(kont);
 			}
 
-			/* FIXME: we should ignore this state, and instead
-			 * monitor the txout moving from unspent to spent.
-			 */
+			/* Only the preimage settles the invoice, and this
+			 * node has not sent it: a revealed swap does not
+			 * come here.  Nothing to finish; the row stays
+			 * until its timeout.  */
 			if (status == "invoice.settled") {
 				kont = [this, p_swapId]() {
-					return swap_finished(p_swapId);
+					return loge( "\"" + *p_swapId + "\": the "
+						     "provider reports the invoice "
+						     "settled, but this node never "
+						     "revealed the preimage."
+					   );
 				};
 				return Ev::lift(kont);
 			}

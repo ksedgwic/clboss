@@ -83,16 +83,11 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 	claim_tx_fees = Ln::Amount::sat((weight * feerate_perkw) / 1000);
 	/* Is the fee too large?  */
 	if (claim_tx_fees + dust_limit > lockup_amount) {
-		/* Transform to an OP_RETURN with 20 0 bytes, and give the
-		 * entire amount to fees.  */
+		/* The fee would consume the lockup.  An output of
+		 * nothing tells the caller, which does not sign this;
+		 * revealing the preimage for a transaction that pays
+		 * us nothing would only settle our payment.  */
 		claim_tx_fees = lockup_amount;
-		claim_tx.outputs[0].scriptPubKey.resize(22);
-		std::fill( claim_tx.outputs[0].scriptPubKey.begin()
-			 , claim_tx.outputs[0].scriptPubKey.end()
-			 , 0x00
-			 );
-		claim_tx.outputs[0].scriptPubKey[0] = 0x6a;
-		claim_tx.outputs[0].scriptPubKey[1] = 0x14;
 		claim_tx.outputs[0].amount = Ln::Amount::sat(0);
 	} else {
 		/* Set amount.  */

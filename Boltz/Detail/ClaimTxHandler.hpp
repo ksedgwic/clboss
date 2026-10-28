@@ -1,6 +1,5 @@
 #ifndef BOLTZ_DETAIL_CLAIMTXHANDLER_HPP
 #define BOLTZ_DETAIL_CLAIMTXHANDLER_HPP
-
 #include"Bitcoin/Tx.hpp"
 #include"Bitcoin/TxId.hpp"
 #include"Ln/Amount.hpp"
@@ -8,6 +7,7 @@
 #include"Boltz/Detail/MusigImpl.hpp"
 #include"Secp256k1/PrivKey.hpp"
 #include"Secp256k1/PubKey.hpp"
+#include"Sha256/Hash.hpp"
 #include"Sqlite3/Db.hpp"
 #include<cstdint>
 #include<functional>
@@ -26,9 +26,12 @@ namespace Boltz { namespace Detail {
  *
  * @brief handles the claim transaction.
  *
- * @desc this is constructed and called at
- * each block for every swapID that is in
- * state "transaction.confirmed".
+ * @desc this is constructed and called at each
+ * block for every swap whose lockup the provider
+ * reports confirmed, and, once the preimage has
+ * been revealed, at each block until our own node
+ * sees the claim confirmed, whatever the provider
+ * reports.
  */
 class ClaimTxHandler : public std::enable_shared_from_this<ClaimTxHandler> {
 private:
@@ -40,7 +43,8 @@ private:
 	Secp256k1::Random& random;
 	std::string swapId;
 	std::uint32_t blockheight;
-
+	/* The lockup transaction the provider reported; for a swap
+	 * whose preimage is already revealed, the stored one.  */
 	Bitcoin::Tx lockup_tx;
 	Bitcoin::TxId lockup_txid;
 
@@ -48,8 +52,8 @@ private:
 		      , Sqlite3::Db db_
 		      , Boltz::EnvIF& env_
 		      , std::string const& api_endpoint_
-			  , Boltz::ConnectionIF& conn_
-			  , Secp256k1::Random& random_
+		      , Boltz::ConnectionIF& conn_
+		      , Secp256k1::Random& random_
 		      , std::string const& swapId_
 		      , std::uint32_t blockheight_
 		      , Bitcoin::Tx lockup_tx_
@@ -73,8 +77,8 @@ public:
 	      , Sqlite3::Db db
 	      , Boltz::EnvIF& env
 	      , std::string const& api_endpoint
-		  , Boltz::ConnectionIF& conn
-		  , Secp256k1::Random& random
+	      , Boltz::ConnectionIF& conn
+	      , Secp256k1::Random& random
 	      , std::string const& swapId
 	      , std::uint32_t blockheight
 	      , Bitcoin::Tx lockup_tx
@@ -94,22 +98,43 @@ public:
 	}
 
 	Ev::Io<void> run();
+
 private:
 	Ev::Io<void> core_run();
+	/* Loads the row; ends the run if there is none to claim.  */
+	Ev::Io<void> load_row();
+	/* Builds the MuSig2 session and the lockup script from the
+	 * row's keys and leaves.  */
+	Ev::Io<void> prepare_keys();
 	/* Finds the lockup in our own node's blocks and waits for
 	 * its depth, or ends the run without revealing anything.  */
 	Ev::Io<void> confirm_lockup();
+	/* Builds the unsigned claim at the given feerate; ends the
+	 * run if the fee would consume the lockup.  Returns the
+	 * key-path sighash.  */
+	Ev::Io<Sha256::Hash> build_claim(std::uint32_t feerate);
+	/* Records that the preimage is about to leave the node.  */
+	Ev::Io<void> persist_reveal();
+	/* Asks the provider to co-sign, completes the signature,
+	 * broadcasts and records the claim.  */
+	Ev::Io<void> cooperative_claim(Sha256::Hash sighash);
+	/* For a revealed swap: finishes it once our node has the
+	 * claim confirmed, else keeps the claim in mempools, else
+	 * tries the claim again.  */
+	Ev::Io<void> track_claim();
 
 	/* Wrappers.  */
 	Ev::Io<void> logd(std::string);
 	Ev::Io<void> loge(std::string);
 	std::string logprefix(std::string);
 
-	/* Additional data from table.  */
+	/* Data from the row.  */
 	Secp256k1::PrivKey tweak;
 	Ln::Preimage preimage;
 	Ln::Preimage real_preimage;
 	std::string destinationAddress;
+	std::vector<std::uint8_t> claimScript;
+	std::vector<std::uint8_t> refundScript;
 	Secp256k1::PubKey refund_pubkey;
 	std::uint32_t timeoutBlockheight;
 	Ln::Amount onchainAmount;
@@ -118,16 +143,22 @@ private:
 	std::uint32_t lockupConfirmedHeight;
 	/* 0 until a block has been searched for it.  */
 	std::uint32_t lockupSearchedHeight;
+	/* Set once the preimage has been sent to the provider.  */
+	bool preimageRevealed;
+	/* The lockup as stored at the reveal, hex; "" before.  */
+	std::string stored_lockup_tx;
+	/* The last signed claim, hex, and its feerate; "" and 0
+	 * before a claim was broadcast.  */
+	std::string claimTxHex;
+	std::uint32_t claimFeerate;
 
-	/* Data we generate.	*/
+	/* Data we generate.  */
 	std::vector<std::uint8_t> redeemScript;
 	Boltz::MusigSession musigsession;
 	std::string local_pubnonce;
-
 	/* Data we will store into the table.  */
 	std::size_t lockupOut;
 	Ln::Amount lockupClaimFees;
-
 	/* Actual claim transaction.  */
 	Bitcoin::Tx claim_tx;
 };

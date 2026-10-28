@@ -21,8 +21,12 @@ namespace {
 /* Thrown to get out and fail.  */
 struct Fail {};
 
-/* Timeout must be within this number of blocks from current block height.  */
-auto const min_timeout = std::uint32_t(12);
+/* Timeout must be within this number of blocks from current block
+ * height.  The minimum leaves room for the claim: the lockup takes
+ * a few blocks to confirm, the claim handler waits for it to be
+ * three deep, and it does not start a claim within ten blocks of
+ * the timeout.  */
+auto const min_timeout = std::uint32_t(24);
 auto const max_timeout = std::uint32_t(288);
 
 }

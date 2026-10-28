@@ -125,6 +125,34 @@ public:
 		});
 	}
 
+	/* gettxout answers from the UTXO set: a spent or unknown
+	 * output prints nothing.  A claim spent again during a run
+	 * would read as unconfirmed; this tool's destination is
+	 * not spent during a run.  */
+	Ev::Io<bool> has_confirmed_output( Bitcoin::TxId txid
+					 , std::uint32_t outnum
+					 ) override {
+		auto cli = bitcoin_cli_command();
+		auto command = cli.front();
+		auto args = std::vector<std::string>(cli.begin() + 1, cli.end());
+		args.push_back("gettxout");
+		args.push_back(std::string(txid));
+		args.push_back(std::to_string(outnum));
+		return Ev::runcmd(command, args).then([](std::string out) {
+			auto found = false;
+			try {
+				auto res = Jsmn::Object::parse_json(out.c_str());
+				if ( res.has("confirmations")
+				  && res["confirmations"].is_number()
+				   )
+					found = double(res["confirmations"]) >= 1;
+			} catch (std::exception const&) {
+				/* No node, or no such output: not found.  */
+			}
+			return Ev::lift(found);
+		});
+	}
+
 	Ev::Io<bool> broadcast_tx(Bitcoin::Tx tx) override {
 		auto str = std::string(tx);
 		auto params = Json::Out()

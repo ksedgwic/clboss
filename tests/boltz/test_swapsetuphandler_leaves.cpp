@@ -52,6 +52,9 @@ public:
 	Ev::Io<std::string> get_block(std::uint32_t) override {
 		return Ev::lift(std::string());
 	}
+	Ev::Io<bool> has_confirmed_output(Bitcoin::TxId, std::uint32_t) override {
+		return Ev::lift(false);
+	}
 	Ev::Io<bool> broadcast_tx(Bitcoin::Tx) override {
 		return Ev::lift(true);
 	}
@@ -215,6 +218,10 @@ CREATE TABLE "BoltzServiceFactory_rsub"
      , lockupOut INTEGER NULL
      , lockupConfirmedHeight INTEGER NULL
      , lockupSearchedHeight INTEGER NULL
+     , preimageRevealed INTEGER NOT NULL DEFAULT 0
+     , lockupTx TEXT NOT NULL DEFAULT ''
+     , claimTx TEXT NOT NULL DEFAULT ''
+     , claimFeerate INTEGER NOT NULL DEFAULT 0
      , lockupClaimFees INTEGER NULL
      , comment TEXT
      );

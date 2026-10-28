@@ -34,6 +34,9 @@ public:
 	/* Boltz::EnvIF.  */
 	Ev::Io<std::uint32_t> get_feerate() override;
 	Ev::Io<std::string> get_block(std::uint32_t height) override;
+	Ev::Io<bool> has_confirmed_output( Bitcoin::TxId txid
+					 , std::uint32_t outnum
+					 ) override;
 	Ev::Io<bool> broadcast_tx(Bitcoin::Tx) override;
 	Ev::Io<void> logd(std::string) override;
 	Ev::Io<void> loge(std::string) override;

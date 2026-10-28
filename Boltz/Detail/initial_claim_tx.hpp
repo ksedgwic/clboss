@@ -17,6 +17,10 @@ namespace Boltz { namespace Detail {
  * @brief creates the initial claim transaction
  * for a reverse submarine (offchain-to-onchain)
  * swap.
+ *
+ * @desc if the fee at the given feerate would
+ * consume the lockup, the output amount is zero
+ * and the transaction must not be signed.
  */
 Sha256::Hash
 initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */

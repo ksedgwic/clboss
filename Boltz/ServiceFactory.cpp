@@ -58,6 +58,10 @@ private:
 				       , Column{"refundPubkey", "TEXT NOT NULL DEFAULT ''"}
 				       , Column{"createdHeight", "INTEGER NOT NULL DEFAULT 0"}
 				       , Column{"lockupSearchedHeight", "INTEGER NULL"}
+				       , Column{"preimageRevealed", "INTEGER NOT NULL DEFAULT 0"}
+				       , Column{"lockupTx", "TEXT NOT NULL DEFAULT ''"}
+				       , Column{"claimTx", "TEXT NOT NULL DEFAULT ''"}
+				       , Column{"claimFeerate", "INTEGER NOT NULL DEFAULT 0"}
 				       }) {
 			if (existing.count(col.name))
 				continue;
@@ -115,9 +119,23 @@ private:
 			     -- there.
 			     , createdHeight INTEGER NOT NULL DEFAULT 0
 
-			     -- whether lockup fields have been set.
+			     -- whether a claim has been broadcast.
 			     -- 0 == false, 1 == true
 			     , lockedUp INTEGER NOT NULL
+
+			     -- whether the preimage has been sent to the
+			     -- provider.  Set before the claim request:
+			     -- from then on the provider can settle our
+			     -- payment, and the claim is retried at each
+			     -- block until our node sees it confirmed.
+			     , preimageRevealed INTEGER NOT NULL DEFAULT 0
+			     -- The lockup transaction, hex, as recorded
+			     -- at the reveal.
+			     , lockupTx TEXT NOT NULL DEFAULT ''
+			     -- The last signed claim, hex, for rebroadcast,
+			     -- and the feerate it was built at.
+			     , claimTx TEXT NOT NULL DEFAULT ''
+			     , claimFeerate INTEGER NOT NULL DEFAULT 0
 
 			     -- from the exchange, after paying invoice.
 			     -- These are the details of the lockup

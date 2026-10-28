@@ -619,6 +619,7 @@ TESTS = \
 	tests/boltz/test_claimtxhandler_scoped_update \
 	tests/boltz/test_match_lockscript \
 	tests/boltz/test_servicefactory_migration \
+	tests/boltz/test_serviceimpl_revealed \
 	tests/boltz/test_swapsetuphandler_leaves \
 	tests/boss/channelcandidateinvestigator/test_evictionpolicy \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \

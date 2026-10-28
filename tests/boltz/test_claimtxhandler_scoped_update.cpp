@@ -34,6 +34,7 @@
 #include<map>
 #include<memory>
 #include<sstream>
+#include<set>
 #include<string>
 #include<vector>
 
@@ -49,14 +50,21 @@
  *   against the lockup output key over the transaction's sighash;
  * - the final database update stamps only the claimed swap, not a
  *   sibling swap in flight on the same provider, nor a swap with
- *   the same id on another provider.
+ *   the same id on another provider;
+ * - the preimage is sent only once our own blocks hold the lockup
+ *   three deep, and the reveal is recorded before the request, so
+ *   a provider that keeps the preimage and refuses to sign is
+ *   asked again next block, from the stored lockup;
+ * - a signed claim is rebroadcast each block until our wallet holds
+ *   it confirmed, when the swap's row is removed.
  */
 
 namespace {
 
 /* Mock environment: fixed feerate, broadcast always succeeds
- * and keeps the transaction it was handed, and the blocks the
- * test put in `blocks` are our node's chain.
+ * and keeps the transaction it was handed, the blocks the test
+ * put in `blocks` are our node's chain, and `confirmed` holds
+ * the outputs our wallet has in a block, as "txid:outnum".
  */
 class MockEnv : public Boltz::EnvIF {
 private:
@@ -65,6 +73,8 @@ private:
 
 public:
 	std::map<std::uint32_t, std::string> blocks;
+	std::set<std::string> confirmed;
+	std::string last_asked;
 
 	MockEnv( bool& broadcast_called_
 	       , Bitcoin::Tx& broadcast_tx_seen_
@@ -80,6 +90,12 @@ public:
 		if (it == blocks.end())
 			return Ev::lift(std::string());
 		return Ev::lift(it->second);
+	}
+	Ev::Io<bool> has_confirmed_output( Bitcoin::TxId txid
+					 , std::uint32_t outnum
+					 ) override {
+		last_asked = std::string(txid) + ":" + std::to_string(outnum);
+		return Ev::lift(confirmed.count(last_asked) != 0);
 	}
 	Ev::Io<bool> broadcast_tx(Bitcoin::Tx tx) override {
 		broadcast_called = true;
@@ -150,6 +166,8 @@ public:
 /* Mock provider: answers the cooperative claim request with its
  * public nonce and partial signature over the sighash of the
  * transaction the client sent, and keeps what the client sent.
+ * With `fail` set it keeps the preimage and answers an error, the
+ * way a provider that pockets the preimage would.
  */
 class MockProvider : public Boltz::ConnectionIF {
 private:
@@ -163,6 +181,7 @@ private:
 public:
 	std::string path_seen;
 	std::string preimage_seen;
+	bool fail = false;
 
 	MockProvider( Secp256k1::Random& random_
 		    , Secp256k1::KeyPair const& keys_
@@ -189,6 +208,10 @@ public:
 		auto client_pubnonce = std::string(req["pubNonce"]);
 		auto tx = Bitcoin::Tx(std::string(req["transaction"]));
 		assert(std::uint32_t((double) req["index"]) == 0);
+		if (fail)
+			return Ev::lift(Jsmn::Object::parse_json(
+				"{\"error\":\"refused\"}"
+			));
 
 		/* Sighash the way the provider computes it, from the
 		 * transaction and the output being spent.  */
@@ -247,6 +270,10 @@ CREATE TABLE "BoltzServiceFactory_rsub"
      , lockupOut INTEGER NULL
      , lockupConfirmedHeight INTEGER NULL
      , lockupSearchedHeight INTEGER NULL
+     , preimageRevealed INTEGER NOT NULL DEFAULT 0
+     , lockupTx TEXT NOT NULL DEFAULT ''
+     , claimTx TEXT NOT NULL DEFAULT ''
+     , claimFeerate INTEGER NOT NULL DEFAULT 0
      , lockupClaimFees INTEGER NULL
      , comment TEXT
      );
@@ -506,11 +533,54 @@ int main() {
 		assert(found);
 		tx.commit();
 
-		/* Two blocks later the lockup is three deep and the
-		 * claim proceeds.  */
+		/* Two blocks later the lockup is three deep, and the
+		 * provider refuses to co-sign.  The request went out, so
+		 * the reveal is on record; nothing was broadcast.  */
+		provider.fail = true;
 		auto handler = Boltz::Detail::ClaimTxHandler::create(
 			signer, db, env, api, provider, random
 		      , "swapA", blockheight + 2, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(provider.path_seen == "/v2/swap/reverse/swapA/claim");
+		assert(provider.preimage_seen == std::string(real_preimage));
+		assert(!broadcast_called);
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto rows = tx.query(R"QRY(
+		SELECT preimageRevealed
+		     , COALESCE(lockupTxid, '')
+		     , lockupTx
+		     , claimTx
+		     , lockedUp
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapA'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : rows) {
+			found = true;
+			assert(r.get<bool>(0));
+			assert(r.get<std::string>(1) == std::string(lockup_tx.get_txid()));
+			assert(r.get<std::string>(2) == std::string(lockup_tx));
+			assert(r.get<std::string>(3) == "");
+			assert(!r.get<bool>(4));
+		}
+		assert(found);
+		tx.commit();
+
+		/* Next block the provider co-signs.  The retry works
+		 * from the stored lockup, not from what the caller
+		 * passes, and asks again with new nonces.  */
+		provider.fail = false;
+		provider.path_seen = "";
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapA", blockheight + 3, Bitcoin::Tx()
 		);
 		return handler->run();
 	}).then([&]() {
@@ -554,10 +624,13 @@ int main() {
 
 		return db.transact();
 	}).then([&](Sqlite3::Tx tx) {
-		/* Sanity: the claimed swap was stamped, and the lockup's
-		 * block was recorded by the search.  */
+		/* The claimed swap was stamped with the signed claim,
+		 * and the lockup's block was recorded by the search.  */
 		auto stamped = tx.query(R"QRY(
-		SELECT lockedUp, lockupTxid, COALESCE(lockupConfirmedHeight, 0)
+		SELECT lockedUp
+		     , claimTx
+		     , claimFeerate
+		     , COALESCE(lockupConfirmedHeight, 0)
 		  FROM "BoltzServiceFactory_rsub"
 		 WHERE apiAccess = :apiAccess
 		   AND swapId = 'swapA'
@@ -569,14 +642,15 @@ int main() {
 		for (auto& r : stamped) {
 			found = true;
 			assert(r.get<bool>(0));
-			assert(!r.get<std::string>(1).empty());
-			assert(r.get<std::uint32_t>(2) == blockheight);
+			assert(r.get<std::string>(1) == std::string(broadcast_tx));
+			assert(r.get<std::uint32_t>(2) == 1000);
+			assert(r.get<std::uint32_t>(3) == blockheight);
 		}
 		assert(found);
 
 		/* Regression: the sibling swap must be untouched.  */
 		auto sibling = tx.query(R"QRY(
-		SELECT lockedUp
+		SELECT lockedUp, preimageRevealed
 		  FROM "BoltzServiceFactory_rsub"
 		 WHERE apiAccess = :apiAccess
 		   AND swapId = 'swapB'
@@ -588,13 +662,15 @@ int main() {
 		for (auto& r : sibling) {
 			found = true;
 			assert(!r.get<bool>(0));
+			assert(!r.get<bool>(1));
 		}
 		assert(found);
 
-		/* Exactly one row may be stamped overall.  */
+		/* Exactly one row may be touched overall.  */
 		auto count = tx.query(R"QRY(
 		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub"
 		 WHERE lockedUp <> 0
+		    OR preimageRevealed <> 0
 		    OR lockupTxid IS NOT NULL
 		     ;
 		)QRY").execute();
@@ -604,7 +680,81 @@ int main() {
 			assert(r.get<int>(0) == 1);
 		}
 		assert(found);
+		tx.commit();
 
+		/* While the claim is unconfirmed, each block rebroadcasts
+		 * the stored transaction and asks the provider nothing.  */
+		broadcast_called = false;
+		provider.path_seen = "";
+		auto signed_claim = broadcast_tx;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapA", blockheight + 4, Bitcoin::Tx()
+		);
+		return handler->run().then([&, signed_claim]() {
+			assert(broadcast_called);
+			assert(broadcast_tx == signed_claim);
+			assert(provider.path_seen == "");
+			return Ev::lift();
+		});
+	}).then([&]() {
+		/* A confirmed payment from someone else to the destination
+		 * is not the claim: the row stays and the claim is
+		 * rebroadcast.  The handler asks about its own claim.  */
+		env.confirmed.insert(
+			"0000000000000000000000000000000000000000000000000000000000000001:0"
+		);
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapA", blockheight + 5, Bitcoin::Tx()
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(broadcast_called);
+		assert( env.last_asked
+		     == std::string(broadcast_tx.get_txid()) + ":0"
+		      );
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto still = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapA'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		for (auto& r : still)
+			assert(r.get<int>(0) == 1);
+		tx.commit();
+
+		/* Once our wallet holds the claim itself confirmed, the
+		 * swap is done and its row goes; the other rows stay.  */
+		env.confirmed.insert(std::string(broadcast_tx.get_txid()) + ":0");
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapA", blockheight + 6, Bitcoin::Tx()
+		);
+		return handler->run();
+	}).then([&]() {
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto gone = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapA'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		for (auto& r : gone)
+			assert(r.get<int>(0) == 0);
+		auto rest = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub";
+		)QRY").execute();
+		for (auto& r : rest)
+			assert(r.get<int>(0) == 2);
 		tx.commit();
 		return Ev::lift(0);
 	});

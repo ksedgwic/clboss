@@ -39,6 +39,9 @@ public:
 	Ev::Io<std::string> get_block(std::uint32_t) override {
 		return Ev::lift(std::string());
 	}
+	Ev::Io<bool> has_confirmed_output(Bitcoin::TxId, std::uint32_t) override {
+		return Ev::lift(false);
+	}
 	Ev::Io<bool> broadcast_tx(Bitcoin::Tx) override {
 		return Ev::lift(true);
 	}
@@ -188,6 +191,10 @@ int main() {
 		assert(cols.count("refundPubkey"));
 		assert(cols.count("createdHeight"));
 		assert(cols.count("lockupSearchedHeight"));
+		assert(cols.count("preimageRevealed"));
+		assert(cols.count("lockupTx"));
+		assert(cols.count("claimTx"));
+		assert(cols.count("claimFeerate"));
 		assert(cols.count("redeemScript"));
 
 		/* The swap in flight is still there, with empty leaves.  */
@@ -242,7 +249,7 @@ int main() {
 		return db.transact();
 	}).then([&](Sqlite3::Tx tx) {
 		assert(count_rows(tx) == 3);
-		assert(columns(tx).size() == 20);
+		assert(columns(tx).size() == 24);
 		tx.commit();
 		return Ev::lift(0);
 	});
