@@ -38,6 +38,7 @@ private:
 	XonlyPubKey aggregate_pk;
 	secp256k1_musig_keyagg_cache aggkey_cache{};
 	XonlyPubKey output_key;
+	bool output_key_odd{false};
 	std::uint8_t sighash[32];
 	// TODO should we mlock the memory allocated for secnonce? does mlock
 	// port to other unix clones?
@@ -127,6 +128,17 @@ public:
 			throw InvalidArg("Tweak::Impl::tweak_musig secp256k1_musig_pubkey_xonly_tweak_add");
 
 		output_key = XonlyPubKey::from_ecdsa_pk(reinterpret_cast<const std::uint8_t*>(&ecpk));
+		secp256k1_xonly_pubkey xonly;
+		int parity;
+		res = secp256k1_xonly_pubkey_from_pubkey
+				( context.get()
+				, &xonly
+				, &parity
+				, &ecpk
+				);
+		if (!res)
+			throw InvalidArg("Tweak::Impl::tweak_musig secp256k1_xonly_pubkey_from_pubkey");
+		output_key_odd = parity != 0;
 	}
 
 	void load_sighash(Sha256::Hash const& sh) {
@@ -365,6 +377,10 @@ public:
 	XonlyPubKey const& get_output_key() {
 		return output_key;
 	}
+
+	bool get_output_key_parity() {
+		return output_key_odd;
+	}
 };
 
 Session::Session( Secp256k1::KeyPair const& keys
@@ -509,6 +525,13 @@ XonlyPubKey const& Session::get_output_key() {
 		throw InvalidArg("Musig::Session object uninitialized");
 
 	return pimpl->get_output_key();
+}
+
+bool Session::get_output_key_parity() {
+	if (!pimpl)
+		throw InvalidArg("Musig::Session object uninitialized");
+
+	return pimpl->get_output_key_parity();
 }
 
 } }

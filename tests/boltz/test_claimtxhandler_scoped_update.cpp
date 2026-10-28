@@ -1,6 +1,7 @@
 #undef NDEBUG
 #include"Bitcoin/Tx.hpp"
 #include"Bitcoin/Block.hpp"
+#include"Bitcoin/addr_to_scriptPubKey.hpp"
 #include"Bitcoin/TxId.hpp"
 #include"Bitcoin/hash160.hpp"
 #include"Bitcoin/pubkey_to_scriptPubKey.hpp"
@@ -24,10 +25,12 @@
 #include"Secp256k1/Random.hpp"
 #include"Secp256k1/Signature.hpp"
 #include"Secp256k1/SignerIF.hpp"
+#include"Secp256k1/TapscriptTree.hpp"
 #include"Sha256/Hash.hpp"
 #include"Sha256/fun.hpp"
 #include"Sqlite3.hpp"
 #include"Util/Str.hpp"
+#include<algorithm>
 #include<assert.h>
 #include<cstdint>
 #include<iostream>
@@ -40,7 +43,8 @@
 
 /* Drives Boltz::Detail::ClaimTxHandler through one cooperative
  * (key-path) claim against a mock provider that co-signs the way
- * a Boltz API v2 backend does, and checks:
+ * a Boltz API v2 backend does, then through one script-path claim
+ * against the same provider refusing, and checks:
  *
  * - the claim request carries the real preimage, the one whose
  *   SHA-256 the swap was created with, not the in-database
@@ -52,11 +56,13 @@
  *   sibling swap in flight on the same provider, nor a swap with
  *   the same id on another provider;
  * - the preimage is sent only once our own blocks hold the lockup
- *   three deep, and the reveal is recorded before the request, so
- *   a provider that keeps the preimage and refuses to sign is
- *   asked again next block, from the stored lockup;
+ *   three deep, and the reveal is recorded before the request;
  * - a signed claim is rebroadcast each block until our wallet holds
- *   it confirmed, when the swap's row is removed.
+ *   it confirmed, when the swap's row is removed;
+ * - a provider that keeps the preimage and refuses to sign gets a
+ *   script-path claim in the same block: our signature, the
+ *   preimage, the claim leaf and its control block, valid for the
+ *   lockup output; it is rebroadcast without asking the provider.
  */
 
 namespace {
@@ -354,11 +360,18 @@ int main() {
 	/* The lockup output key: the aggregate of both keys, tweaked
 	 * with the tree root.  */
 	auto output_key = Secp256k1::XonlyPubKey();
+	auto output_key_odd = bool();
 	{
 		auto session = ProviderSession(provider_keys, client_pub);
 		session.apply_xonly_tweak(roothash);
 		output_key = session.get_output_key();
+		output_key_odd = session.get_output_key_parity();
 	}
+	auto const internal_key = Secp256k1::Musig::Session::pubkey_aggregate(
+		{provider_keys.pub(), client_pub}
+	);
+	auto const refund_leaf_hash = Secp256k1::TapTree::leaf_hash(refundScript);
+	auto const claim_leaf_hash = Secp256k1::TapTree::leaf_hash(claimScript);
 	auto const lockup_scriptPubKey = Bitcoin::pk_to_scriptpk(output_key);
 
 	auto lockup_tx = Bitcoin::Tx();
@@ -533,53 +546,11 @@ int main() {
 		tx.commit();
 
 		/* Two blocks later the lockup is three deep, and the
-		 * provider refuses to co-sign.  The request went out, so
-		 * the reveal is on record; nothing was broadcast.  */
-		provider.fail = true;
-		auto handler = Boltz::Detail::ClaimTxHandler::create(
-			signer, db, env, api, provider, random
-		      , "swapA", blockheight + 2, lockup_tx
-		);
-		return handler->run();
-	}).then([&]() {
-		assert(provider.path_seen == "/v2/swap/reverse/swapA/claim");
-		assert(provider.preimage_seen == std::string(real_preimage));
-		assert(!broadcast_called);
-		return db.transact();
-	}).then([&](Sqlite3::Tx tx) {
-		auto rows = tx.query(R"QRY(
-		SELECT preimageRevealed
-		     , COALESCE(lockupTxid, '')
-		     , lockupTx
-		     , claimTx
-		     , lockedUp
-		  FROM "BoltzServiceFactory_rsub"
-		 WHERE apiAccess = :apiAccess
-		   AND swapId = 'swapA'
-		     ;
-		)QRY")
-			.bind(":apiAccess", api)
-			.execute();
-		auto found = false;
-		for (auto& r : rows) {
-			found = true;
-			assert(r.get<bool>(0));
-			assert(r.get<std::string>(1) == std::string(lockup_tx.get_txid()));
-			assert(r.get<std::string>(2) == std::string(lockup_tx));
-			assert(r.get<std::string>(3) == "");
-			assert(!r.get<bool>(4));
-		}
-		assert(found);
-		tx.commit();
-
-		/* Next block the provider co-signs.  The retry works
-		 * from the stored lockup, not from what the caller
-		 * passes, and asks again with new nonces.  */
-		provider.fail = false;
+		 * provider co-signs.  */
 		provider.path_seen = "";
 		auto handler = Boltz::Detail::ClaimTxHandler::create(
 			signer, db, env, api, provider, random
-		      , "swapA", blockheight + 3, Bitcoin::Tx()
+		      , "swapA", blockheight + 2, lockup_tx
 		);
 		return handler->run();
 	}).then([&]() {
@@ -622,13 +593,17 @@ int main() {
 
 		return db.transact();
 	}).then([&](Sqlite3::Tx tx) {
-		/* The claimed swap was stamped with the signed claim,
-		 * and the lockup's block was recorded by the search.  */
+		/* The claimed swap was stamped with the reveal, the
+		 * lockup it was for, and the signed claim; the lockup's
+		 * block was recorded by the search.  */
 		auto stamped = tx.query(R"QRY(
 		SELECT lockedUp
 		     , claimTx
 		     , claimFeerate
 		     , COALESCE(lockupConfirmedHeight, 0)
+		     , preimageRevealed
+		     , COALESCE(lockupTxid, '')
+		     , lockupTx
 		  FROM "BoltzServiceFactory_rsub"
 		 WHERE apiAccess = :apiAccess
 		   AND swapId = 'swapA'
@@ -643,6 +618,9 @@ int main() {
 			assert(r.get<std::string>(1) == std::string(broadcast_tx));
 			assert(r.get<std::uint32_t>(2) == 1000);
 			assert(r.get<std::uint32_t>(3) == blockheight);
+			assert(r.get<bool>(4));
+			assert(r.get<std::string>(5) == std::string(lockup_tx.get_txid()));
+			assert(r.get<std::string>(6) == std::string(lockup_tx));
 		}
 		assert(found);
 
@@ -687,7 +665,7 @@ int main() {
 		auto signed_claim = broadcast_tx;
 		auto handler = Boltz::Detail::ClaimTxHandler::create(
 			signer, db, env, api, provider, random
-		      , "swapA", blockheight + 4, Bitcoin::Tx()
+		      , "swapA", blockheight + 3, Bitcoin::Tx()
 		);
 		return handler->run().then([&, signed_claim]() {
 			assert(broadcast_called);
@@ -705,7 +683,7 @@ int main() {
 		broadcast_called = false;
 		auto handler = Boltz::Detail::ClaimTxHandler::create(
 			signer, db, env, api, provider, random
-		      , "swapA", blockheight + 5, Bitcoin::Tx()
+		      , "swapA", blockheight + 4, Bitcoin::Tx()
 		);
 		return handler->run();
 	}).then([&]() {
@@ -732,7 +710,7 @@ int main() {
 		env.confirmed.insert(std::string(broadcast_tx.get_txid()) + ":0");
 		auto handler = Boltz::Detail::ClaimTxHandler::create(
 			signer, db, env, api, provider, random
-		      , "swapA", blockheight + 6, Bitcoin::Tx()
+		      , "swapA", blockheight + 5, Bitcoin::Tx()
 		);
 		return handler->run();
 	}).then([&]() {
@@ -754,7 +732,122 @@ int main() {
 		for (auto& r : rest)
 			assert(r.get<int>(0) == 2);
 		tx.commit();
-		return Ev::lift(0);
+
+		/* A new swap on the same material, against a provider
+		 * that keeps the preimage and refuses to co-sign.  */
+		return insert_swap(api, "swapC");
+	}).then([&]() {
+		provider.fail = true;
+		provider.path_seen = "";
+		provider.preimage_seen = "";
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapC", blockheight + 7, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		/* The provider was asked first and got the preimage;
+		 * the claim went out anyway, through the script path.  */
+		assert(provider.path_seen == "/v2/swap/reverse/swapC/claim");
+		assert(provider.preimage_seen == std::string(real_preimage));
+		assert(broadcast_called);
+		assert(broadcast_tx.inputs.size() == 1);
+		assert(broadcast_tx.inputs[0].prevTxid == lockup_tx.get_txid());
+		assert(broadcast_tx.inputs[0].prevOut == 0);
+		assert(broadcast_tx.outputs.size() == 1);
+		assert(broadcast_tx.outputs[0].scriptPubKey
+		    == Bitcoin::addr_to_scriptPubKey(addr));
+
+		/* Witness: our signature, the preimage, the claim leaf,
+		 * the control block.  */
+		auto const& witness = broadcast_tx.inputs[0].witness.witnesses;
+		assert(witness.size() == 4);
+		assert(witness[0].size() == 64);
+		assert(witness[1].size() == 32);
+		assert(std::equal( witness[1].begin(), witness[1].end()
+				 , preimage_buf
+				 ));
+		assert(witness[2] == claimScript);
+		assert(witness[3].size() == 65);
+		assert(witness[3][0] == std::uint8_t(0xc0 | (output_key_odd ? 1 : 0)));
+		std::uint8_t internal_buf[32];
+		internal_key.to_buffer(internal_buf);
+		assert(std::equal( witness[3].begin() + 1, witness[3].begin() + 33
+				 , internal_buf
+				 ));
+		assert(std::equal( witness[3].begin() + 33, witness[3].end()
+				 , refund_leaf_hash.begin()
+				 ));
+
+		/* The signature is over the script-path sighash, which
+		 * commits to the claim leaf, and verifies for our key,
+		 * the one in that leaf.  */
+		auto prefixed = std::vector<std::uint8_t>(1);
+		prefixed[0] = std::uint8_t(lockup_scriptPubKey.size());
+		prefixed.insert( prefixed.end()
+			       , lockup_scriptPubKey.begin()
+			       , lockup_scriptPubKey.end()
+			       );
+		auto extension = Bitcoin::TapscriptExtension();
+		extension.leaf_hash.from_buffer(claim_leaf_hash.data());
+		auto sighash = Bitcoin::p2tr_sighash
+			( broadcast_tx
+			, Bitcoin::SIGHASH_DEFAULT
+			, 0
+			, std::vector<Ln::Amount>{amount}
+			, std::vector<std::vector<std::uint8_t>>{prefixed}
+			, extension
+			);
+		std::uint8_t sig_buf[64];
+		std::copy(witness[0].begin(), witness[0].end(), sig_buf);
+		auto sig = Secp256k1::SchnorrSig::from_buffer(sig_buf);
+		assert(sig.valid( Secp256k1::XonlyPubKey::from_ecdsa_pk(client_pub)
+				, sighash
+				));
+		/* The script path pays for its larger witness.  */
+		assert(broadcast_tx.outputs[0].amount < amount);
+
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto stamped = tx.query(R"QRY(
+		SELECT preimageRevealed
+		     , lockedUp
+		     , claimTx
+		     , claimFeerate
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapC'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : stamped) {
+			found = true;
+			assert(r.get<bool>(0));
+			assert(r.get<bool>(1));
+			assert(r.get<std::string>(2) == std::string(broadcast_tx));
+			assert(r.get<std::uint32_t>(3) == 1000);
+		}
+		assert(found);
+		tx.commit();
+
+		/* Next block the stored script-path claim is rebroadcast
+		 * and the provider is not asked.  */
+		broadcast_called = false;
+		provider.path_seen = "";
+		auto signed_claim = broadcast_tx;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapC", blockheight + 8, Bitcoin::Tx()
+		);
+		return handler->run().then([&, signed_claim]() {
+			assert(broadcast_called);
+			assert(broadcast_tx == signed_claim);
+			assert(provider.path_seen == "");
+			return Ev::lift(0);
+		});
 	});
 
 	return Ev::start(code);

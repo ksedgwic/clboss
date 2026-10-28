@@ -78,6 +78,10 @@ public:
 	Sha256::Hash get_sighash();
 	XonlyPubKey get_internal_key();
 	XonlyPubKey const& get_output_key();
+	/* The parity of the output key after the tweak: true when
+	 * its y coordinate is odd.  A script-path control block
+	 * carries this bit.  */
+	bool get_output_key_parity();
 };
 
 } }
