@@ -35,6 +35,16 @@ bool Block::contains(Bitcoin::TxId const& txid) const {
 	});
 }
 
+Tx const* Block::spender( Bitcoin::TxId const& txid
+			, std::uint32_t outnum
+			) const {
+	for (auto const& tx : txs)
+		for (auto const& in : tx.inputs)
+			if (in.prevTxid == txid && in.prevOut == outnum)
+				return &tx;
+	return nullptr;
+}
+
 }
 
 std::ostream& operator<<(std::ostream& os, Bitcoin::Block const& v) {

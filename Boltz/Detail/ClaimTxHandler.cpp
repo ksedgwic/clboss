@@ -6,6 +6,7 @@
 #include"Boltz/Detail/swaptree.hpp"
 #include"Boltz/EnvIF.hpp"
 #include"Bitcoin/Block.hpp"
+#include"Bitcoin/addr_to_scriptPubKey.hpp"
 #include"Bitcoin/pubkey_to_scriptPubKey.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/coroutine.hpp"
@@ -41,6 +42,10 @@ auto const search_floor_blocks = std::uint32_t(288);
  * blocks below where it stopped, so that a reorganization no
  * deeper than this cannot move the lockup out of its sight.  */
 auto const search_margin_blocks = std::uint32_t(6);
+/* A revealed swap whose lockup is still unspent this many blocks
+ * after its timeout is given up: the same horizon the Swapper
+ * modules write a swap off at.  */
+auto const give_up_blocks = std::uint32_t(432);
 
 }
 
@@ -156,6 +161,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 	     , COALESCE(lockupOut, 0) -- 13
 	     , claimTx -- 14
 	     , claimFeerate -- 15
+	     , COALESCE(spendSearchedHeight, 0) -- 16
 	  FROM "BoltzServiceFactory_rsub"
 	 WHERE apiAccess = :apiAccess
 	   AND swapId = :swapId
@@ -184,6 +190,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 		db_lockupOut = r.get<std::uint32_t>(13);
 		claimTxHex = r.get<std::string>(14);
 		claimFeerate = r.get<std::uint32_t>(15);
+		spendSearchedHeight = r.get<std::uint32_t>(16);
 	}
 	tx.commit();
 
@@ -637,17 +644,59 @@ Ev::Io<void> ClaimTxHandler::track_claim() {
 		co_await logd( "Claim " + std::string(claim_txid)
 			     + " confirmed; swap done."
 			     );
-		auto tx = co_await db.transact();
-		tx.query(R"QRY(
-		DELETE FROM "BoltzServiceFactory_rsub"
-		 WHERE apiAccess = :apiAccess
-		   AND swapId = :swapId
-		     ;
-		)QRY")
-			.bind(":apiAccess", api_endpoint)
-			.bind(":swapId", swapId)
-			.execute();
-		tx.commit();
+		co_await remove_row();
+		co_return;
+	}
+
+	/* The lockup output can be spent by a claim of ours or, from
+	 * the timeout on, by the provider's refund.  A spend in our
+	 * blocks that pays our address is our claim, whichever
+	 * version of it got mined; any other spend is the loss of
+	 * the swap.  Either way the swap is over.  */
+	auto spend = co_await find_lockup_spend();
+	if (spend) {
+		auto ours = Bitcoin::addr_to_scriptPubKey(destinationAddress);
+		auto pays_us = false;
+		for (auto const& out : spend->tx.outputs)
+			if (out.scriptPubKey == ours)
+				pays_us = true;
+		auto spend_txid = std::string(spend->tx.get_txid());
+		if (pays_us)
+			co_await logd( "Claim " + spend_txid
+				     + " confirmed in block "
+				     + std::to_string(spend->height)
+				     + "; swap done."
+				     );
+		else
+			co_await loge( "Lockup " + std::string(lockup_txid)
+				     + ":" + std::to_string(lockupOut)
+				     + " was spent in block "
+				     + std::to_string(spend->height)
+				     + " by " + spend_txid
+				     + ", which does not pay our address; "
+				       "the swap's funds are lost."
+				     );
+		co_await remove_row();
+		co_return;
+	}
+
+	/* From the timeout on the provider can take the lockup back,
+	 * but until it does our claim stays valid: the claim leaf
+	 * has no timelock.  So the swap goes on past its timeout,
+	 * and is given up only when nothing has spent the lockup
+	 * long after.  */
+	if (blockheight == timeoutBlockheight)
+		co_await loge( "Reached the timeout with the claim "
+			       "unconfirmed; the provider can refund the "
+			       "lockup from here.  Still claiming."
+			     );
+	if (blockheight >= timeoutBlockheight + give_up_blocks) {
+		co_await loge( std::to_string(give_up_blocks)
+			     + " blocks past the timeout with the lockup "
+			       "unspent and no claim confirmed; giving up "
+			       "on the swap."
+			     );
+		co_await remove_row();
 		co_return;
 	}
 
@@ -658,6 +707,81 @@ Ev::Io<void> ClaimTxHandler::track_claim() {
 		     + " not yet confirmed; rebroadcast "
 		     + (accepted ? "accepted." : "not accepted.")
 		     );
+}
+
+Ev::Io<std::unique_ptr<ClaimTxHandler::LockupSpend>>
+ClaimTxHandler::find_lockup_spend() {
+	/* A spend can be in the lockup's own block at the earliest.
+	 * Blocks already searched are not searched again.  */
+	auto from = lockupConfirmedHeight;
+	if (from == 0)
+		from = createdHeight;
+	if (from == 0)
+		from = blockheight;
+	if (spendSearchedHeight >= from)
+		from = spendSearchedHeight + 1;
+
+	auto found = std::unique_ptr<LockupSpend>();
+	auto searched = spendSearchedHeight;
+	for (auto h = from; h <= blockheight; ++h) {
+		auto hex = co_await env.get_block(h);
+		if (hex.empty())
+			/* Our node does not have that block yet.  */
+			break;
+		auto block = Bitcoin::Block();
+		auto parse_error = std::string();
+		try {
+			block = Bitcoin::Block(hex);
+		} catch (std::exception const& e) {
+			parse_error = e.what();
+		}
+		if (!parse_error.empty()) {
+			co_await loge( "Block " + std::to_string(h)
+				     + " did not parse: " + parse_error
+				     );
+			break;
+		}
+		searched = h;
+		auto tx = block.spender(lockup_txid, std::uint32_t(lockupOut));
+		if (tx) {
+			found = Util::make_unique<LockupSpend>();
+			found->height = h;
+			found->tx = *tx;
+			break;
+		}
+	}
+
+	if (searched != spendSearchedHeight) {
+		auto tx = co_await db.transact();
+		tx.query(R"QRY(
+		UPDATE "BoltzServiceFactory_rsub"
+		   SET spendSearchedHeight = :searched
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = :swapId
+		     ;
+		)QRY")
+			.bind(":searched", searched)
+			.bind(":apiAccess", api_endpoint)
+			.bind(":swapId", swapId)
+			.execute();
+		tx.commit();
+		spendSearchedHeight = searched;
+	}
+	co_return found;
+}
+
+Ev::Io<void> ClaimTxHandler::remove_row() {
+	auto tx = co_await db.transact();
+	tx.query(R"QRY(
+	DELETE FROM "BoltzServiceFactory_rsub"
+	 WHERE apiAccess = :apiAccess
+	   AND swapId = :swapId
+	     ;
+	)QRY")
+		.bind(":apiAccess", api_endpoint)
+		.bind(":swapId", swapId)
+		.execute();
+	tx.commit();
 }
 
 }}

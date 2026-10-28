@@ -58,6 +58,7 @@ private:
 				       , Column{"refundPubkey", "TEXT NOT NULL DEFAULT ''"}
 				       , Column{"createdHeight", "INTEGER NOT NULL DEFAULT 0"}
 				       , Column{"lockupSearchedHeight", "INTEGER NULL"}
+				       , Column{"spendSearchedHeight", "INTEGER NULL"}
 				       , Column{"preimageRevealed", "INTEGER NOT NULL DEFAULT 0"}
 				       , Column{"lockupTx", "TEXT NOT NULL DEFAULT ''"}
 				       , Column{"claimTx", "TEXT NOT NULL DEFAULT ''"}
@@ -152,6 +153,11 @@ private:
 			     -- were searched for the lockup transaction
 			     -- without finding it; NULL when none were.
 			     , lockupSearchedHeight INTEGER NULL
+			     -- Blocks up to and including this height
+			     -- were searched, once the preimage was out,
+			     -- for a spend of the lockup output without
+			     -- finding one; NULL when none were.
+			     , spendSearchedHeight INTEGER NULL
 
 			     -- We generated these on seeing that
 			     -- the transaction from the service

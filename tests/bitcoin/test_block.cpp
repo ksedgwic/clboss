@@ -49,6 +49,23 @@ int main() {
 		"0000000000000000000000000000000000000000000000000000000000000001"
 	))));
 
+	/* The coinbase spends nothing; a block with a transaction
+	 * spending an output names that transaction, for that
+	 * output alone.  */
+	assert(!block.spender(txid, 0));
+	auto spend = Bitcoin::Tx();
+	spend.inputs.resize(1);
+	spend.inputs[0].prevTxid = txid;
+	spend.inputs[0].prevOut = 1;
+	spend.outputs.resize(1);
+	auto spending_block = Bitcoin::Block();
+	spending_block.txs.push_back(block.txs[0]);
+	spending_block.txs.push_back(spend);
+	assert(!spending_block.spender(txid, 0));
+	auto found = spending_block.spender(txid, 1);
+	assert(found);
+	assert(found->get_txid() == spend.get_txid());
+
 	/* Serializing gives the bytes back.  */
 	auto bos = std::ostringstream();
 	bos << block;

@@ -136,6 +136,7 @@ CREATE TABLE "BoltzServiceFactory_rsub"
      , lockupOut INTEGER NULL
      , lockupConfirmedHeight INTEGER NULL
      , lockupSearchedHeight INTEGER NULL
+     , spendSearchedHeight INTEGER NULL
      , preimageRevealed INTEGER NOT NULL DEFAULT 0
      , lockupTx TEXT NOT NULL DEFAULT ''
      , claimTx TEXT NOT NULL DEFAULT ''
@@ -190,7 +191,13 @@ int main() {
 	auto signed_claim = Bitcoin::Tx();
 	signed_claim.inputs.resize(1);
 	signed_claim.outputs.resize(1);
-	auto insert = [&](Sqlite3::Tx& tx, std::string swapId, bool revealed) {
+	/* Another signed claim, for a revealed swap already past its
+	 * timeout.  */
+	auto late_claim = signed_claim;
+	late_claim.nLockTime = 1;
+	auto insert = [&]( Sqlite3::Tx& tx, std::string swapId, bool revealed
+			 , std::uint32_t timeout, Bitcoin::Tx const& claim
+			 ) {
 		tx.query(R"QRY(
 		INSERT INTO "BoltzServiceFactory_rsub"
 		     ( apiAccess, tweak, preimage, destinationAddress, swapId
@@ -204,14 +211,15 @@ int main() {
 		     , '0303030303030303030303030303030303030303030303030303030303030303'
 		     , 'bc1qg430dgu75qvphu8nn3kvcp3yg2km2tavpc8lqs', :swapId
 		     , '82', '20', :refundPubkey
-		     , 1000, 100000, 90
+		     , :timeout, 100000, 90
 		     , :revealed, :revealed, :claimTx, ''
 		     );
 		)QRY")
 			.bind(":swapId", swapId)
 			.bind(":refundPubkey", refund_key)
+			.bind(":timeout", timeout)
 			.bind(":revealed", revealed ? 1 : 0)
-			.bind(":claimTx", revealed ? std::string(signed_claim) : std::string())
+			.bind(":claimTx", revealed ? std::string(claim) : std::string())
 			.execute();
 	};
 
@@ -219,9 +227,14 @@ int main() {
 		return db.transact();
 	}).then([&](Sqlite3::Tx tx) {
 		tx.query_execute(schema);
-		insert(tx, "revealed", true);
-		insert(tx, "settled", false);
-		insert(tx, "expired", false);
+		insert(tx, "revealed", true, 1000, signed_claim);
+		insert(tx, "settled", false, 1000, signed_claim);
+		insert(tx, "expired", false, 1000, signed_claim);
+		/* Two swaps past their timeout: one with the preimage
+		 * out, which stays and is tracked, one without, which
+		 * goes without a question to the provider.  */
+		insert(tx, "revealed_late", true, 50, late_claim);
+		insert(tx, "late", false, 50, signed_claim);
 		tx.commit();
 
 		/* First block: our wallet does not hold the claim yet.  */
@@ -234,8 +247,13 @@ int main() {
 		assert(count_swaps(tx, "revealed") == 1);
 		assert(count_swaps(tx, "settled") == 1);
 		assert(count_swaps(tx, "expired") == 0);
-		for (auto const& p : provider.paths_seen)
+		assert(count_swaps(tx, "revealed_late") == 1);
+		assert(count_swaps(tx, "late") == 0);
+		for (auto const& p : provider.paths_seen) {
 			assert(p != "/v2/swap/revealed");
+			assert(p != "/v2/swap/revealed_late");
+			assert(p != "/v2/swap/late");
+		}
 		assert(provider.paths_seen.size() == 2);
 		tx.commit();
 
@@ -247,8 +265,22 @@ int main() {
 	}).then([&](Sqlite3::Tx tx) {
 		assert(count_swaps(tx, "revealed") == 0);
 		assert(count_swaps(tx, "settled") == 1);
+		/* The late one has another claim, still unconfirmed.  */
+		assert(count_swaps(tx, "revealed_late") == 1);
 		for (auto const& p : provider.paths_seen)
 			assert(p != "/v2/swap/revealed");
+		tx.commit();
+
+		/* Long after its timeout, with the lockup still unspent
+		 * as far as our blocks show, the late swap is given up.  */
+		return service.on_block(50 + 432);
+	}).then([&]() {
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		assert(count_swaps(tx, "revealed_late") == 0);
+		assert(count_swaps(tx, "settled") == 1);
+		for (auto const& p : provider.paths_seen)
+			assert(p != "/v2/swap/revealed_late");
 		tx.commit();
 		return Ev::lift(0);
 	});

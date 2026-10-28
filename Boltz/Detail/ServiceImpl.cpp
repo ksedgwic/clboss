@@ -30,30 +30,15 @@ Ev::Io<void> ServiceImpl::loge(std::string msg) {
 
 Ev::Io<void> ServiceImpl::on_block(std::uint32_t blockheight) {
 	return db.transact().then([this, blockheight](Sqlite3::Tx dbtx) {
-		/* Swaps dropped at their timeout with the preimage out and
-		 * no claim confirmed: the provider has our payment and may
-		 * now take the lockup back.  */
-		auto lost_rows = dbtx.query(R"QRY(
-		SELECT swapId FROM "BoltzServiceFactory_rsub"
-		 WHERE apiAccess = :apiAccess
-		   AND timeoutBlockheight <= :blockheight
-		   AND preimageRevealed <> 0
-		     ;
-		)QRY")
-			.bind(":apiAccess", label)
-			.bind(":blockheight", blockheight)
-			.execute();
-		auto lost = std::vector<std::string>();
-		for (auto& r : lost_rows)
-			lost.push_back(r.get<std::string>(0));
-
-		/* Filter out rows we created that have completely finished
-		 * the locktime.
-		 */
+		/* A swap past its timeout with the preimage still here
+		 * is over: the payment fails back to us and the provider
+		 * refunds itself.  One whose preimage is out stays: the
+		 * claim handler tracks it until the lockup is spent.  */
 		dbtx.query(R"QRY(
 		DELETE FROM "BoltzServiceFactory_rsub"
 		 WHERE apiAccess = :apiAccess
 		   AND timeoutBlockheight <= :blockheight
+		   AND preimageRevealed = 0
 		     ;
 		)QRY")
 			.bind(":apiAccess", label)
@@ -74,19 +59,7 @@ Ev::Io<void> ServiceImpl::on_block(std::uint32_t blockheight) {
 
 		dbtx.commit();
 
-		auto act = Ev::lift();
-		for (auto const& id : lost)
-			act += loge( "\"" + id + "\": reached its timeout with "
-				     "the preimage revealed and no confirmed "
-				     "claim; the provider may now refund the "
-				     "lockup."
-				   );
-		auto p_swapIds = std::make_shared<std::vector<std::string>>(
-			std::move(swapIds)
-		);
-		return std::move(act).then([p_swapIds]() {
-			return Ev::lift(std::move(*p_swapIds));
-		});
+		return Ev::lift(std::move(swapIds));
 	}).then([this](std::vector<std::string> swapIds) {
 
 		/* Do not pollute log if nothing to swap anyway.  */

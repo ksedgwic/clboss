@@ -62,7 +62,10 @@
  * - a provider that keeps the preimage and refuses to sign gets a
  *   script-path claim in the same block: our signature, the
  *   preimage, the claim leaf and its control block, valid for the
- *   lockup output; it is rebroadcast without asking the provider.
+ *   lockup output; it is rebroadcast without asking the provider;
+ * - once revealed, the swap ends when our blocks show the lockup
+ *   spent: by a transaction paying our address, done; by any
+ *   other, lost; or when nothing spends it long after the timeout.
  */
 
 namespace {
@@ -275,6 +278,7 @@ CREATE TABLE "BoltzServiceFactory_rsub"
      , lockupOut INTEGER NULL
      , lockupConfirmedHeight INTEGER NULL
      , lockupSearchedHeight INTEGER NULL
+     , spendSearchedHeight INTEGER NULL
      , preimageRevealed INTEGER NOT NULL DEFAULT 0
      , lockupTx TEXT NOT NULL DEFAULT ''
      , claimTx TEXT NOT NULL DEFAULT ''
@@ -393,7 +397,18 @@ int main() {
 		auto bytes = os.str();
 		return Util::Str::hexdump(bytes.data(), bytes.size());
 	};
-	auto const lockup_block_hex = block_hex({lockup_tx});
+	/* Two more lockups of the same shape for the swaps whose
+	 * spend tracking is tested; each swap needs its own output
+	 * for the search to find spends of.  */
+	auto lockup_tx2 = lockup_tx;
+	lockup_tx2.inputs[0].prevTxid = Bitcoin::TxId(std::string(
+		"0505050505050505050505050505050505050505050505050505050505050505"
+	));
+	auto lockup_tx3 = lockup_tx;
+	lockup_tx3.inputs[0].prevTxid = Bitcoin::TxId(std::string(
+		"0606060606060606060606060606060606060606060606060606060606060606"
+	));
+	auto const lockup_block_hex = block_hex({lockup_tx, lockup_tx2, lockup_tx3});
 	auto const empty_block_hex = block_hex({});
 
 	auto broadcast_called = bool(false);
@@ -846,8 +861,125 @@ int main() {
 			assert(broadcast_called);
 			assert(broadcast_tx == signed_claim);
 			assert(provider.path_seen == "");
-			return Ev::lift(0);
+			return Ev::lift(signed_claim);
 		});
+	}).then([&](Bitcoin::Tx signed_claim) {
+		/* The claim is mined, but our wallet has not reported it:
+		 * the search of our blocks finds the spend of the lockup
+		 * paying our address, and the swap is done.  */
+		for (auto h = blockheight + 1; h <= blockheight + 12; ++h)
+			env.blocks[h] = empty_block_hex;
+		env.blocks[blockheight + 9] = block_hex({signed_claim});
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapC", blockheight + 9, Bitcoin::Tx()
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		assert(provider.path_seen == "");
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto gone = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapC'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		for (auto& r : gone)
+			assert(r.get<int>(0) == 0);
+		tx.commit();
+
+		/* A swap on the second lockup, claimed through the
+		 * script path, whose lockup the provider then spends
+		 * another way: the loss is logged and the row goes.  */
+		return insert_swap(api, "swapD");
+	}).then([&]() {
+		provider.path_seen = "";
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapD", blockheight + 10, lockup_tx2
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(broadcast_called);
+		assert(broadcast_tx.inputs[0].prevTxid == lockup_tx2.get_txid());
+		assert(broadcast_tx.inputs[0].witness.witnesses.size() == 4);
+
+		auto refund = Bitcoin::Tx();
+		refund.inputs.resize(1);
+		refund.inputs[0].prevTxid = lockup_tx2.get_txid();
+		refund.inputs[0].prevOut = 0;
+		refund.outputs.resize(1);
+		refund.outputs[0].scriptPubKey = lockup_scriptPubKey;
+		refund.outputs[0].amount = amount - Ln::Amount::sat(1000);
+		env.blocks[blockheight + 11] = block_hex({refund});
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapD", blockheight + 11, Bitcoin::Tx()
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto gone = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapD'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		for (auto& r : gone)
+			assert(r.get<int>(0) == 0);
+		auto rest = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub";
+		)QRY").execute();
+		for (auto& r : rest)
+			assert(r.get<int>(0) == 2);
+		tx.commit();
+
+		/* A swap on the third lockup, claimed, then nothing
+		 * spends the lockup for long after the timeout: the
+		 * swap is given up.  */
+		return insert_swap(api, "swapE");
+	}).then([&]() {
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapE", blockheight + 12, lockup_tx3
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(broadcast_called);
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapE", timeout + 432, Bitcoin::Tx()
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto gone = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapE'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		for (auto& r : gone)
+			assert(r.get<int>(0) == 0);
+		tx.commit();
+		return Ev::lift(0);
 	});
 
 	return Ev::start(code);
