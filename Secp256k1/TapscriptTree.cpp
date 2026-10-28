@@ -36,6 +36,18 @@ encoded_leaf(std::vector<std::uint8_t> const& script) {
 	return leafbuf;
 }
 
+std::vector<std::uint8_t>
+leaf_hash(std::vector<std::uint8_t> const& script) {
+	auto leaf = encoded_leaf(script);
+	auto hash = std::vector<std::uint8_t>(32);
+	Secp256k1::tagged_hash( &hash[0]
+			      , leaf.data()
+			      , leaf.size()
+			      , Tag::LEAF
+			      );
+	return hash;
+}
+
 LeafPair::LeafPair( std::vector<std::uint8_t> const& script0
 				  , std::vector<std::uint8_t> const& script1 )
 					: a(std::vector<std::uint8_t>(32))

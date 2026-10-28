@@ -109,7 +109,6 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 		, 0
 		, std::vector<Ln::Amount>{lockup_amount}
 		, std::vector<std::vector<std::uint8_t>>{prefixed}
-		, Bitcoin::KEYPATH
 		);
 }
 
