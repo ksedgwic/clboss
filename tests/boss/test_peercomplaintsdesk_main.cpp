@@ -20,6 +20,7 @@
 #include"Net/Fd.hpp"
 #include"Net/SocketFd.hpp"
 #include"S/Bus.hpp"
+#include"Secp256k1/KeyPair.hpp"
 #include"Secp256k1/PrivKey.hpp"
 #include"Secp256k1/PubKey.hpp"
 #include"Secp256k1/Signature.hpp"
@@ -246,6 +247,10 @@ public:
 	}
 	Sha256::Hash get_privkey_salted_hash(std::uint8_t salt[32]) override {
 		return Sha256::fun(salt, 32);
+	}
+	Secp256k1::KeyPair
+	get_keypair_tweak(Secp256k1::PrivKey const&) override {
+		return Secp256k1::KeyPair(privkey);
 	}
 };
 

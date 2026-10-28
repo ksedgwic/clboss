@@ -30,13 +30,15 @@ Ev::Io<void> ServiceImpl::loge(std::string msg) {
 
 Ev::Io<void> ServiceImpl::on_block(std::uint32_t blockheight) {
 	return db.transact().then([this, blockheight](Sqlite3::Tx dbtx) {
-		/* Filter out rows we created that have completely finished
-		 * the locktime.
-		 */
+		/* A swap past its timeout with the preimage still here
+		 * is over: the payment fails back to us and the provider
+		 * refunds itself.  One whose preimage is out stays: the
+		 * claim handler tracks it until the lockup is spent.  */
 		dbtx.query(R"QRY(
 		DELETE FROM "BoltzServiceFactory_rsub"
 		 WHERE apiAccess = :apiAccess
 		   AND timeoutBlockheight <= :blockheight
+		   AND preimageRevealed = 0
 		     ;
 		)QRY")
 			.bind(":apiAccess", label)
@@ -94,19 +96,45 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 				       , std::string swapId
 				       ) {
 	auto p_swapId = std::make_shared<std::string>(std::move(swapId));
-	auto parms = Json::Out()
-		.start_object()
-			.field("id", *p_swapId)
-		.end_object();
-	return conn->api( "/swapstatus"
-			, Util::make_unique<Json::Out>(std::move(parms))
+	return db.transact().then([this, p_swapId](Sqlite3::Tx tx) {
+		auto fetch = tx.query(R"QRY(
+		SELECT preimageRevealed FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = :swapId
+		     ;
+		)QRY")
+			.bind(":apiAccess", label)
+			.bind(":swapId", *p_swapId)
+			.execute();
+		auto revealed = false;
+		for (auto& r : fetch)
+			revealed = r.get<bool>(0);
+		tx.commit();
+		return Ev::lift(revealed);
+	}).then([this, blockheight, p_swapId](bool revealed) {
+		/* Once the preimage is out the provider's status is
+		 * advisory: the claim is tracked from our own node until
+		 * it is confirmed there.  The handler works from the
+		 * lockup recorded at the reveal.  */
+		if (revealed)
+			return swap_onchain( p_swapId, blockheight
+					   , std::make_shared<Bitcoin::Tx>()
+					   );
+		return swap_poll(blockheight, p_swapId);
+	});
+}
+
+Ev::Io<void> ServiceImpl::swap_poll( std::uint32_t blockheight
+				   , std::shared_ptr<std::string> p_swapId
+				   ) {
+	return conn->api( "/v2/swap/" + *p_swapId, nullptr
 			).then([this, p_swapId](Jsmn::Object sres) {
 			/* Save, then log.  */
 			auto tmp_sres = std::make_shared<Jsmn::Object>(
 				std::move(sres)
 			);
 			auto os = std::ostringstream();
-			os << "/swapstatus \"" << *p_swapId << "\" => "
+			os << "/v2/swap/" << *p_swapId << " => "
 			   << *tmp_sres
 			    ;
 			return logd(os.str()).then([tmp_sres]() {
@@ -157,12 +185,17 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 				return Ev::lift(kont);
 			}
 
-			/* FIXME: we should ignore this state, and instead
-			 * monitor the txout moving from unspent to spent.
-			 */
+			/* Only the preimage settles the invoice, and this
+			 * node has not sent it: a revealed swap does not
+			 * come here.  Nothing to finish; the row stays
+			 * until its timeout.  */
 			if (status == "invoice.settled") {
 				kont = [this, p_swapId]() {
-					return swap_finished(p_swapId);
+					return loge( "\"" + *p_swapId + "\": the "
+						     "provider reports the invoice "
+						     "settled, but this node never "
+						     "revealed the preimage."
+					   );
 				};
 				return Ev::lift(kont);
 			}
@@ -189,7 +222,7 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 		} catch (Jsmn::TypeError const& t) {
 			/* Log invalid JSON.  */
 			auto os = std::ostringstream();
-			os << "/swapstatus \"" << *p_swapId << "\" "
+			os << "/v2/swap/" << *p_swapId << " "
 			   << "returned invalid JSON: "
 			   << sres
 			    ;
@@ -204,8 +237,8 @@ Ev::Io<void> ServiceImpl::swap_on_block( std::uint32_t blockheight
 		auto msg = std::make_shared<std::string>(e.what());
 		auto kont = std::function<Ev::Io<void>()>();
 		kont = [this, p_swapId, msg]() {
-			return loge( std::string("/swapstatus \"")
-				   + *p_swapId + "\" not accessible: "
+			return loge( std::string("/v2/swap/")
+				   + *p_swapId + " not accessible: "
 				   + *msg
 				   );
 		};
@@ -230,6 +263,8 @@ ServiceImpl::swap_onchain( std::shared_ptr<std::string> swapId
 			, db
 			, env
 			, label
+			, *conn
+			, random
 			, *swapId
 			, blockheight
 			, std::move(*tx)
@@ -300,7 +335,7 @@ ServiceImpl::swap( Ln::Amount offchainAmount
 
 Ev::Io<std::unique_ptr<Ln::Amount>>
 ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
-	return conn->api("/getpairs", nullptr
+	return conn->api("/v2/swap/reverse", nullptr
 			).then([this, offchainAmount](Jsmn::Object res) {
 
 		auto rate = double();
@@ -309,41 +344,12 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 		auto minimal = Ln::Amount();
 		auto maximal = Ln::Amount();
 
+		/* The pairs are keyed by the asset sent on Lightning,
+		 * then by the asset received onchain.  A pair the
+		 * provider does not offer is simply absent, which the
+		 * TypeError below reports.  */
 		try {
-			auto info = res["info"];
-			for (auto i = std::size_t(0); i < info.size(); ++i) {
-				auto inf = info[i];
-				if (!inf.is_string())
-					continue;
-				if (std::string(inf) == "prepay.minerfee") {
-					/* Not supported yet.  */
-					return loge("prepay.minerfee needed "
-						    "by server, "
-						    "not supported by client."
-						   ).then([]() {
-						return Ev::lift(
-							std::unique_ptr<Ln::Amount>()
-						);
-					});
-				}
-			}
-			auto ws = res["warnings"];
-			for (auto i = std::size_t(0); i < ws.size(); ++i) {
-				auto w = ws[i];
-				if (!w.is_string())
-					continue;
-				if (std::string(w) == "reverse.swaps.disabled") {
-					return loge("reverse.swaps.disabled "
-						    "by server."
-						   ).then([]() {
-						return Ev::lift(
-							std::unique_ptr<Ln::Amount>()
-						);
-					});
-				}
-			}
-
-			auto pair = res["pairs"]["BTC/BTC"];
+			auto pair = res["BTC"]["BTC"];
 			rate = (double) pair["rate"];
 			minimal = Ln::Amount::sat(
 				(double) pair["limits"]["minimal"]
@@ -353,16 +359,11 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 			);
 			fee_percent = (double) pair["fees"]["percentage"];
 			fee_lockup = Ln::Amount::sat((double)
-				pair
-				["fees"]
-				["minerFees"]
-				["baseAsset"]
-				["reverse"]
-				["lockup"]
+				pair["fees"]["minerFees"]["lockup"]
 			);
 		} catch (Jsmn::TypeError const& _) {
 			auto os = std::ostringstream();
-			os << "/getpairs unexpected result: " << res;
+			os << "/v2/swap/reverse unexpected result: " << res;
 			return loge(os.str()).then([]() {
 				return Ev::lift(std::unique_ptr<Ln::Amount>());
 			});
@@ -371,7 +372,7 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 		/* Check range.  */
 		if (minimal > offchainAmount || maximal < offchainAmount) {
 			auto os = std::ostringstream();
-			os << "/getpairs out-of-range "
+			os << "/v2/swap/reverse out-of-range "
 			   << minimal.to_sat() << " < "
 			   << offchainAmount.to_sat() << " < "
 			   << maximal.to_sat()
@@ -395,12 +396,13 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 			offchainAmount - onchainAmount
 		));
 	}).catching<ApiError>([this](ApiError const& e) {
-		return logd( std::string("/getpairs not accessible: ")
+		return logd( std::string("/v2/swap/reverse not accessible: ")
 			   + e.what()
 			   ).then([]() {
 			return Ev::lift(std::unique_ptr<Ln::Amount>());
 		});
 	});
 }
+
 
 }}

@@ -51,6 +51,69 @@ Ev::Io<std::uint32_t> Env::get_feerate() {
 	});
 }
 
+Ev::Io<std::string> Env::get_block(std::uint32_t height) {
+	return Ev::yield().then([this, height]() {
+		/* Should not happen.  */
+		if (!rpc)
+			return Ev::lift(std::string());
+
+		/* The bitcoin backend plugin's command; "block" is
+		 * null past our node's tip.  */
+		return rpc->command( "getrawblockbyheight"
+				   , Json::Out()
+					.start_object()
+						.field("height", height)
+					.end_object()
+		).then([](Jsmn::Object res) {
+			if (!res.has("block") || !res["block"].is_string())
+				return Ev::lift(std::string());
+			return Ev::lift(std::string(res["block"]));
+		}).catching<RpcError>([](RpcError const& _) {
+			return Ev::lift(std::string());
+		});
+	});
+}
+
+Ev::Io<bool> Env::has_confirmed_output( Bitcoin::TxId txid
+				      , std::uint32_t outnum
+				      ) {
+	auto txid_str = std::string(txid);
+	return Ev::yield().then([this, txid_str, outnum]() {
+		/* Should not happen.  */
+		if (!rpc)
+			return Ev::lift(false);
+
+		/* Spent outputs included: the wallet may have spent
+		 * the claim before this looks.  */
+		return rpc->command( "listfunds"
+				   , Json::Out()
+					.start_object()
+						.field("spent", true)
+					.end_object()
+		).then([txid_str, outnum](Jsmn::Object res) {
+			if (!res.has("outputs") || !res["outputs"].is_array())
+				return Ev::lift(false);
+			for (auto out : res["outputs"]) {
+				if ( !out.has("txid") || !out["txid"].is_string()
+				  || !out.has("output") || !out["output"].is_number()
+				  || !out.has("status") || !out["status"].is_string()
+				   )
+					continue;
+				if ( std::string(out["txid"]) != txid_str
+				  || std::uint32_t(double(out["output"])) != outnum
+				   )
+					continue;
+				auto status = std::string(out["status"]);
+				if (status == "confirmed" || status == "spent")
+					return Ev::lift(true);
+			}
+			return Ev::lift(false);
+		}).catching<RpcError>([](RpcError const& _) {
+			return Ev::lift(false);
+		});
+	});
+}
+
 Ev::Io<bool> Env::broadcast_tx(Bitcoin::Tx n_tx) {
 	auto tx = std::make_shared<Bitcoin::Tx>(std::move(n_tx));
 	return Ev::yield().then([this, tx]() {

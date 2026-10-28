@@ -8,6 +8,8 @@
 #include"Secp256k1/SignerIF.hpp"
 #include"Sqlite3.hpp"
 #include"Util/make_unique.hpp"
+#include<set>
+#include<string>
 
 namespace Boltz {
 
@@ -40,6 +42,37 @@ private:
 			return do_initialize();
 		});
 	}
+	/* Columns the API v2 code added.  A database from the v1
+	 * code gets them in place; the v1 column stays, so that
+	 * earlier releases still run on the upgraded database.  */
+	static void add_missing_columns(Sqlite3::Tx& tx) {
+		auto existing = std::set<std::string>();
+		auto fetch = tx.query(R"QRY(
+		SELECT name FROM pragma_table_info('BoltzServiceFactory_rsub');
+		)QRY").execute();
+		for (auto& r : fetch)
+			existing.insert(r.get<std::string>(0));
+		struct Column { char const* name; char const* type; };
+		for (auto const& col : { Column{"claimScript", "TEXT NOT NULL DEFAULT ''"}
+				       , Column{"refundScript", "TEXT NOT NULL DEFAULT ''"}
+				       , Column{"refundPubkey", "TEXT NOT NULL DEFAULT ''"}
+				       , Column{"createdHeight", "INTEGER NOT NULL DEFAULT 0"}
+				       , Column{"lockupSearchedHeight", "INTEGER NULL"}
+				       , Column{"spendSearchedHeight", "INTEGER NULL"}
+				       , Column{"preimageRevealed", "INTEGER NOT NULL DEFAULT 0"}
+				       , Column{"lockupTx", "TEXT NOT NULL DEFAULT ''"}
+				       , Column{"claimTx", "TEXT NOT NULL DEFAULT ''"}
+				       , Column{"claimFeerate", "INTEGER NOT NULL DEFAULT 0"}
+				       }) {
+			if (existing.count(col.name))
+				continue;
+			tx.query_execute( std::string("ALTER TABLE \"BoltzServiceFactory_rsub\" ")
+					+ "ADD COLUMN " + col.name
+					+ " " + col.type + ";"
+					);
+		}
+	}
+
 	Ev::Io<void> do_initialize() {
 		/* Perform actual initialization.  */
 		return db.transact().then([this](Sqlite3::Tx tx) {
@@ -68,14 +101,42 @@ private:
 			     -- from exchange, before paying invoice.
 			     -- id from exchange.
 			     , swapId TEXT NOT NULL
-			     , redeemScript TEXT NOT NULL
+			     -- API v1: the P2WSH script of the swap.
+			     -- Empty for v2 swaps; kept so that releases
+			     -- before API v2 run on this database.
+			     , redeemScript TEXT NOT NULL DEFAULT ''
+			     -- API v2: the two tapscript leaves and the
+			     -- provider's key, from the swap creation.
+			     -- Empty for v1 swaps.
+			     , claimScript TEXT NOT NULL DEFAULT ''
+			     , refundScript TEXT NOT NULL DEFAULT ''
+			     , refundPubkey TEXT NOT NULL DEFAULT ''
 			     , timeoutBlockheight INTEGER NOT NULL
 			     -- in satoshi.
 			     , onchainAmount INTEGER NOT NULL
+			     -- The block height when the swap was
+			     -- created.  The search of our own node's
+			     -- blocks for the lockup transaction starts
+			     -- there.
+			     , createdHeight INTEGER NOT NULL DEFAULT 0
 
-			     -- whether lockup fields have been set.
+			     -- whether a claim has been broadcast.
 			     -- 0 == false, 1 == true
 			     , lockedUp INTEGER NOT NULL
+
+			     -- whether the preimage has been sent to the
+			     -- provider.  Set before the claim request:
+			     -- from then on the provider can settle our
+			     -- payment, and the claim is retried at each
+			     -- block until our node sees it confirmed.
+			     , preimageRevealed INTEGER NOT NULL DEFAULT 0
+			     -- The lockup transaction, hex, as recorded
+			     -- at the reveal.
+			     , lockupTx TEXT NOT NULL DEFAULT ''
+			     -- The last signed claim, hex, for rebroadcast,
+			     -- and the feerate it was built at.
+			     , claimTx TEXT NOT NULL DEFAULT ''
+			     , claimFeerate INTEGER NOT NULL DEFAULT 0
 
 			     -- from the exchange, after paying invoice.
 			     -- These are the details of the lockup
@@ -84,9 +145,19 @@ private:
 			     -- The output of the lockupTxid that contains
 			     -- the value spendable by the redeem script.
 			     , lockupOut INTEGER NULL
-			     -- The blockheight at which we believe the
-			     -- tx was confirmed.
+			     -- The height of the block that holds the
+			     -- lockup transaction, found by searching
+			     -- our own node's blocks; NULL until found.
 			     , lockupConfirmedHeight INTEGER NULL
+			     -- Blocks up to and including this height
+			     -- were searched for the lockup transaction
+			     -- without finding it; NULL when none were.
+			     , lockupSearchedHeight INTEGER NULL
+			     -- Blocks up to and including this height
+			     -- were searched, once the preimage was out,
+			     -- for a spend of the lockup output without
+			     -- finding one; NULL when none were.
+			     , spendSearchedHeight INTEGER NULL
 
 			     -- We generated these on seeing that
 			     -- the transaction from the service
@@ -104,6 +175,7 @@ private:
 			     , apiAccess
 			     );
 			)QRY");
+			add_missing_columns(tx);
 			tx.commit();
 
 			initted_flag = Util::make_unique<bool>(true);

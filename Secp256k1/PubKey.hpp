@@ -10,6 +10,7 @@
 #include<stdexcept>
 #include<string>
 #include<utility>
+#include<vector>
 
 extern "C" {
 struct secp256k1_context_struct;
@@ -17,7 +18,10 @@ struct secp256k1_context_struct;
 
 namespace Secp256k1 { class PrivKey; }
 namespace Secp256k1 { class PubKey; }
+namespace Secp256k1 { class XonlyPubKey; }
 namespace Secp256k1 { class Signature; }
+namespace Secp256k1 { class SchnorrSig; }
+namespace Secp256k1 { namespace Musig { class Session; } }
 
 std::ostream& operator<<(std::ostream&, Secp256k1::PubKey const&);
 
@@ -41,7 +45,7 @@ private:
 	void const* get_key() const;
 
 public:
-	/* Get G.  */
+	/* Get G (with prepended tie-breaker byte).  */
 	PubKey();
 	/* Load public key from a hex-encoded string.  */
 	explicit PubKey(std::string const&);
@@ -105,6 +109,9 @@ public:
 
 	friend std::ostream& ::operator<<(std::ostream&, PubKey const&);
 
+	static PubKey xonly_tweak( XonlyPubKey const&
+							 , const unsigned char tweak[32] );
+
 	static PubKey from_buffer(std::uint8_t const buffer[33]) {
 		return PubKey(buffer);
 	}
@@ -118,12 +125,75 @@ public:
 	void to_buffer(std::uint8_t buffer[33]) const;
 
 	friend class Secp256k1::Signature;
+	friend class Secp256k1::XonlyPubKey;
+	friend class Secp256k1::Musig::Session;
 };
 
 inline
 PubKey operator*(PrivKey const& a, PubKey const& B) {
 	return B * a;
 }
+
+// TODO class template?
+class XonlyPubKey {
+private:
+	class Impl;
+	std::unique_ptr<Impl> pimpl;
+
+	explicit XonlyPubKey( secp256k1_context_struct *
+						, std::uint8_t buffer[32]);
+	explicit XonlyPubKey(std::uint8_t const buffer[32]);
+
+	/* Used by SchnorrSig::valid.  */
+	void const* get_key() const;
+
+public:
+	/* Get G (the 32 byte x coordinate).  */
+	XonlyPubKey();
+	/* Load public key from a hex-encoded string.  */
+	explicit XonlyPubKey(std::string const&);
+
+	/* Copy an existing public key.  */
+	XonlyPubKey(XonlyPubKey const&);
+	XonlyPubKey(XonlyPubKey&&);
+
+	~XonlyPubKey();
+
+	XonlyPubKey& operator=(XonlyPubKey const& o) {
+		auto tmp = XonlyPubKey(o);
+		tmp.pimpl.swap(pimpl);
+		return *this;
+	}
+	XonlyPubKey& operator=(XonlyPubKey&& o) {
+		auto tmp = XonlyPubKey(std::move(o));
+		tmp.pimpl.swap(pimpl);
+		return *this;
+	}
+
+	bool operator==(XonlyPubKey const&) const;
+	bool operator!=(XonlyPubKey const& o) const {
+		return !(*this == o);
+	}
+
+	void to_buffer(std::uint8_t buffer[32]) const;
+
+	/* find the x-only equivalent key from a 33 byte ecdsa key. */
+	static XonlyPubKey from_ecdsa_pk(PubKey const&);
+	static XonlyPubKey from_ecdsa_pk(std::uint8_t const buffer[33]);
+
+	static XonlyPubKey from_buffer(std::uint8_t const buffer[32]) {
+		return XonlyPubKey(buffer);
+	}
+	/* Needed for the generator point.  */
+	static XonlyPubKey from_buffer_with_context( secp256k1_context_struct *ctx
+					      , std::uint8_t buffer[32]
+					      ) {
+		return XonlyPubKey(ctx, buffer);
+	}
+
+	friend class Secp256k1::PubKey;
+	friend class Secp256k1::SchnorrSig;
+};
 
 }
 

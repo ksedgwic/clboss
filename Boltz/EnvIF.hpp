@@ -1,6 +1,7 @@
 #ifndef BOLTZ_ENVIF_HPP
 #define BOLTZ_ENVIF_HPP
 
+#include"Bitcoin/TxId.hpp"
 #include<cstdint>
 #include<string>
 
@@ -24,6 +25,42 @@ public:
 	 */
 	virtual
 	Ev::Io<std::uint32_t> get_feerate() =0;
+
+	/** Boltz::EnvIF::get_block
+	 *
+	 * @brief get the block at the given height from
+	 * our own node, as the hex serialization of the
+	 * block.
+	 *
+	 * @return "" if our node has no block at that
+	 * height yet, or the fetch failed.
+	 */
+	virtual
+	Ev::Io<std::string> get_block(std::uint32_t height) =0;
+
+	/** Boltz::EnvIF::has_confirmed_output
+	 *
+	 * @brief whether our own node's wallet holds the
+	 * given output, in a block, spent since or not.
+	 *
+	 * @desc the output is named by transaction id, not
+	 * by address: a payment from anyone else to the
+	 * same address must not pass for it.
+	 */
+	virtual
+	Ev::Io<bool> has_confirmed_output( Bitcoin::TxId txid
+					 , std::uint32_t outnum
+					 ) =0;
+
+	/** Boltz::EnvIF::cooperative_claims
+	 *
+	 * @brief whether claims ask the provider to co-sign
+	 * first.  False makes every claim go through the
+	 * claim leaf, for exercising that path; CLBOSS
+	 * itself always answers true.
+	 */
+	virtual
+	bool cooperative_claims() { return true; }
 
 	/** Boltz::EnvIF::broadcast_tx
 	 *
