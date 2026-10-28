@@ -12,11 +12,22 @@ namespace Ln { class Amount; }
 
 namespace Boltz { namespace Detail {
 
+/** enum Boltz::Detail::ClaimPath
+ *
+ * @brief which spend of the lockup the claim
+ * makes.  The key path carries one aggregate
+ * signature.  The script path runs the claim
+ * leaf, so it carries our signature, the preimage,
+ * the leaf and its control block, and pays more.
+ */
+enum class ClaimPath { KeyPath, ScriptPath };
+
 /** Boltz::Detail::initial_claim_tx
  *
  * @brief creates the initial claim transaction
  * for a reverse submarine (offchain-to-onchain)
- * swap.
+ * swap, with the fee for the given path, and
+ * returns the sighash that path signs.
  *
  * @desc if the fee at the given feerate would
  * consume the lockup, the output amount is zero
@@ -42,6 +53,11 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 
 		/* Output address.  */
 		, std::string const& output_addr
+
+		/* The spend made, and the claim leaf the script
+		 * path runs (unused for the key path).  */
+		, ClaimPath path
+		, std::vector<std::uint8_t> const& claim_script
 		);
 
 /** Boltz::Detail::affix_aggregated_signature
@@ -54,6 +70,22 @@ void
 affix_aggregated_signature(Bitcoin::Tx& claim_tx /* written by function */
 		, std::vector<std::uint8_t> const& aggregatesig
 		);
+
+/** Boltz::Detail::affix_script_path_witness
+ *
+ * @brief completes the claim transaction from
+ * initial_claim_tx for the script path: our
+ * signature, the preimage, the claim leaf and
+ * its control block, in the order the leaf
+ * consumes them.
+ */
+void
+affix_script_path_witness( Bitcoin::Tx& claim_tx /* written by function */
+			 , std::vector<std::uint8_t> const& signature
+			 , std::vector<std::uint8_t> const& preimage
+			 , std::vector<std::uint8_t> const& claim_script
+			 , std::vector<std::uint8_t> const& control_block
+			 );
 }}
 
 #endif /* !defined(BOLTZ_DETAIL_INITIAL_CLAIM_TX_HPP) */

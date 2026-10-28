@@ -11,6 +11,7 @@
 #include"Ev/coroutine.hpp"
 #include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
+#include"Secp256k1/KeyPair.hpp"
 #include"Secp256k1/SignerIF.hpp"
 #include"Secp256k1/Signature.hpp"
 #include"Secp256k1/TapscriptTree.hpp"
@@ -125,7 +126,7 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 	/* Build the claim before anything is revealed: a claim the
 	 * fee would consume waits for lower fees instead.  */
 	auto feerate = co_await env.get_feerate();
-	auto sighash = co_await build_claim(feerate);
+	auto sighash = co_await build_claim(feerate, ClaimPath::KeyPath);
 
 	/* From the next step on the provider can settle our payment,
 	 * so the row says so first: whatever stops the claim after
@@ -133,7 +134,7 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 	 * at each block until our node sees the claim confirmed.  */
 	co_await persist_reveal();
 
-	co_await cooperative_claim(sighash);
+	co_await claim(sighash, feerate);
 }
 
 Ev::Io<void> ClaimTxHandler::load_row() {
@@ -347,7 +348,9 @@ Ev::Io<void> ClaimTxHandler::confirm_lockup() {
 	}
 }
 
-Ev::Io<Sha256::Hash> ClaimTxHandler::build_claim(std::uint32_t feerate) {
+Ev::Io<Sha256::Hash> ClaimTxHandler::build_claim( std::uint32_t feerate
+						 , ClaimPath path
+						 ) {
 	auto sighash = Detail::initial_claim_tx( claim_tx
 					       , lockupClaimFees
 					       , feerate
@@ -357,6 +360,8 @@ Ev::Io<Sha256::Hash> ClaimTxHandler::build_claim(std::uint32_t feerate) {
 					       , onchainAmount
 					       , redeemScript
 					       , destinationAddress
+					       , path
+					       , claimScript
 					       );
 	if (claim_tx.outputs[0].amount == Ln::Amount::sat(0)) {
 		/* The fee would consume the lockup.  Nothing is
@@ -396,7 +401,18 @@ Ev::Io<void> ClaimTxHandler::persist_reveal() {
 	preimageRevealed = true;
 }
 
-Ev::Io<void> ClaimTxHandler::cooperative_claim(Sha256::Hash sighash) {
+Ev::Io<void> ClaimTxHandler::claim( Sha256::Hash keypath_sighash
+				  , std::uint32_t feerate
+				  ) {
+	/* The preimage is recorded as out, so the provider can
+	 * settle our payment whatever happens next; the claim must
+	 * go through with or without it.  */
+	if (co_await cooperative_claim(keypath_sighash))
+		co_return;
+	co_await script_path_claim(feerate);
+}
+
+Ev::Io<bool> ClaimTxHandler::cooperative_claim(Sha256::Hash sighash) {
 	/* Now compute the real preimage from the signer key and the
 	 * in-database preimage.  */
 	real_preimage = Detail::compute_preimage(signer, preimage);
@@ -440,9 +456,9 @@ Ev::Io<void> ClaimTxHandler::cooperative_claim(Sha256::Hash sighash) {
 	}
 	if (!res) {
 		co_await loge( "Claim request failed: " + error
-			     + "; trying again next block."
+			     + "; claiming through the script path."
 			     );
-		throw End();
+		co_return false;
 	}
 
 	/* We receive from the provider their partial sig and public
@@ -457,21 +473,15 @@ Ev::Io<void> ClaimTxHandler::cooperative_claim(Sha256::Hash sighash) {
 		os << "Unexpected result from service: " << *res;
 		error = os.str();
 	}
+	if (error.empty() && !Util::Str::ishex(boltzpubnonce))
+		error = "invalid pubnonce from boltz: " + boltzpubnonce;
+	if (error.empty() && !Util::Str::ishex(boltzpartialsig))
+		error = "invalid partialsig from boltz: " + boltzpartialsig;
 	if (!error.empty()) {
-		co_await loge(error);
-		throw End();
-	}
-	if (!Util::Str::ishex(boltzpubnonce)) {
-		co_await loge( std::string("invalid pubnonce from boltz: ")
-			     + boltzpubnonce
+		co_await loge( error
+			     + "; claiming through the script path."
 			     );
-		throw End();
-	}
-	if (!Util::Str::ishex(boltzpartialsig)) {
-		co_await loge( std::string("invalid partialsig from boltz: ")
-			     + boltzpartialsig
-			     );
-		throw End();
+		co_return false;
 	}
 
 	std::uint8_t aggsig_buffer[64];
@@ -497,12 +507,68 @@ Ev::Io<void> ClaimTxHandler::cooperative_claim(Sha256::Hash sighash) {
 		error = e.what();
 	}
 	if (!error.empty()) {
+		co_await loge( error
+			     + "; claiming through the script path."
+			     );
+		co_return false;
+	}
+	affix_aggregated_signature(claim_tx, aggregatesig.to_buffer());
+	co_await broadcast_and_record("cooperative");
+	co_return true;
+}
+
+Ev::Io<void> ClaimTxHandler::script_path_claim(std::uint32_t feerate) {
+	/* The claim leaf takes the preimage and a signature from our
+	 * key alone.  Its witness is larger than the key path's, so
+	 * the claim is rebuilt with the fee for it.  */
+	auto sighash = co_await build_claim(feerate, ClaimPath::ScriptPath);
+	real_preimage = Detail::compute_preimage(signer, preimage);
+
+	auto error = std::string();
+	auto signature = std::vector<std::uint8_t>();
+	auto control_block = std::vector<std::uint8_t>();
+	try {
+		auto keys = signer.get_keypair_tweak(tweak);
+		signature = SchnorrSig::create(keys.priv(), sighash).to_buffer();
+
+		/* The control block: the leaf version with the parity
+		 * of the output key, the internal key, and the merkle
+		 * path to the root, which for a tree of two leaves is
+		 * the other leaf's hash.  */
+		std::uint8_t buf[32];
+		control_block.push_back(std::uint8_t(
+			0xc0 | (musigsession.get_output_key_parity() ? 1 : 0)
+		));
+		musigsession.get_internal_key().to_buffer(buf);
+		control_block.insert(control_block.end(), buf, buf + 32);
+		auto sibling = Secp256k1::TapTree::leaf_hash(refundScript);
+		control_block.insert( control_block.end()
+				    , sibling.begin(), sibling.end()
+				    );
+	} catch (Musig::InvalidArg const& e) {
+		error = e.what();
+	} catch (Secp256k1::InvalidPrivKey const& e) {
+		error = e.what();
+	}
+	if (!error.empty()) {
 		co_await loge(error);
 		throw End();
 	}
-	affix_aggregated_signature(claim_tx, aggregatesig.to_buffer());
 
-	co_await logd( std::string("Broadcasting claim tx: ")
+	std::uint8_t preimage_buf[32];
+	real_preimage.to_buffer(preimage_buf);
+	affix_script_path_witness
+		( claim_tx
+		, signature
+		, std::vector<std::uint8_t>(preimage_buf, preimage_buf + 32)
+		, claimScript
+		, control_block
+		);
+	co_await broadcast_and_record("script path");
+}
+
+Ev::Io<void> ClaimTxHandler::broadcast_and_record(std::string const& how) {
+	co_await logd( "Broadcasting claim tx (" + how + "): "
 		     + std::string(claim_tx)
 		     );
 	auto success = co_await env.broadcast_tx(claim_tx);
@@ -542,8 +608,8 @@ Ev::Io<void> ClaimTxHandler::track_claim() {
 		 * the broadcast.  Ask again, with new nonces.  */
 		co_await prepare_keys();
 		auto feerate = co_await env.get_feerate();
-		auto sighash = co_await build_claim(feerate);
-		co_await cooperative_claim(sighash);
+		auto sighash = co_await build_claim(feerate, ClaimPath::KeyPath);
+		co_await claim(sighash, feerate);
 		co_return;
 	}
 

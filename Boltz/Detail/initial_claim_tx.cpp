@@ -8,6 +8,7 @@
 #include"Secp256k1/PrivKey.hpp"
 #include"Secp256k1/PubKey.hpp"
 #include"Secp256k1/Signature.hpp"
+#include"Secp256k1/TapscriptTree.hpp"
 #include<sstream>
 
 namespace {
@@ -20,6 +21,11 @@ std::size_t get_nonwitness_weight(Bitcoin::Tx const& tx) {
 }
 
 auto const dust_limit = Ln::Amount::sat(547);
+
+/* Weight of one witness item: its length prefix and its bytes.  */
+std::size_t witness_item_weight(std::size_t len) {
+	return (len < 253 ? 1 : 3) + len;
+}
 
 }
 
@@ -47,6 +53,10 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 
 		/* Output address.  */
 		, std::string const& output_addr
+
+		/* The spend made.  */
+		, ClaimPath path
+		, std::vector<std::uint8_t> const& claim_script
 		) {
 	/* Single-input single-output.  */
 	claim_tx.inputs.resize(1);
@@ -59,9 +69,12 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 	claim_tx.inputs[0].prevTxid = lockup_txid;
 	claim_tx.inputs[0].prevOut = lockup_outnum;
 	claim_tx.inputs[0].scriptSig.resize(0);
-	/* A key-path spend: the witness is the aggregated signature
-	 * alone.  */
-	claim_tx.inputs[0].witness.witnesses.resize(1);
+	/* The key path's witness is the aggregated signature alone;
+	 * the script path's is signature, preimage, leaf and control
+	 * block.  */
+	claim_tx.inputs[0].witness.witnesses.resize(
+		path == ClaimPath::KeyPath ? 1 : 4
+	);
 
 	/* Set up output.  */
 	claim_tx.outputs[0].scriptPubKey = Bitcoin::addr_to_scriptPubKey(
@@ -71,10 +84,14 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 	/* Measure weight.  */
 	auto nonwitness_weight = get_nonwitness_weight(claim_tx);
 	auto witness_weight = 1 /* witness item count */
-			    + 1 /* varint of signature */
-			    + 64 /* schnorr signature, SIGHASH_DEFAULT */
+			    + witness_item_weight(64) /* schnorr signature, SIGHASH_DEFAULT */
 			    + 2 /* marker+flag */
 			    ;
+	if (path == ClaimPath::ScriptPath)
+		witness_weight += witness_item_weight(32) /* preimage */
+			       + witness_item_weight(claim_script.size())
+			       + witness_item_weight(65) /* control block */
+			       ;
 	auto weight = nonwitness_weight + witness_weight
 		    + 12 /* Some extra, in case we screwed up the weight.  */
 		    ;
@@ -103,12 +120,26 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 		 , prefixed.begin() + 1
 		 );
 
+	if (path == ClaimPath::KeyPath)
+		return Bitcoin::p2tr_sighash
+			( claim_tx
+			, Bitcoin::SIGHASH_DEFAULT
+			, 0
+			, std::vector<Ln::Amount>{lockup_amount}
+			, std::vector<std::vector<std::uint8_t>>{prefixed}
+			);
+
+	/* The script path signs for the leaf it runs.  */
+	auto extension = Bitcoin::TapscriptExtension();
+	auto leaf = Secp256k1::TapTree::leaf_hash(claim_script);
+	extension.leaf_hash.from_buffer(leaf.data());
 	return Bitcoin::p2tr_sighash
 		( claim_tx
 		, Bitcoin::SIGHASH_DEFAULT
 		, 0
 		, std::vector<Ln::Amount>{lockup_amount}
 		, std::vector<std::vector<std::uint8_t>>{prefixed}
+		, extension
 		);
 }
 
@@ -120,6 +151,25 @@ affix_aggregated_signature( Bitcoin::Tx& claim_tx
 	 * SIGHASH_DEFAULT is implied by the length; a 65th byte of
 	 * 0x00 would make the input invalid.  */
 	claim_tx.inputs[0].witness.witnesses[0] = aggregatesig;
+}
+
+void
+affix_script_path_witness( Bitcoin::Tx& claim_tx
+			 , std::vector<std::uint8_t> const& signature
+			 , std::vector<std::uint8_t> const& preimage
+			 , std::vector<std::uint8_t> const& claim_script
+			 , std::vector<std::uint8_t> const& control_block
+			 ) {
+	/* The leaf pops the preimage first, then the signature, so
+	 * the signature is the bottom item; the leaf and its control
+	 * block end the stack, as BIP341 lays out a script-path
+	 * witness.  */
+	auto& witness = claim_tx.inputs[0].witness.witnesses;
+	witness.resize(4);
+	witness[0] = signature;
+	witness[1] = preimage;
+	witness[2] = claim_script;
+	witness[3] = control_block;
 }
 
 }}

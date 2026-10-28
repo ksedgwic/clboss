@@ -5,6 +5,7 @@
 #include"Ln/Amount.hpp"
 #include"Ln/Preimage.hpp"
 #include"Boltz/Detail/MusigImpl.hpp"
+#include"Boltz/Detail/initial_claim_tx.hpp"
 #include"Secp256k1/PrivKey.hpp"
 #include"Secp256k1/PubKey.hpp"
 #include"Sha256/Hash.hpp"
@@ -31,7 +32,10 @@ namespace Boltz { namespace Detail {
  * reports confirmed, and, once the preimage has
  * been revealed, at each block until our own node
  * sees the claim confirmed, whatever the provider
- * reports.
+ * reports.  The claim is cooperative, one
+ * aggregate signature on the key path, when the
+ * provider co-signs; otherwise it runs the claim
+ * leaf with the preimage and our signature alone.
  */
 class ClaimTxHandler : public std::enable_shared_from_this<ClaimTxHandler> {
 private:
@@ -109,15 +113,30 @@ private:
 	/* Finds the lockup in our own node's blocks and waits for
 	 * its depth, or ends the run without revealing anything.  */
 	Ev::Io<void> confirm_lockup();
-	/* Builds the unsigned claim at the given feerate; ends the
-	 * run if the fee would consume the lockup.  Returns the
-	 * key-path sighash.  */
-	Ev::Io<Sha256::Hash> build_claim(std::uint32_t feerate);
+	/* Builds the unsigned claim at the given feerate for the
+	 * given path; ends the run if the fee would consume the
+	 * lockup.  Returns the sighash that path signs.  */
+	Ev::Io<Sha256::Hash> build_claim( std::uint32_t feerate
+					, ClaimPath path
+					);
 	/* Records that the preimage is about to leave the node.  */
 	Ev::Io<void> persist_reveal();
+	/* Claims the lockup: cooperatively with the key-path
+	 * sighash of the claim already built, or, when the provider
+	 * does not co-sign, through the script path at the given
+	 * feerate.  */
+	Ev::Io<void> claim(Sha256::Hash keypath_sighash, std::uint32_t feerate);
 	/* Asks the provider to co-sign, completes the signature,
-	 * broadcasts and records the claim.  */
-	Ev::Io<void> cooperative_claim(Sha256::Hash sighash);
+	 * broadcasts and records the claim.  False when the
+	 * provider's part failed and nothing was broadcast.  */
+	Ev::Io<bool> cooperative_claim(Sha256::Hash sighash);
+	/* Rebuilds the claim for the script path, signs it with our
+	 * key, adds the preimage, the leaf and its control block,
+	 * broadcasts and records it.  */
+	Ev::Io<void> script_path_claim(std::uint32_t feerate);
+	/* Broadcasts the finished claim and records it for
+	 * rebroadcast; ends the run if the node rejects it.  */
+	Ev::Io<void> broadcast_and_record(std::string const& how);
 	/* For a revealed swap: finishes it once our node has the
 	 * claim confirmed, else keeps the claim in mempools, else
 	 * tries the claim again.  */
