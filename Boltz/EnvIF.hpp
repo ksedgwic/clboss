@@ -52,6 +52,16 @@ public:
 					 , std::uint32_t outnum
 					 ) =0;
 
+	/** Boltz::EnvIF::cooperative_claims
+	 *
+	 * @brief whether claims ask the provider to co-sign
+	 * first.  False makes every claim go through the
+	 * claim leaf, for exercising that path; CLBOSS
+	 * itself always answers true.
+	 */
+	virtual
+	bool cooperative_claims() { return true; }
+
 	/** Boltz::EnvIF::broadcast_tx
 	 *
 	 * @brief broadcasts the transaction.

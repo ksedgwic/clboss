@@ -19,16 +19,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Boltz swaps use the provider's API v2 with taproot lockups: the swap
   is created at `/v2/swap/reverse`, polled at `/v2/swap/{id}`, quoted
-  from the v2 pairs, and claimed cooperatively with one MuSig2
-  key-path signature.  The claim waits until our own node has the
-  lockup three blocks deep, is recorded before the preimage is sent,
-  and is retried at each block until our node sees it confirmed,
-  whatever the provider reports.  The API v1 code is gone; the v1
-  table column `redeemScript` stays, empty, beside the new
-  `claimScript`, `refundScript`, `refundPubkey`, `createdHeight`,
-  `lockupSearchedHeight`, `spendSearchedHeight`,
-  `preimageRevealed`, `lockupTx`, `claimTx`
-  and `claimFeerate` (#254).
+  from the v2 pairs, and claimed cooperatively with one MuSig2 key-path
+  signature, or through the claim leaf with our own signature and the
+  preimage when the provider does not co-sign.  Before paying, the setup
+  writes both tapscript leaves itself and accepts the provider's only
+  when they match byte for byte.  The claim waits until our own node has
+  the lockup three blocks deep, is recorded before the preimage is sent,
+  is replaced when the going feerate rises above its own, and is tracked
+  in our own blocks until the lockup is spent, whatever the provider
+  reports; a spend that does not pay us is logged as the loss it is.
+  The API v1 code is gone; the v1 table column `redeemScript` stays,
+  empty, beside the new `claimScript`, `refundScript`, `refundPubkey`,
+  `createdHeight`, `lockupSearchedHeight`, `spendSearchedHeight`,
+  `preimageRevealed`, `lockupTx`, `claimTx` and `claimFeerate` (#254).
 - The vendored libsecp256k1 moves from 0.3.2 to 0.6.0, which carries
   the MuSig2, extrakeys and schnorrsig modules that taproot swaps
   need.

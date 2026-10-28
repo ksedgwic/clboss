@@ -344,7 +344,10 @@ to reach the service directly over I2P.  The `dev-boltz` helper, which
 drives one whole swap (create it, pay the invoice by other means, then
 claim it with `on-block`), honors the same two variables, and reads
 blocks through `BITCOIN_CLI` (default `bitcoin-cli`; for example
-`bitcoin-cli -signet`), since it has no lightningd to ask.
+`bitcoin-cli -signet`), since it has no lightningd to ask.  With
+`BOLTZ_SCRIPT_PATH_ONLY` set to anything it claims through the claim
+leaf without asking the provider to co-sign, which exercises the path
+CLBOSS takes when a provider refuses.
 
 ### Contributed Utilities
 
