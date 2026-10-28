@@ -203,7 +203,7 @@ int main() {
 		     ( apiAccess, tweak, preimage, destinationAddress, swapId
 		     , claimScript, refundScript, refundPubkey
 		     , timeoutBlockheight, onchainAmount, createdHeight
-		     , lockedUp, preimageRevealed, claimTx, comment
+		     , lockedUp, preimageRevealed, claimTx, claimFeerate, comment
 		     )
 		VALUES
 		     ( 'testapi'
@@ -212,7 +212,7 @@ int main() {
 		     , 'bc1qg430dgu75qvphu8nn3kvcp3yg2km2tavpc8lqs', :swapId
 		     , '82', '20', :refundPubkey
 		     , :timeout, 100000, 90
-		     , :revealed, :revealed, :claimTx, ''
+		     , :revealed, :revealed, :claimTx, :claimFeerate, ''
 		     );
 		)QRY")
 			.bind(":swapId", swapId)
@@ -220,6 +220,7 @@ int main() {
 			.bind(":timeout", timeout)
 			.bind(":revealed", revealed ? 1 : 0)
 			.bind(":claimTx", revealed ? std::string(claim) : std::string())
+			.bind(":claimFeerate", revealed ? 1000 : 0)
 			.execute();
 	};
 

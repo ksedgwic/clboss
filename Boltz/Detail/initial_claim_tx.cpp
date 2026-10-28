@@ -61,9 +61,13 @@ initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */
 	/* Single-input single-output.  */
 	claim_tx.inputs.resize(1);
 	claim_tx.outputs.resize(1);
-	/* Set nLockTime and nSequence.  */
-	claim_tx.nLockTime = blockheight + 1;
-	claim_tx.inputs[0].nSequence = 0xFFFFFFFF; /* Final!  Not RBF!  */ // TODO except we are now in a post Full-RBF world after Bitcoin 28.0...
+	/* Replaceable, so that a claim rebuilt at a higher feerate
+	 * takes this one's place in every mempool, signalling or
+	 * not.  A non-final sequence enforces the locktime, which
+	 * is the current height: the claim is valid from the next
+	 * block.  */
+	claim_tx.nLockTime = blockheight;
+	claim_tx.inputs[0].nSequence = 0xFFFFFFFD;
 
 	/* Set up input.  */
 	claim_tx.inputs[0].prevTxid = lockup_txid;

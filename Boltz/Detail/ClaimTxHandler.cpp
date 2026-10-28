@@ -132,6 +132,8 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 	 * fee would consume waits for lower fees instead.  */
 	auto feerate = co_await env.get_feerate();
 	auto sighash = co_await build_claim(feerate, ClaimPath::KeyPath);
+	if (!sighash)
+		throw End();
 
 	/* From the next step on the provider can settle our payment,
 	 * so the row says so first: whatever stops the claim after
@@ -139,7 +141,7 @@ Ev::Io<void> ClaimTxHandler::core_run() {
 	 * at each block until our node sees the claim confirmed.  */
 	co_await persist_reveal();
 
-	co_await claim(sighash, feerate);
+	co_await claim(*sighash, feerate);
 }
 
 Ev::Io<void> ClaimTxHandler::load_row() {
@@ -162,6 +164,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 	     , claimTx -- 14
 	     , claimFeerate -- 15
 	     , COALESCE(spendSearchedHeight, 0) -- 16
+	     , COALESCE(lockupClaimFees, 0) -- 17
 	  FROM "BoltzServiceFactory_rsub"
 	 WHERE apiAccess = :apiAccess
 	   AND swapId = :swapId
@@ -191,6 +194,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 		claimTxHex = r.get<std::string>(14);
 		claimFeerate = r.get<std::uint32_t>(15);
 		spendSearchedHeight = r.get<std::uint32_t>(16);
+		lockupClaimFees = Ln::Amount::sat(r.get<std::uint64_t>(17));
 	}
 	tx.commit();
 
@@ -355,9 +359,10 @@ Ev::Io<void> ClaimTxHandler::confirm_lockup() {
 	}
 }
 
-Ev::Io<Sha256::Hash> ClaimTxHandler::build_claim( std::uint32_t feerate
-						 , ClaimPath path
-						 ) {
+Ev::Io<std::optional<Sha256::Hash>>
+ClaimTxHandler::build_claim( std::uint32_t feerate
+			   , ClaimPath path
+			   ) {
 	auto sighash = Detail::initial_claim_tx( claim_tx
 					       , lockupClaimFees
 					       , feerate
@@ -380,7 +385,7 @@ Ev::Io<Sha256::Hash> ClaimTxHandler::build_claim( std::uint32_t feerate
 			     + std::string(onchainAmount)
 			     + " lockup; waiting for lower fees."
 			     );
-		throw End();
+		co_return std::nullopt;
 	}
 	claimFeerate = feerate;
 	co_return sighash;
@@ -528,7 +533,10 @@ Ev::Io<void> ClaimTxHandler::script_path_claim(std::uint32_t feerate) {
 	/* The claim leaf takes the preimage and a signature from our
 	 * key alone.  Its witness is larger than the key path's, so
 	 * the claim is rebuilt with the fee for it.  */
-	auto sighash = co_await build_claim(feerate, ClaimPath::ScriptPath);
+	auto built = co_await build_claim(feerate, ClaimPath::ScriptPath);
+	if (!built)
+		throw End();
+	auto sighash = *built;
 	real_preimage = Detail::compute_preimage(signer, preimage);
 
 	auto error = std::string();
@@ -616,7 +624,9 @@ Ev::Io<void> ClaimTxHandler::track_claim() {
 		co_await prepare_keys();
 		auto feerate = co_await env.get_feerate();
 		auto sighash = co_await build_claim(feerate, ClaimPath::KeyPath);
-		co_await claim(sighash, feerate);
+		if (!sighash)
+			throw End();
+		co_await claim(*sighash, feerate);
 		co_return;
 	}
 
@@ -700,13 +710,59 @@ Ev::Io<void> ClaimTxHandler::track_claim() {
 		co_return;
 	}
 
-	/* Keep the signed claim in mempools until it confirms.  A
-	 * rejection here is usual: the node already has it.  */
+	/* A claim stuck below the going feerate is replaced by one
+	 * at that feerate; otherwise the signed claim is kept in
+	 * mempools until it confirms.  A rejection of the rebroadcast
+	 * is usual: the node already has it.  */
+	auto feerate = co_await env.get_feerate();
+	if (feerate > claimFeerate && co_await bump_claim(feerate))
+		co_return;
 	auto accepted = co_await env.broadcast_tx(claim);
 	co_await logd( std::string("Claim ") + std::string(claim_txid)
 		     + " not yet confirmed; rebroadcast "
 		     + (accepted ? "accepted." : "not accepted.")
 		     );
+}
+
+Ev::Io<bool> ClaimTxHandler::bump_claim(std::uint32_t feerate) {
+	auto const old_fee = lockupClaimFees;
+	auto const old_feerate = claimFeerate;
+	co_await prepare_keys();
+
+	/* A replacement must pay more than what it replaces by at
+	 * least one satoshi per vbyte of itself, or mempools keep
+	 * the old one.  A key-path claim is smaller than a
+	 * script-path one, so at a feerate only a little higher it
+	 * can pay less in all; the feerate is raised until the
+	 * key-path claim, the smaller of the two, pays enough.  The
+	 * first build gives the weight.  */
+	auto sighash = std::optional<Sha256::Hash>();
+	for (auto attempt = 0; attempt < 2; ++attempt) {
+		sighash = co_await build_claim(feerate, ClaimPath::KeyPath);
+		if (!sighash) {
+			co_await logd( "Keeping the claim at "
+				     + std::to_string(old_feerate)
+				     + " perkw."
+				     );
+			claimFeerate = old_feerate;
+			lockupClaimFees = old_fee;
+			co_return false;
+		}
+		auto weight = lockupClaimFees.to_sat() * 1000 / feerate;
+		auto needed = old_fee + Ln::Amount::sat(weight / 4 + 1);
+		if (lockupClaimFees >= needed)
+			break;
+		feerate = std::uint32_t((needed.to_sat() * 1000 + weight - 1)
+				       / weight) + 1;
+	}
+
+	co_await logd( "Replacing the claim at "
+		     + std::to_string(old_feerate) + " perkw, fee "
+		     + std::string(old_fee) + ", with one at "
+		     + std::to_string(feerate) + " perkw."
+		     );
+	co_await claim(*sighash, feerate);
+	co_return true;
 }
 
 Ev::Io<std::unique_ptr<ClaimTxHandler::LockupSpend>>
