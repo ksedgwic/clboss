@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Upgrading from 0.17.2
 
 - Finish or wait out any swap in flight before upgrading, and before
-  downgrading again.  The swap table gains nine columns on first
+  downgrading again.  The swap table gains ten columns on first
   use, and a swap created by one version cannot be claimed by the
   other, so it ends at its timeout and the payment fails back to the
   node.  The `Boltz::Service` log lines show one in flight.  Earlier
@@ -26,7 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   whatever the provider reports.  The API v1 code is gone; the v1
   table column `redeemScript` stays, empty, beside the new
   `claimScript`, `refundScript`, `refundPubkey`, `createdHeight`,
-  `lockupSearchedHeight`, `preimageRevealed`, `lockupTx`, `claimTx`
+  `lockupSearchedHeight`, `spendSearchedHeight`,
+  `preimageRevealed`, `lockupTx`, `claimTx`
   and `claimFeerate` (#254).
 - The vendored libsecp256k1 moves from 0.3.2 to 0.6.0, which carries
   the MuSig2, extrakeys and schnorrsig modules that taproot swaps

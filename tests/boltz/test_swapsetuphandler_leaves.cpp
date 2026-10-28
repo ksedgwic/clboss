@@ -232,6 +232,7 @@ CREATE TABLE "BoltzServiceFactory_rsub"
      , lockupOut INTEGER NULL
      , lockupConfirmedHeight INTEGER NULL
      , lockupSearchedHeight INTEGER NULL
+     , spendSearchedHeight INTEGER NULL
      , preimageRevealed INTEGER NOT NULL DEFAULT 0
      , lockupTx TEXT NOT NULL DEFAULT ''
      , claimTx TEXT NOT NULL DEFAULT ''

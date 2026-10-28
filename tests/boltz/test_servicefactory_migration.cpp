@@ -191,6 +191,7 @@ int main() {
 		assert(cols.count("refundPubkey"));
 		assert(cols.count("createdHeight"));
 		assert(cols.count("lockupSearchedHeight"));
+		assert(cols.count("spendSearchedHeight"));
 		assert(cols.count("preimageRevealed"));
 		assert(cols.count("lockupTx"));
 		assert(cols.count("claimTx"));
@@ -249,7 +250,7 @@ int main() {
 		return db.transact();
 	}).then([&](Sqlite3::Tx tx) {
 		assert(count_rows(tx) == 3);
-		assert(columns(tx).size() == 24);
+		assert(columns(tx).size() == 25);
 		tx.commit();
 		return Ev::lift(0);
 	});

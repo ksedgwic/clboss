@@ -138,9 +138,21 @@ private:
 	 * rebroadcast; ends the run if the node rejects it.  */
 	Ev::Io<void> broadcast_and_record(std::string const& how);
 	/* For a revealed swap: finishes it once our node has the
-	 * claim confirmed, else keeps the claim in mempools, else
-	 * tries the claim again.  */
+	 * claim confirmed, or once a spend of the lockup shows in
+	 * our blocks; else keeps the claim in mempools, or tries
+	 * the claim again if none was ever broadcast.  */
 	Ev::Io<void> track_claim();
+	/* A transaction found spending the lockup output, and the
+	 * block it is in.  */
+	struct LockupSpend {
+		std::uint32_t height;
+		Bitcoin::Tx tx;
+	};
+	/* Searches our node's blocks, from where the last search
+	 * stopped, for a spend of the lockup output.  */
+	Ev::Io<std::unique_ptr<LockupSpend>> find_lockup_spend();
+	/* Removes the swap's row: the swap is over.  */
+	Ev::Io<void> remove_row();
 
 	/* Wrappers.  */
 	Ev::Io<void> logd(std::string);
@@ -162,6 +174,9 @@ private:
 	std::uint32_t lockupConfirmedHeight;
 	/* 0 until a block has been searched for it.  */
 	std::uint32_t lockupSearchedHeight;
+	/* 0 until a block has been searched for a spend of the
+	 * lockup output.  */
+	std::uint32_t spendSearchedHeight;
 	/* Set once the preimage has been sent to the provider.  */
 	bool preimageRevealed;
 	/* The lockup as stored at the reveal, hex; "" before.  */
