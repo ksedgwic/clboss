@@ -29,9 +29,11 @@ enum class ClaimPath { KeyPath, ScriptPath };
  * swap, with the fee for the given path, and
  * returns the sighash that path signs.
  *
- * @desc if the fee at the given feerate would
- * consume the lockup, the output amount is zero
- * and the transaction must not be signed.
+ * @desc the transaction is replaceable and valid
+ * from the block after `blockheight`.  If the fee
+ * at the given feerate would consume the lockup,
+ * the output amount is zero and the transaction
+ * must not be signed.
  */
 Sha256::Hash
 initial_claim_tx( Bitcoin::Tx& claim_tx /* written by function */

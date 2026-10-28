@@ -84,6 +84,7 @@ public:
 	std::map<std::uint32_t, std::string> blocks;
 	std::set<std::string> confirmed;
 	std::string last_asked;
+	std::uint32_t feerate = 1000;
 
 	MockEnv( bool& broadcast_called_
 	       , Bitcoin::Tx& broadcast_tx_seen_
@@ -92,7 +93,7 @@ public:
 		 { }
 
 	Ev::Io<std::uint32_t> get_feerate() override {
-		return Ev::lift(std::uint32_t(1000));
+		return Ev::lift(feerate);
 	}
 	Ev::Io<std::string> get_block(std::uint32_t height) override {
 		auto it = blocks.find(height);
@@ -579,6 +580,11 @@ int main() {
 		assert(provider.path_seen == "/v2/swap/reverse/swapA/claim");
 		assert(provider.preimage_seen == std::string(real_preimage));
 
+		/* Replaceable, and valid from the block after the one
+		 * it was built at.  */
+		assert(broadcast_tx.inputs[0].nSequence == 0xFFFFFFFD);
+		assert(broadcast_tx.nLockTime == blockheight + 2);
+
 		/* A key-path spend of the lockup output: one witness
 		 * item, a 64-byte signature valid for the output key
 		 * over the sighash of the broadcast transaction.  */
@@ -673,14 +679,61 @@ int main() {
 		assert(found);
 		tx.commit();
 
-		/* While the claim is unconfirmed, each block rebroadcasts
-		 * the stored transaction and asks the provider nothing.  */
+		/* Next block the going feerate has doubled: the claim is
+		 * rebuilt at it, co-signed again, and replaces the
+		 * recorded one.  */
+		env.feerate = 2000;
+		broadcast_called = false;
+		provider.path_seen = "";
+		auto old_claim = broadcast_tx;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapA", blockheight + 3, Bitcoin::Tx()
+		);
+		return handler->run().then([&, old_claim]() {
+			assert(broadcast_called);
+			assert(provider.path_seen == "/v2/swap/reverse/swapA/claim");
+			assert(broadcast_tx != old_claim);
+			assert(broadcast_tx.inputs[0].prevTxid == lockup_tx.get_txid());
+			assert(broadcast_tx.inputs[0].witness.witnesses.size() == 1);
+			assert(broadcast_tx.inputs[0].nSequence == 0xFFFFFFFD);
+			assert(broadcast_tx.nLockTime == blockheight + 3);
+			assert( broadcast_tx.outputs[0].amount
+			     < old_claim.outputs[0].amount
+			      );
+			return db.transact();
+		});
+	}).then([&](Sqlite3::Tx tx) {
+		auto rows = tx.query(R"QRY(
+		SELECT claimTx, claimFeerate, COALESCE(lockupClaimFees, 0)
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapA'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : rows) {
+			found = true;
+			assert(r.get<std::string>(0) == std::string(broadcast_tx));
+			assert(r.get<std::uint32_t>(1) == 2000);
+			assert( r.get<std::uint64_t>(2)
+			     == (amount - broadcast_tx.outputs[0].amount).to_sat()
+			      );
+		}
+		assert(found);
+		tx.commit();
+
+		/* While the claim is unconfirmed and the feerate has not
+		 * risen, each block rebroadcasts the stored transaction
+		 * and asks the provider nothing.  */
 		broadcast_called = false;
 		provider.path_seen = "";
 		auto signed_claim = broadcast_tx;
 		auto handler = Boltz::Detail::ClaimTxHandler::create(
 			signer, db, env, api, provider, random
-		      , "swapA", blockheight + 3, Bitcoin::Tx()
+		      , "swapA", blockheight + 4, Bitcoin::Tx()
 		);
 		return handler->run().then([&, signed_claim]() {
 			assert(broadcast_called);
@@ -698,7 +751,7 @@ int main() {
 		broadcast_called = false;
 		auto handler = Boltz::Detail::ClaimTxHandler::create(
 			signer, db, env, api, provider, random
-		      , "swapA", blockheight + 4, Bitcoin::Tx()
+		      , "swapA", blockheight + 5, Bitcoin::Tx()
 		);
 		return handler->run();
 	}).then([&]() {
@@ -725,7 +778,7 @@ int main() {
 		env.confirmed.insert(std::string(broadcast_tx.get_txid()) + ":0");
 		auto handler = Boltz::Detail::ClaimTxHandler::create(
 			signer, db, env, api, provider, random
-		      , "swapA", blockheight + 5, Bitcoin::Tx()
+		      , "swapA", blockheight + 6, Bitcoin::Tx()
 		);
 		return handler->run();
 	}).then([&]() {
@@ -752,6 +805,7 @@ int main() {
 		 * that keeps the preimage and refuses to co-sign.  */
 		return insert_swap(api, "swapC");
 	}).then([&]() {
+		env.feerate = 1000;
 		provider.fail = true;
 		provider.path_seen = "";
 		provider.preimage_seen = "";
@@ -848,20 +902,32 @@ int main() {
 		assert(found);
 		tx.commit();
 
-		/* Next block the stored script-path claim is rebroadcast
-		 * and the provider is not asked.  */
-		broadcast_called = false;
+		/* Next block the going feerate is a tenth higher and the
+		 * provider co-signs after all.  The key-path replacement
+		 * is smaller than the script-path claim, so at a tenth
+		 * more it would pay less in all and no mempool would
+		 * take it; the handler raises the feerate until the
+		 * replacement pays more than the claim it replaces.  */
+		env.feerate = 1100;
+		provider.fail = false;
 		provider.path_seen = "";
-		auto signed_claim = broadcast_tx;
+		broadcast_called = false;
+		auto old_claim = broadcast_tx;
 		auto handler = Boltz::Detail::ClaimTxHandler::create(
 			signer, db, env, api, provider, random
 		      , "swapC", blockheight + 8, Bitcoin::Tx()
 		);
-		return handler->run().then([&, signed_claim]() {
+		return handler->run().then([&, old_claim]() {
 			assert(broadcast_called);
-			assert(broadcast_tx == signed_claim);
-			assert(provider.path_seen == "");
-			return Ev::lift(signed_claim);
+			assert(provider.path_seen == "/v2/swap/reverse/swapC/claim");
+			assert(broadcast_tx.inputs[0].witness.witnesses.size() == 1);
+			auto old_fee = amount - old_claim.outputs[0].amount;
+			auto new_fee = amount - broadcast_tx.outputs[0].amount;
+			/* More than the old fee plus a satoshi per vbyte of
+			 * a key-path claim, which is over a hundred.  */
+			assert(new_fee > old_fee + Ln::Amount::sat(100));
+			provider.fail = true;
+			return Ev::lift(broadcast_tx);
 		});
 	}).then([&](Bitcoin::Tx signed_claim) {
 		/* The claim is mined, but our wallet has not reported it:
@@ -871,6 +937,7 @@ int main() {
 			env.blocks[h] = empty_block_hex;
 		env.blocks[blockheight + 9] = block_hex({signed_claim});
 		broadcast_called = false;
+		provider.path_seen = "";
 		auto handler = Boltz::Detail::ClaimTxHandler::create(
 			signer, db, env, api, provider, random
 		      , "swapC", blockheight + 9, Bitcoin::Tx()

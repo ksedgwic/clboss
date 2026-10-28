@@ -13,6 +13,7 @@
 #include<cstdint>
 #include<functional>
 #include<memory>
+#include<optional>
 #include<string>
 #include<vector>
 
@@ -114,11 +115,15 @@ private:
 	 * its depth, or ends the run without revealing anything.  */
 	Ev::Io<void> confirm_lockup();
 	/* Builds the unsigned claim at the given feerate for the
-	 * given path; ends the run if the fee would consume the
-	 * lockup.  Returns the sighash that path signs.  */
-	Ev::Io<Sha256::Hash> build_claim( std::uint32_t feerate
-					, ClaimPath path
-					);
+	 * given path and returns the sighash that path signs, or
+	 * nothing when the fee would consume the lockup.  */
+	Ev::Io<std::optional<Sha256::Hash>> build_claim( std::uint32_t feerate
+						       , ClaimPath path
+						       );
+	/* Replaces the recorded claim with one at the current
+	 * feerate when that is higher.  False when the recorded
+	 * claim is kept.  */
+	Ev::Io<bool> bump_claim(std::uint32_t feerate);
 	/* Records that the preimage is about to leave the node.  */
 	Ev::Io<void> persist_reveal();
 	/* Claims the lockup: cooperatively with the key-path
@@ -182,7 +187,8 @@ private:
 	/* The lockup as stored at the reveal, hex; "" before.  */
 	std::string stored_lockup_tx;
 	/* The last signed claim, hex, and its feerate; "" and 0
-	 * before a claim was broadcast.  */
+	 * before a claim was broadcast.  Its fee is in
+	 * lockupClaimFees below.  */
 	std::string claimTxHex;
 	std::uint32_t claimFeerate;
 
