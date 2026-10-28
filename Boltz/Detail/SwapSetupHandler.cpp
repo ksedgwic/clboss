@@ -2,7 +2,7 @@
 #include"Boltz/ConnectionIF.hpp"
 #include"Boltz/Detail/SwapSetupHandler.hpp"
 #include"Boltz/Detail/compute_preimage.hpp"
-#include"Boltz/Detail/match_lockscript.hpp"
+#include"Boltz/Detail/swaptree.hpp"
 #include"Boltz/EnvIF.hpp"
 #include"Boltz/SwapInfo.hpp"
 #include"Ev/Io.hpp"
@@ -145,33 +145,32 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		}
 		auto tmp_refundScript = Util::Str::hexread(tmp_s_refundScript);
 
-		/* Validate the two taptree leaf scripts.  The claim leaf
-		 * must pay to our key on our preimage hash: with any
-		 * other key the unilateral claim would belong to someone
-		 * else, and the cooperative claim would be the only way
-		 * to the funds.  */
-		auto script_hash160 = Ripemd160::Hash();
-		auto claim_pubkey = Secp256k1::XonlyPubKey();
-		auto ok = match_claimscript( script_hash160
-								   , claim_pubkey
-								   , tmp_claimScript
-								   );
-		ok = ok && (script_hash160 == preimageHash160);
-		ok = ok && ( claim_pubkey
-			  == Secp256k1::XonlyPubKey::from_ecdsa_pk(tweakPubKey)
-			   );
-
-		if (!ok) {
-			return loge( std::string("invalid claimScript: ")
+		/* The two leaves must be, byte for byte, the ones we
+		 * would write from what we know: our key and preimage
+		 * hash in the claim leaf, so that the unilateral claim is
+		 * ours and nobody else's; the provider's declared refund
+		 * key and the swap's timeout in the refund leaf, the same
+		 * key the claim later aggregates with ours.  Anything
+		 * else, a different key, another hash, another encoding
+		 * of the height, is a tree we did not agree to, and the
+		 * swap is not paid for.  */
+		auto our_claimScript = claim_leaf
+			( preimageHash160
+			, Secp256k1::XonlyPubKey::from_ecdsa_pk(tweakPubKey)
+			);
+		if (tmp_claimScript != our_claimScript) {
+			return loge( std::string("claimLeaf ")
 				   + tmp_s_claimScript
+				   + " is not the leaf for our key and "
+				     "preimage hash, "
+				   + Util::Str::hexdump( &our_claimScript[0]
+						       , our_claimScript.size()
+						       )
 				   ).then([]() {
 				throw Fail();
 				return Ev::lift();
 			});
 		}
-		/* The refund leaf must carry the swap's timeout and the
-		 * provider's refund key, the same key the claim later
-		 * aggregates with ours for the key path.  */
 		auto provider_pubkey = Secp256k1::PubKey();
 		try {
 			provider_pubkey = Secp256k1::PubKey(tmp_refundPubkey);
@@ -183,20 +182,21 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 				return Ev::lift();
 			});
 		}
-		auto script_locktime = std::uint32_t();
-		auto refund_pubkey = Secp256k1::XonlyPubKey();
-		ok = match_refundscript( script_locktime
-							   , refund_pubkey
-							   , tmp_refundScript
-							   );
-		ok = ok && (script_locktime == tmp_timeoutBlockheight);
-		ok = ok && ( refund_pubkey
-			  == Secp256k1::XonlyPubKey::from_ecdsa_pk(provider_pubkey)
-			   );
-
-		if (!ok) {
-			return loge( std::string("invalid refundScript: ")
+		auto our_refundScript = refund_leaf
+			( Secp256k1::XonlyPubKey::from_ecdsa_pk(provider_pubkey)
+			, tmp_timeoutBlockheight
+			);
+		if (tmp_refundScript != our_refundScript) {
+			return loge( std::string("refundLeaf ")
 				   + tmp_s_refundScript
+				   + " is not the leaf for refundPublicKey "
+				   + tmp_refundPubkey
+				   + " and timeout "
+				   + std::to_string(tmp_timeoutBlockheight)
+				   + ", "
+				   + Util::Str::hexdump( &our_refundScript[0]
+						       , our_refundScript.size()
+						       )
 				   ).then([]() {
 				throw Fail();
 				return Ev::lift();

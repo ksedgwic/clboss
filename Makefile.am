@@ -60,8 +60,6 @@ libclboss_la_SOURCES = \
 	Boltz/Detail/find_lockup_outnum.hpp \
 	Boltz/Detail/initial_claim_tx.cpp \
 	Boltz/Detail/initial_claim_tx.hpp \
-	Boltz/Detail/match_lockscript.cpp \
-	Boltz/Detail/match_lockscript.hpp \
 	Boltz/Detail/swaptree.cpp \
 	Boltz/Detail/swaptree.hpp \
 	Boltz/EnvIF.hpp \
@@ -618,10 +616,10 @@ TESTS = \
 	tests/bitcoin/test_tapscript_sighash \
 	tests/bitcoin/test_tx \
 	tests/boltz/test_claimtxhandler_scoped_update \
-	tests/boltz/test_match_lockscript \
 	tests/boltz/test_servicefactory_migration \
 	tests/boltz/test_serviceimpl_revealed \
 	tests/boltz/test_swapsetuphandler_leaves \
+	tests/boltz/test_swaptree \
 	tests/boss/channelcandidateinvestigator/test_evictionpolicy \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
 	tests/boss/channelcandidateinvestigator/test_manager_offline \

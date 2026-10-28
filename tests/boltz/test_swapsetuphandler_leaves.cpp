@@ -39,7 +39,9 @@
  * - rejects a claim leaf with another key, which would leave the
  *   unilateral claim to someone else;
  * - rejects a refund leaf whose key is not the refundPublicKey the
- *   provider declared.
+ *   provider declared;
+ * - rejects a refund leaf whose height is not pushed as a minimal
+ *   script number, since the leaves must match ours byte for byte.
  */
 
 namespace {
@@ -97,6 +99,7 @@ enum Variant
 { Honest
 , ForeignClaimKey
 , RefundKeyMismatch
+, NonMinimalTimeout
 };
 
 std::string hex(std::vector<std::uint8_t> const& v) {
@@ -166,17 +169,28 @@ public:
 			.to_buffer(&claimScript[28]);
 		claimScript[60] = 0xac;
 
-		/* <key> OP_CHECKSIGVERIFY <timeout> OP_CHECKLOCKTIMEVERIFY  */
-		auto refundScript = std::vector<std::uint8_t>(39);
+		/* <key> OP_CHECKSIGVERIFY <timeout> OP_CHECKLOCKTIMEVERIFY,
+		 * the timeout a minimal script number as the backend
+		 * writes it (little-endian, a zero byte added when the
+		 * top bit is set), with one needless zero byte more for
+		 * NonMinimalTimeout.  */
+		auto refundScript = std::vector<std::uint8_t>(34);
 		refundScript[0] = 0x20;
 		Secp256k1::XonlyPubKey::from_ecdsa_pk(refund_leaf_key)
 			.to_buffer(&refundScript[1]);
 		refundScript[33] = 0xad;
-		refundScript[34] = 0x03;
-		refundScript[35] = std::uint8_t(timeout & 0xff);
-		refundScript[36] = std::uint8_t((timeout >> 8) & 0xff);
-		refundScript[37] = std::uint8_t((timeout >> 16) & 0xff);
-		refundScript[38] = 0xb1;
+		auto number = std::vector<std::uint8_t>();
+		for (auto n = timeout; n > 0; n >>= 8)
+			number.push_back(std::uint8_t(n & 0xff));
+		if (number.back() & 0x80)
+			number.push_back(0x00);
+		if (variant == NonMinimalTimeout)
+			number.push_back(0x00);
+		refundScript.push_back(std::uint8_t(number.size()));
+		refundScript.insert( refundScript.end()
+				   , number.begin(), number.end()
+				   );
+		refundScript.push_back(0xb1);
 
 		auto res = std::string("{")
 			 + "\"id\":\"swapA\","
@@ -309,6 +323,14 @@ int main() {
 	}).then([&](Outcome o) {
 		/* A refund leaf key other than refundPublicKey is
 		 * rejected.  */
+		assert(o.invoice == "");
+		assert(o.rows == 0);
+		return run_variant( NonMinimalTimeout, random, signer, env
+				  , refund_key, other_key
+				  );
+	}).then([&](Outcome o) {
+		/* The right height in another encoding is another
+		 * leaf, rejected.  */
 		assert(o.invoice == "");
 		assert(o.rows == 0);
 		return Ev::lift(0);
