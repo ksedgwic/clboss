@@ -175,7 +175,9 @@ private:
 	std::uint32_t timeoutBlockheight;
 	Ln::Amount onchainAmount;
 	std::uint32_t createdHeight;
-	/* 0 until the lockup is found in one of our node's blocks.  */
+	/* The search state, for the lockup whose txid the row
+	 * stores; reset when the provider reports another one.
+	 * 0 until the lockup is found in one of our node's blocks.  */
 	std::uint32_t lockupConfirmedHeight;
 	/* 0 until a block has been searched for it.  */
 	std::uint32_t lockupSearchedHeight;
