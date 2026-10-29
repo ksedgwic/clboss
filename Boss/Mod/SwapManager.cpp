@@ -475,7 +475,7 @@ private:
 			/* Fail the current swap.  */
 			needs_invoice.pop();
 			return Ev::yield().then([this, uuid]() {
-				return swap_reduce_or_fail(uuid);
+				return shrink_or_abandon(uuid);
 			}).then([this]() {
 				/* Go to next swap.  */
 				return loop_needs_invoice();
@@ -559,9 +559,10 @@ private:
 		});
 	}
 
-	/* Try to reduce the specified swap, and if we reduced,
-	 * put it back into the needs-invoice loop.  */
-	Ev::Io<void> swap_reduce_or_fail(Uuid uuid) {
+	/* The swap's attempt failed.  Try again with a smaller
+	 * amount, back in the needs-invoice loop, or abandon the
+	 * swap when it is at its minimum already.  */
+	Ev::Io<void> shrink_or_abandon(Uuid uuid) {
 		return db.transact().then([this, uuid](Sqlite3::Tx tx) {
 			auto fetch = tx.query(R"QRY(
 			SELECT amount, min_amount
@@ -580,7 +581,7 @@ private:
 
 			/* cannot go lower!  */
 			if (amount == min_amount)
-				return fail_swap(std::move(tx), uuid);
+				return abandon_swap(std::move(tx), uuid);
 
 			/* Reduce.  */
 			auto dist = std::uniform_int_distribution<std::uint64_t>(
@@ -619,9 +620,9 @@ private:
 		});
 	}
 
-	/* Called when we know that the swap will definitely fail
-	 * as we cannot go lower.  */
-	Ev::Io<void> fail_swap(Sqlite3::Tx tx, Uuid uuid) {
+	/* Gives up on the swap: its address goes back to the pool
+	 * and its row goes.  */
+	Ev::Io<void> abandon_swap(Sqlite3::Tx tx, Uuid uuid) {
 		/* Move the address to the addrcache.  */
 		auto fetch = tx.query(R"QRY(
 		SELECT address
@@ -732,7 +733,7 @@ private:
 				return Ev::lift();
 
 			/* Lower it or fail!  */
-			return swap_reduce_or_fail(uuid);
+			return shrink_or_abandon(uuid);
 		});
 	}
 
@@ -944,7 +945,7 @@ private:
 						  "timed out."
 						, std::string(uuid).c_str()
 						).then([this, uuid]() {
-					return swap_reduce_or_fail(uuid);
+					return shrink_or_abandon(uuid);
 				});
 			};
 			return Ev::foreach(f, std::move(remove));
