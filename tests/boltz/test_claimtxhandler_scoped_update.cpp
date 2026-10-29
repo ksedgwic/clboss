@@ -417,6 +417,12 @@ int main() {
 	));
 	auto const lockup_block_hex = block_hex({lockup_tx, lockup_tx2, lockup_tx3});
 	auto const empty_block_hex = block_hex({});
+	/* A lockup of the same shape that is in none of our blocks,
+	 * for the provider to report in place of the real one.  */
+	auto lockup_tx_other = lockup_tx;
+	lockup_tx_other.inputs[0].prevTxid = Bitcoin::TxId(std::string(
+		"0707070707070707070707070707070707070707070707070707070707070707"
+	));
 
 	auto broadcast_called = bool(false);
 	auto broadcast_tx = Bitcoin::Tx();
@@ -563,6 +569,75 @@ int main() {
 			found = true;
 			assert(r.get<std::uint32_t>(0) == blockheight);
 			assert(!r.get<bool>(1));
+		}
+		assert(found);
+		tx.commit();
+
+		/* The provider now reports another lockup.  The
+		 * height found for the first one must not stand for
+		 * it: the search starts over and does not find it.  */
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapA", blockheight, lockup_tx_other
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(provider.path_seen == "");
+		assert(!broadcast_called);
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto rows = tx.query(R"QRY(
+		SELECT COALESCE(lockupSearchedHeight, 0)
+		     , COALESCE(lockupConfirmedHeight, 0)
+		     , COALESCE(lockupTxid, '')
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapA'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : rows) {
+			found = true;
+			assert(r.get<std::uint32_t>(0) == blockheight);
+			assert(r.get<std::uint32_t>(1) == 0);
+			assert( r.get<std::string>(2)
+			     == std::string(lockup_tx_other.get_txid())
+			      );
+		}
+		assert(found);
+		tx.commit();
+
+		/* Back to the real lockup: searched for again from
+		 * the floor and found in the tip block.  */
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapA", blockheight, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(provider.path_seen == "");
+		assert(!broadcast_called);
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto rows = tx.query(R"QRY(
+		SELECT COALESCE(lockupConfirmedHeight, 0)
+		     , COALESCE(lockupTxid, '')
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapA'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : rows) {
+			found = true;
+			assert(r.get<std::uint32_t>(0) == blockheight);
+			assert( r.get<std::string>(1)
+			     == std::string(lockup_tx.get_txid())
+			      );
 		}
 		assert(found);
 		tx.commit();

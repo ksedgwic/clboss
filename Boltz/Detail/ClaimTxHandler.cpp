@@ -165,6 +165,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 	     , claimFeerate -- 15
 	     , COALESCE(spendSearchedHeight, 0) -- 16
 	     , COALESCE(lockupClaimFees, 0) -- 17
+	     , COALESCE(lockupTxid, '') -- 18
 	  FROM "BoltzServiceFactory_rsub"
 	 WHERE apiAccess = :apiAccess
 	   AND swapId = :swapId
@@ -176,6 +177,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 	auto found = 0;
 	auto db_lockupOut = std::uint32_t(0);
 	auto refund_pubkey_hex = std::string();
+	auto stored_lockup_txid = std::string();
 	for (auto& r : fetch) {
 		++found;
 		tweak = Secp256k1::PrivKey(r.get<std::string>(0));
@@ -196,6 +198,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 		claimFeerate = r.get<std::uint32_t>(15);
 		spendSearchedHeight = r.get<std::uint32_t>(16);
 		lockupClaimFees = Ln::Amount::sat(r.get<std::uint64_t>(17));
+		stored_lockup_txid = r.get<std::string>(18);
 	}
 	tx.commit();
 
@@ -245,6 +248,19 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 			}
 		}
 		lockupOut = db_lockupOut;
+	} else if ( !stored_lockup_txid.empty()
+		 && stored_lockup_txid != std::string(lockup_txid)
+		  ) {
+		/* The search state belongs to the lockup the provider
+		 * reported before.  It says nothing about this one,
+		 * which has to be found in our blocks on its own.  */
+		co_await loge( "Provider now reports lockup "
+			     + std::string(lockup_txid)
+			     + " instead of " + stored_lockup_txid
+			     + "; searching our blocks for it."
+			     );
+		lockupConfirmedHeight = 0;
+		lockupSearchedHeight = 0;
 	}
 }
 
@@ -320,12 +336,14 @@ Ev::Io<void> ClaimTxHandler::confirm_lockup() {
 		UPDATE "BoltzServiceFactory_rsub"
 		   SET lockupSearchedHeight = NULLIF(:searched, 0)
 		     , lockupConfirmedHeight = NULLIF(:confirmed, 0)
+		     , lockupTxid = :lockup_txid
 		 WHERE apiAccess = :apiAccess
 		   AND swapId = :swapId
 		     ;
 		)QRY")
 			.bind(":searched", lockupSearchedHeight)
 			.bind(":confirmed", lockupConfirmedHeight)
+			.bind(":lockup_txid", std::string(lockup_txid))
 			.bind(":apiAccess", api_endpoint)
 			.bind(":swapId", swapId)
 			.execute();
