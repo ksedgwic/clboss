@@ -171,6 +171,19 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 				return Ev::lift();
 			});
 		}
+		/* Validate refundPublicKey is a 33-byte key in hex.
+		 * The key parser fails anything else with a hex
+		 * error, not InvalidPubKey.  */
+		if ( !Util::Str::ishex(tmp_refundPubkey)
+		  || tmp_refundPubkey.size() != 66
+		   ) {
+			return loge( std::string("invalid refundPublicKey: ")
+				   + tmp_refundPubkey
+				   ).then([]() {
+				throw Fail();
+				return Ev::lift();
+			});
+		}
 		auto provider_pubkey = Secp256k1::PubKey();
 		try {
 			provider_pubkey = Secp256k1::PubKey(tmp_refundPubkey);

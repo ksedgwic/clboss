@@ -417,6 +417,12 @@ int main() {
 	));
 	auto const lockup_block_hex = block_hex({lockup_tx, lockup_tx2, lockup_tx3});
 	auto const empty_block_hex = block_hex({});
+	/* A lockup of the same shape that is in none of our blocks,
+	 * for the provider to report in place of the real one.  */
+	auto lockup_tx_other = lockup_tx;
+	lockup_tx_other.inputs[0].prevTxid = Bitcoin::TxId(std::string(
+		"0707070707070707070707070707070707070707070707070707070707070707"
+	));
 
 	auto broadcast_called = bool(false);
 	auto broadcast_tx = Bitcoin::Tx();
@@ -474,6 +480,33 @@ int main() {
 				.bind(":timeoutBlockheight", timeout)
 				.bind(":onchainAmount", amount.to_sat())
 				.bind(":createdHeight", created_height)
+				.execute();
+			tx.commit();
+			return Ev::lift();
+		});
+	};
+
+	/* Puts a row in the state after the reveal with no claim
+	 * broadcast: the preimage is out, the lockup was found in
+	 * the block at the tip, nothing was signed.  */
+	auto reveal_without_claim = [&](std::string swapId, Bitcoin::Tx lockup) {
+		return db.transact().then([&, swapId, lockup](Sqlite3::Tx tx) {
+			tx.query(R"QRY(
+			UPDATE "BoltzServiceFactory_rsub"
+			   SET preimageRevealed = 1
+			     , lockupTxid = :lockupTxid
+			     , lockupOut = 0
+			     , lockupTx = :lockupTx
+			     , lockupConfirmedHeight = :height
+			 WHERE apiAccess = :apiAccess
+			   AND swapId = :swapId
+			     ;
+			)QRY")
+				.bind(":lockupTxid", std::string(lockup.get_txid()))
+				.bind(":lockupTx", std::string(lockup))
+				.bind(":height", blockheight)
+				.bind(":apiAccess", api)
+				.bind(":swapId", swapId)
 				.execute();
 			tx.commit();
 			return Ev::lift();
@@ -563,6 +596,75 @@ int main() {
 			found = true;
 			assert(r.get<std::uint32_t>(0) == blockheight);
 			assert(!r.get<bool>(1));
+		}
+		assert(found);
+		tx.commit();
+
+		/* The provider now reports another lockup.  The
+		 * height found for the first one must not stand for
+		 * it: the search starts over and does not find it.  */
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapA", blockheight, lockup_tx_other
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(provider.path_seen == "");
+		assert(!broadcast_called);
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto rows = tx.query(R"QRY(
+		SELECT COALESCE(lockupSearchedHeight, 0)
+		     , COALESCE(lockupConfirmedHeight, 0)
+		     , COALESCE(lockupTxid, '')
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapA'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : rows) {
+			found = true;
+			assert(r.get<std::uint32_t>(0) == blockheight);
+			assert(r.get<std::uint32_t>(1) == 0);
+			assert( r.get<std::string>(2)
+			     == std::string(lockup_tx_other.get_txid())
+			      );
+		}
+		assert(found);
+		tx.commit();
+
+		/* Back to the real lockup: searched for again from
+		 * the floor and found in the tip block.  */
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapA", blockheight, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(provider.path_seen == "");
+		assert(!broadcast_called);
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto rows = tx.query(R"QRY(
+		SELECT COALESCE(lockupConfirmedHeight, 0)
+		     , COALESCE(lockupTxid, '')
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapA'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : rows) {
+			found = true;
+			assert(r.get<std::uint32_t>(0) == blockheight);
+			assert( r.get<std::string>(1)
+			     == std::string(lockup_tx.get_txid())
+			      );
 		}
 		assert(found);
 		tx.commit();
@@ -1071,6 +1173,131 @@ int main() {
 		assert(broadcast_called);
 		assert(provider.path_seen == "");
 		assert(broadcast_tx.inputs[0].witness.witnesses.size() == 4);
+
+		/* A swap whose preimage went out but whose claim was
+		 * never broadcast, on the second lockup, which the
+		 * provider has spent since: the loss is noticed and
+		 * the row goes, the provider is not asked again.  */
+		return insert_swap(api, "swapG");
+	}).then([&]() {
+		return reveal_without_claim("swapG", lockup_tx2);
+	}).then([&]() {
+		env.cooperative = true;
+		provider.fail = false;
+		provider.path_seen = "";
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapG", blockheight + 12, Bitcoin::Tx()
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		assert(provider.path_seen == "");
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto gone = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapG'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		for (auto& r : gone)
+			assert(r.get<int>(0) == 0);
+		tx.commit();
+
+		/* The same, on the third lockup, which nothing spends,
+		 * long after the timeout: given up, not re-claimed.  */
+		return insert_swap(api, "swapH");
+	}).then([&]() {
+		return reveal_without_claim("swapH", lockup_tx3);
+	}).then([&]() {
+		provider.path_seen = "";
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapH", timeout + 432, Bitcoin::Tx()
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		assert(provider.path_seen == "");
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto gone = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapH'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		for (auto& r : gone)
+			assert(r.get<int>(0) == 0);
+		tx.commit();
+
+		/* A swap whose lockup was found at the tip and then
+		 * reorganized out before it was deep enough: the
+		 * preimage stays in, and the search starts over.  */
+		return insert_swap(api, "swapI");
+	}).then([&]() {
+		provider.path_seen = "";
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapI", blockheight, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		/* The tip is reorganized out; at its height our node
+		 * now has a block without the lockup.  Two blocks on,
+		 * the lockup would have been deep enough.  */
+		env.blocks[blockheight] = block_hex({lockup_tx2, lockup_tx3});
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapI", blockheight + 2, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		assert(provider.path_seen == "");
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto rows = tx.query(R"QRY(
+		SELECT preimageRevealed
+		     , COALESCE(lockupConfirmedHeight, 0)
+		     , COALESCE(lockupSearchedHeight, 0)
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapI'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : rows) {
+			found = true;
+			assert(!r.get<bool>(0));
+			assert(r.get<std::uint32_t>(1) == 0);
+			assert(r.get<std::uint32_t>(2) == blockheight + 2);
+		}
+		assert(found);
+		tx.commit();
+
+		/* The lockup is mined again three blocks on: found
+		 * there and, deep enough, claimed.  */
+		env.blocks[blockheight + 3] = block_hex({lockup_tx});
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapI", blockheight + 5, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(broadcast_called);
+		assert(provider.path_seen == "/v2/swap/reverse/swapI/claim");
 		return Ev::lift(0);
 	});
 

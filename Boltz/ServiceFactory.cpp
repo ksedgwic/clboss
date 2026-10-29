@@ -138,9 +138,10 @@ private:
 			     , claimTx TEXT NOT NULL DEFAULT ''
 			     , claimFeerate INTEGER NOT NULL DEFAULT 0
 
-			     -- from the exchange, after paying invoice.
-			     -- These are the details of the lockup
-			     -- transaction output.
+			     -- The lockup transaction the provider
+			     -- reported, as searched for below; the two
+			     -- heights belong to it.  Written with the
+			     -- search state and again at the reveal.
 			     , lockupTxid TEXT NULL
 			     -- The output of the lockupTxid that contains
 			     -- the value spendable by the redeem script.

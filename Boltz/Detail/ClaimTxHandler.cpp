@@ -165,6 +165,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 	     , claimFeerate -- 15
 	     , COALESCE(spendSearchedHeight, 0) -- 16
 	     , COALESCE(lockupClaimFees, 0) -- 17
+	     , COALESCE(lockupTxid, '') -- 18
 	  FROM "BoltzServiceFactory_rsub"
 	 WHERE apiAccess = :apiAccess
 	   AND swapId = :swapId
@@ -176,6 +177,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 	auto found = 0;
 	auto db_lockupOut = std::uint32_t(0);
 	auto refund_pubkey_hex = std::string();
+	auto stored_lockup_txid = std::string();
 	for (auto& r : fetch) {
 		++found;
 		tweak = Secp256k1::PrivKey(r.get<std::string>(0));
@@ -196,6 +198,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 		claimFeerate = r.get<std::uint32_t>(15);
 		spendSearchedHeight = r.get<std::uint32_t>(16);
 		lockupClaimFees = Ln::Amount::sat(r.get<std::uint64_t>(17));
+		stored_lockup_txid = r.get<std::string>(18);
 	}
 	tx.commit();
 
@@ -245,6 +248,19 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 			}
 		}
 		lockupOut = db_lockupOut;
+	} else if ( !stored_lockup_txid.empty()
+		 && stored_lockup_txid != std::string(lockup_txid)
+		  ) {
+		/* The search state belongs to the lockup the provider
+		 * reported before.  It says nothing about this one,
+		 * which has to be found in our blocks on its own.  */
+		co_await loge( "Provider now reports lockup "
+			     + std::string(lockup_txid)
+			     + " instead of " + stored_lockup_txid
+			     + "; searching our blocks for it."
+			     );
+		lockupConfirmedHeight = 0;
+		lockupSearchedHeight = 0;
 	}
 }
 
@@ -269,7 +285,47 @@ Ev::Io<void> ClaimTxHandler::prepare_keys() {
 	}
 }
 
+Ev::Io<std::optional<Bitcoin::Block>>
+ClaimTxHandler::fetch_block(std::uint32_t h) {
+	auto hex = co_await env.get_block(h);
+	if (hex.empty())
+		/* Our node does not have that block yet.  */
+		co_return std::nullopt;
+	auto block = Bitcoin::Block();
+	auto parsed = true;
+	auto parse_error = std::string();
+	try {
+		block = Bitcoin::Block(hex);
+	} catch (std::exception const& e) {
+		parsed = false;
+		parse_error = e.what();
+	}
+	if (!parsed) {
+		co_await loge( "Block " + std::to_string(h)
+			     + " did not parse: " + parse_error
+			     );
+		co_return std::nullopt;
+	}
+	co_return block;
+}
+
 Ev::Io<void> ClaimTxHandler::confirm_lockup() {
+	if (lockupConfirmedHeight != 0) {
+		/* Found on an earlier run.  A reorganization may have
+		 * dropped that block since, and the preimage goes out
+		 * on the strength of the lockup being in it, so it is
+		 * read again.  */
+		auto block = co_await fetch_block(lockupConfirmedHeight);
+		if (!block || !block->contains(lockup_txid)) {
+			co_await loge( std::string("Lockup transaction ")
+				     + std::string(lockup_txid)
+				     + " is no longer in block "
+				     + std::to_string(lockupConfirmedHeight)
+				     + "; searching again."
+				     );
+			lockupConfirmedHeight = 0;
+		}
+	}
 	if (lockupConfirmedHeight == 0) {
 		/* The lockup was mined after the swap was created, so
 		 * the search starts at the creation height less the
@@ -286,30 +342,12 @@ Ev::Io<void> ClaimTxHandler::confirm_lockup() {
 			from = lockupSearchedHeight + 1 - search_margin_blocks;
 
 		for (auto h = from; h <= blockheight; ++h) {
-			auto hex = co_await env.get_block(h);
-			if (hex.empty())
-				/* Our node does not have that block yet;
-				 * search again at the next block.  */
+			auto block = co_await fetch_block(h);
+			if (!block)
+				/* Search again at the next block.  */
 				break;
-			auto block = Bitcoin::Block();
-			auto parsed = true;
-			auto parse_error = std::string();
-			try {
-				block = Bitcoin::Block(hex);
-			} catch (std::exception const& e) {
-				parsed = false;
-				parse_error = e.what();
-			}
-			if (!parsed) {
-				co_await loge( std::string("Block ")
-					     + std::to_string(h)
-					     + " did not parse: "
-					     + parse_error
-					     );
-				break;
-			}
 			lockupSearchedHeight = h;
-			if (block.contains(lockup_txid)) {
+			if (block->contains(lockup_txid)) {
 				lockupConfirmedHeight = h;
 				break;
 			}
@@ -320,12 +358,14 @@ Ev::Io<void> ClaimTxHandler::confirm_lockup() {
 		UPDATE "BoltzServiceFactory_rsub"
 		   SET lockupSearchedHeight = NULLIF(:searched, 0)
 		     , lockupConfirmedHeight = NULLIF(:confirmed, 0)
+		     , lockupTxid = :lockup_txid
 		 WHERE apiAccess = :apiAccess
 		   AND swapId = :swapId
 		     ;
 		)QRY")
 			.bind(":searched", lockupSearchedHeight)
 			.bind(":confirmed", lockupConfirmedHeight)
+			.bind(":lockup_txid", std::string(lockup_txid))
 			.bind(":apiAccess", api_endpoint)
 			.bind(":swapId", swapId)
 			.execute();
@@ -629,45 +669,38 @@ Ev::Io<void> ClaimTxHandler::broadcast_and_record(std::string const& how) {
 }
 
 Ev::Io<void> ClaimTxHandler::track_claim() {
-	if (claimTxHex.empty()) {
-		/* The preimage is out but no claim was ever broadcast:
-		 * the provider did not co-sign, or we stopped before
-		 * the broadcast.  Ask again, with new nonces.  */
-		co_await prepare_keys();
-		auto feerate = co_await env.get_feerate();
-		auto sighash = co_await build_claim(feerate, ClaimPath::KeyPath);
-		if (!sighash)
-			throw End();
-		co_await claim(*sighash, feerate);
-		co_return;
-	}
-
-	auto error = std::string();
+	/* The claim broadcast so far, if any.  The preimage may be
+	 * out with no claim broadcast: the provider did not co-sign,
+	 * or we stopped before the broadcast.  */
 	auto claim = Bitcoin::Tx();
-	try {
-		claim = Bitcoin::Tx(claimTxHex);
-	} catch (std::exception const& e) {
-		error = e.what();
-	}
-	if (!error.empty()) {
-		co_await loge( "Stored claim transaction did not "
-			       "parse: " + error
-			     );
-		throw End();
-	}
-	auto claim_txid = claim.get_txid();
+	auto claim_txid = Bitcoin::TxId();
+	if (!claimTxHex.empty()) {
+		auto error = std::string();
+		try {
+			claim = Bitcoin::Tx(claimTxHex);
+		} catch (std::exception const& e) {
+			error = e.what();
+		}
+		if (!error.empty()) {
+			co_await loge( "Stored claim transaction did not "
+				       "parse: " + error
+				     );
+			throw End();
+		}
+		claim_txid = claim.get_txid();
 
-	/* Done once our own wallet holds the claim's output,
-	 * confirmed.  The output is named by the claim's transaction
-	 * id: the provider learns the destination address from the
-	 * claim request, and a payment of its own to that address
-	 * must not pass for the claim.  */
-	if (co_await env.has_confirmed_output(claim_txid, 0)) {
-		co_await logd( "Claim " + std::string(claim_txid)
-			     + " confirmed; swap done."
-			     );
-		co_await remove_row();
-		co_return;
+		/* Done once our own wallet holds the claim's output,
+		 * confirmed.  The output is named by the claim's
+		 * transaction id: the provider learns the destination
+		 * address from the claim request, and a payment of its
+		 * own to that address must not pass for the claim.  */
+		if (co_await env.has_confirmed_output(claim_txid, 0)) {
+			co_await logd( "Claim " + std::string(claim_txid)
+				     + " confirmed; swap done."
+				     );
+			co_await remove_row();
+			co_return;
+		}
 	}
 
 	/* The lockup output can be spent by a claim of ours or, from
@@ -719,6 +752,18 @@ Ev::Io<void> ClaimTxHandler::track_claim() {
 			       "on the swap."
 			     );
 		co_await remove_row();
+		co_return;
+	}
+
+	if (claimTxHex.empty()) {
+		/* No claim yet, and the lockup is still there to be
+		 * claimed: ask again, with new nonces.  */
+		co_await prepare_keys();
+		auto feerate = co_await env.get_feerate();
+		auto sighash = co_await build_claim(feerate, ClaimPath::KeyPath);
+		if (!sighash)
+			throw End();
+		co_await this->claim(*sighash, feerate);
 		co_return;
 	}
 
@@ -792,25 +837,11 @@ ClaimTxHandler::find_lockup_spend() {
 	auto found = std::unique_ptr<LockupSpend>();
 	auto searched = spendSearchedHeight;
 	for (auto h = from; h <= blockheight; ++h) {
-		auto hex = co_await env.get_block(h);
-		if (hex.empty())
-			/* Our node does not have that block yet.  */
+		auto block = co_await fetch_block(h);
+		if (!block)
 			break;
-		auto block = Bitcoin::Block();
-		auto parse_error = std::string();
-		try {
-			block = Bitcoin::Block(hex);
-		} catch (std::exception const& e) {
-			parse_error = e.what();
-		}
-		if (!parse_error.empty()) {
-			co_await loge( "Block " + std::to_string(h)
-				     + " did not parse: " + parse_error
-				     );
-			break;
-		}
 		searched = h;
-		auto tx = block.spender(lockup_txid, std::uint32_t(lockupOut));
+		auto tx = block->spender(lockup_txid, std::uint32_t(lockupOut));
 		if (tx) {
 			found = Util::make_unique<LockupSpend>();
 			found->height = h;
