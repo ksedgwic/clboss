@@ -9,6 +9,7 @@
 
 namespace Secp256k1 { class PrivKey; }
 namespace Secp256k1 { class PubKey; }
+namespace Secp256k1 { class Random; }
 namespace Secp256k1 { class XonlyPubKey; }
 namespace Sha256 { class Hash; }
 
@@ -85,6 +86,7 @@ private:
 
 	SchnorrSig( Secp256k1::PrivKey const&
 		 , Sha256::Hash const&
+		 , Secp256k1::Random&
 		 );
 	SchnorrSig(std::uint8_t const buffer[64]);
 
@@ -110,13 +112,15 @@ public:
 		  ) const;
 
 	/* Create a valid signature for the given privkey and
-	 * message hash.
+	 * message hash.  The random source supplies the auxiliary
+	 * randomness BIP340 mixes into the nonce.
 	 */
 	static
 	SchnorrSig create( Secp256k1::PrivKey const& sk
 			, Sha256::Hash const& m
+			, Secp256k1::Random& random
 			) {
-		return SchnorrSig(sk, m);
+		return SchnorrSig(sk, m, random);
 	}
 };
 

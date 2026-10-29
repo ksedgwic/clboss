@@ -555,7 +555,8 @@ Ev::Io<void> ClaimTxHandler::script_path_claim(std::uint32_t feerate) {
 	auto control_block = std::vector<std::uint8_t>();
 	try {
 		auto keys = signer.get_keypair_tweak(tweak);
-		signature = SchnorrSig::create(keys.priv(), sighash).to_buffer();
+		signature = SchnorrSig::create(keys.priv(), sighash, random)
+			.to_buffer();
 
 		/* The control block: the leaf version with the parity
 		 * of the output key, the internal key, and the merkle
