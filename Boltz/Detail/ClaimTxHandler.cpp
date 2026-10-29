@@ -310,6 +310,22 @@ ClaimTxHandler::fetch_block(std::uint32_t h) {
 }
 
 Ev::Io<void> ClaimTxHandler::confirm_lockup() {
+	if (lockupConfirmedHeight != 0) {
+		/* Found on an earlier run.  A reorganization may have
+		 * dropped that block since, and the preimage goes out
+		 * on the strength of the lockup being in it, so it is
+		 * read again.  */
+		auto block = co_await fetch_block(lockupConfirmedHeight);
+		if (!block || !block->contains(lockup_txid)) {
+			co_await loge( std::string("Lockup transaction ")
+				     + std::string(lockup_txid)
+				     + " is no longer in block "
+				     + std::to_string(lockupConfirmedHeight)
+				     + "; searching again."
+				     );
+			lockupConfirmedHeight = 0;
+		}
+	}
 	if (lockupConfirmedHeight == 0) {
 		/* The lockup was mined after the swap was created, so
 		 * the search starts at the creation height less the

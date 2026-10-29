@@ -1237,6 +1237,67 @@ int main() {
 		for (auto& r : gone)
 			assert(r.get<int>(0) == 0);
 		tx.commit();
+
+		/* A swap whose lockup was found at the tip and then
+		 * reorganized out before it was deep enough: the
+		 * preimage stays in, and the search starts over.  */
+		return insert_swap(api, "swapI");
+	}).then([&]() {
+		provider.path_seen = "";
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapI", blockheight, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		/* The tip is reorganized out; at its height our node
+		 * now has a block without the lockup.  Two blocks on,
+		 * the lockup would have been deep enough.  */
+		env.blocks[blockheight] = block_hex({lockup_tx2, lockup_tx3});
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapI", blockheight + 2, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		assert(provider.path_seen == "");
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto rows = tx.query(R"QRY(
+		SELECT preimageRevealed
+		     , COALESCE(lockupConfirmedHeight, 0)
+		     , COALESCE(lockupSearchedHeight, 0)
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapI'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : rows) {
+			found = true;
+			assert(!r.get<bool>(0));
+			assert(r.get<std::uint32_t>(1) == 0);
+			assert(r.get<std::uint32_t>(2) == blockheight + 2);
+		}
+		assert(found);
+		tx.commit();
+
+		/* The lockup is mined again three blocks on: found
+		 * there and, deep enough, claimed.  */
+		env.blocks[blockheight + 3] = block_hex({lockup_tx});
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapI", blockheight + 5, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(broadcast_called);
+		assert(provider.path_seen == "/v2/swap/reverse/swapI/claim");
 		return Ev::lift(0);
 	});
 
