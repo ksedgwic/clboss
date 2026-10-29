@@ -13,6 +13,7 @@
 #include<stdlib.h>
 #include<string.h>
 #include<sstream>
+#include<vector>
 
 using Secp256k1::Detail::context;
 
@@ -49,7 +50,7 @@ private:
 
 public:
 	Impl(Impl&&) =default;
-	Impl& operator=(Impl&&) =default;
+	Impl& operator=(Impl&&) =delete;
 
 	Impl( std::vector<Signatory> signers_
 		, Signatory& local_
@@ -60,13 +61,13 @@ public:
 		/* copy signing key.  */
 		keys.priv().to_buffer(signing_key);
 
-		const secp256k1_pubkey *pkarr[signers.size()];
+		auto pkarr = std::vector<secp256k1_pubkey const*>(signers.size());
 
 		for (size_t i{0}; i < signers.size(); ++i)
 			pkarr[i] = reinterpret_cast<const secp256k1_pubkey*>(signers[i].public_key.get_key());
 
 		aggregate_pk = pubkey_aggregate( &aggkey_cache
-									   , pkarr
+									   , pkarr.data()
 									   , signers.size()
 									   );
 	}
@@ -205,7 +206,7 @@ public:
 		if (!sighash_loaded)
 			throw InvalidArg("Session::aggregate_nonces sighash not loaded");
 
-		secp256k1_musig_pubnonce *pubnoncearr[signers.size()];
+		auto pubnoncearr = std::vector<secp256k1_musig_pubnonce*>(signers.size());
 
 		size_t i = 0;
 		for (auto it = signers.begin(); it != signers.end(); ++it, ++i) {
@@ -218,7 +219,7 @@ public:
 		auto res = secp256k1_musig_nonce_agg
 			( context.get()
 			, &aggnonce
-			, pubnoncearr
+			, pubnoncearr.data()
 			, signers.size() );
 
 		if (!res)
@@ -318,7 +319,7 @@ public:
 
 	void /* aggregate the partial sigs */
 	aggregate_partials(std::uint8_t aggsigbuf[64]) {
-		const secp256k1_musig_partial_sig *sig_array[signers.size()];
+		auto sig_array = std::vector<secp256k1_musig_partial_sig const*>(signers.size());
 
 		auto i = 0;
 		for (auto it = signers.begin(); it != signers.end(); ++it, ++i)
@@ -328,7 +329,7 @@ public:
 			( context.get()
 			, aggsigbuf
 			, &session
-			, reinterpret_cast<const secp256k1_musig_partial_sig* const*>(sig_array)
+			, sig_array.data()
 			, signers.size()
 			);
 
@@ -419,12 +420,12 @@ Session& Session::operator= (Session&&) =default;
 
 XonlyPubKey
 Session::pubkey_aggregate(std::vector<PubKey> const& signers) {
-	const secp256k1_pubkey *pkarr[signers.size()];
+	auto pkarr = std::vector<secp256k1_pubkey const*>(signers.size());
 
 	for (size_t i{0}; i < signers.size(); ++i)
 		pkarr[i] = reinterpret_cast<const secp256k1_pubkey*>(signers[i].get_key());
 
-	return Impl::pubkey_aggregate(nullptr, pkarr, signers.size());
+	return Impl::pubkey_aggregate(nullptr, pkarr.data(), signers.size());
 }
 
 void
