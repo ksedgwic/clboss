@@ -1,5 +1,6 @@
 #ifndef BOLTZ_DETAIL_CLAIMTXHANDLER_HPP
 #define BOLTZ_DETAIL_CLAIMTXHANDLER_HPP
+#include"Bitcoin/Block.hpp"
 #include"Bitcoin/Tx.hpp"
 #include"Bitcoin/TxId.hpp"
 #include"Ln/Amount.hpp"
@@ -111,6 +112,9 @@ private:
 	/* Builds the MuSig2 session and the lockup script from the
 	 * row's keys and leaves.  */
 	Ev::Io<void> prepare_keys();
+	/* The block at the given height from our node, or nothing
+	 * when the node does not have it yet or it did not parse.  */
+	Ev::Io<std::optional<Bitcoin::Block>> fetch_block(std::uint32_t h);
 	/* Finds the lockup in our own node's blocks and waits for
 	 * its depth, or ends the run without revealing anything.  */
 	Ev::Io<void> confirm_lockup();
