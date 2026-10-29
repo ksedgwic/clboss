@@ -152,6 +152,10 @@ p2tr_sighash_core( Bitcoin::Tx const& tx
 	  || scriptPubKeys.size() != tx.inputs.size()
 	   )
 		throw InvalidSighash("one amount and one scriptPubKey per input");
+	/* bip341: SIGHASH_SINGLE commits to the output at the
+	 * input's index, and there is no message without one.  */
+	if ((loflags == SIGHASH_SINGLE) && nIn >= tx.outputs.size())
+		throw InvalidSighash("SIGHASH_SINGLE without a matching output");
 
 	auto hashPrevouts = Sha256::Hash();
 	if (!(hiflags & SIGHASH_ANYONECANPAY)) {
@@ -249,7 +253,7 @@ p2tr_sighash_core( Bitcoin::Tx const& tx
 
 	/* 3. output data */
 	/* SIGHASH_SINGLE corresponding output.  */
-	if ((loflags == SIGHASH_SINGLE) && nIn < tx.outputs.size()) {
+	if (loflags == SIGHASH_SINGLE) {
 		{
 			Sha256::HasherStream hasher;
 			hasher << tx.outputs[nIn];

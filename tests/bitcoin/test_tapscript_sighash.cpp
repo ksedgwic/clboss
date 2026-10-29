@@ -151,5 +151,29 @@ int main() {
 	}
 	assert(threw);
 
+	/* SIGHASH_SINGLE needs the output at the input's index:
+	 * with it the message forms, without it there is none.  */
+	auto amounts = std::vector<Ln::Amount>( tx.inputs.size()
+					      , Ln::Amount::sat(1000)
+					      );
+	auto spks = std::vector<std::vector<std::uint8_t>>
+		( tx.inputs.size()
+		, std::vector<std::uint8_t>(34, 0x51)
+		);
+	assert(tx.outputs.size() >= 1);
+	Bitcoin::p2tr_sighash(tx, Bitcoin::SIGHASH_SINGLE, 0, amounts, spks);
+	auto fewer_outputs = tx;
+	fewer_outputs.outputs.clear();
+	threw = false;
+	try {
+		Bitcoin::p2tr_sighash
+			( fewer_outputs, Bitcoin::SIGHASH_SINGLE, 0
+			, amounts, spks
+			);
+	} catch (Bitcoin::InvalidSighash const&) {
+		threw = true;
+	}
+	assert(threw);
+
 	return 0;
 }
