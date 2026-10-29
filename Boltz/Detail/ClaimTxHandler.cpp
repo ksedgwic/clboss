@@ -647,45 +647,38 @@ Ev::Io<void> ClaimTxHandler::broadcast_and_record(std::string const& how) {
 }
 
 Ev::Io<void> ClaimTxHandler::track_claim() {
-	if (claimTxHex.empty()) {
-		/* The preimage is out but no claim was ever broadcast:
-		 * the provider did not co-sign, or we stopped before
-		 * the broadcast.  Ask again, with new nonces.  */
-		co_await prepare_keys();
-		auto feerate = co_await env.get_feerate();
-		auto sighash = co_await build_claim(feerate, ClaimPath::KeyPath);
-		if (!sighash)
-			throw End();
-		co_await claim(*sighash, feerate);
-		co_return;
-	}
-
-	auto error = std::string();
+	/* The claim broadcast so far, if any.  The preimage may be
+	 * out with no claim broadcast: the provider did not co-sign,
+	 * or we stopped before the broadcast.  */
 	auto claim = Bitcoin::Tx();
-	try {
-		claim = Bitcoin::Tx(claimTxHex);
-	} catch (std::exception const& e) {
-		error = e.what();
-	}
-	if (!error.empty()) {
-		co_await loge( "Stored claim transaction did not "
-			       "parse: " + error
-			     );
-		throw End();
-	}
-	auto claim_txid = claim.get_txid();
+	auto claim_txid = Bitcoin::TxId();
+	if (!claimTxHex.empty()) {
+		auto error = std::string();
+		try {
+			claim = Bitcoin::Tx(claimTxHex);
+		} catch (std::exception const& e) {
+			error = e.what();
+		}
+		if (!error.empty()) {
+			co_await loge( "Stored claim transaction did not "
+				       "parse: " + error
+				     );
+			throw End();
+		}
+		claim_txid = claim.get_txid();
 
-	/* Done once our own wallet holds the claim's output,
-	 * confirmed.  The output is named by the claim's transaction
-	 * id: the provider learns the destination address from the
-	 * claim request, and a payment of its own to that address
-	 * must not pass for the claim.  */
-	if (co_await env.has_confirmed_output(claim_txid, 0)) {
-		co_await logd( "Claim " + std::string(claim_txid)
-			     + " confirmed; swap done."
-			     );
-		co_await remove_row();
-		co_return;
+		/* Done once our own wallet holds the claim's output,
+		 * confirmed.  The output is named by the claim's
+		 * transaction id: the provider learns the destination
+		 * address from the claim request, and a payment of its
+		 * own to that address must not pass for the claim.  */
+		if (co_await env.has_confirmed_output(claim_txid, 0)) {
+			co_await logd( "Claim " + std::string(claim_txid)
+				     + " confirmed; swap done."
+				     );
+			co_await remove_row();
+			co_return;
+		}
 	}
 
 	/* The lockup output can be spent by a claim of ours or, from
@@ -737,6 +730,18 @@ Ev::Io<void> ClaimTxHandler::track_claim() {
 			       "on the swap."
 			     );
 		co_await remove_row();
+		co_return;
+	}
+
+	if (claimTxHex.empty()) {
+		/* No claim yet, and the lockup is still there to be
+		 * claimed: ask again, with new nonces.  */
+		co_await prepare_keys();
+		auto feerate = co_await env.get_feerate();
+		auto sighash = co_await build_claim(feerate, ClaimPath::KeyPath);
+		if (!sighash)
+			throw End();
+		co_await this->claim(*sighash, feerate);
 		co_return;
 	}
 
