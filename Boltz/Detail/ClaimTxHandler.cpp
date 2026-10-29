@@ -285,6 +285,30 @@ Ev::Io<void> ClaimTxHandler::prepare_keys() {
 	}
 }
 
+Ev::Io<std::optional<Bitcoin::Block>>
+ClaimTxHandler::fetch_block(std::uint32_t h) {
+	auto hex = co_await env.get_block(h);
+	if (hex.empty())
+		/* Our node does not have that block yet.  */
+		co_return std::nullopt;
+	auto block = Bitcoin::Block();
+	auto parsed = true;
+	auto parse_error = std::string();
+	try {
+		block = Bitcoin::Block(hex);
+	} catch (std::exception const& e) {
+		parsed = false;
+		parse_error = e.what();
+	}
+	if (!parsed) {
+		co_await loge( "Block " + std::to_string(h)
+			     + " did not parse: " + parse_error
+			     );
+		co_return std::nullopt;
+	}
+	co_return block;
+}
+
 Ev::Io<void> ClaimTxHandler::confirm_lockup() {
 	if (lockupConfirmedHeight == 0) {
 		/* The lockup was mined after the swap was created, so
@@ -302,30 +326,12 @@ Ev::Io<void> ClaimTxHandler::confirm_lockup() {
 			from = lockupSearchedHeight + 1 - search_margin_blocks;
 
 		for (auto h = from; h <= blockheight; ++h) {
-			auto hex = co_await env.get_block(h);
-			if (hex.empty())
-				/* Our node does not have that block yet;
-				 * search again at the next block.  */
+			auto block = co_await fetch_block(h);
+			if (!block)
+				/* Search again at the next block.  */
 				break;
-			auto block = Bitcoin::Block();
-			auto parsed = true;
-			auto parse_error = std::string();
-			try {
-				block = Bitcoin::Block(hex);
-			} catch (std::exception const& e) {
-				parsed = false;
-				parse_error = e.what();
-			}
-			if (!parsed) {
-				co_await loge( std::string("Block ")
-					     + std::to_string(h)
-					     + " did not parse: "
-					     + parse_error
-					     );
-				break;
-			}
 			lockupSearchedHeight = h;
-			if (block.contains(lockup_txid)) {
+			if (block->contains(lockup_txid)) {
 				lockupConfirmedHeight = h;
 				break;
 			}
@@ -815,25 +821,11 @@ ClaimTxHandler::find_lockup_spend() {
 	auto found = std::unique_ptr<LockupSpend>();
 	auto searched = spendSearchedHeight;
 	for (auto h = from; h <= blockheight; ++h) {
-		auto hex = co_await env.get_block(h);
-		if (hex.empty())
-			/* Our node does not have that block yet.  */
+		auto block = co_await fetch_block(h);
+		if (!block)
 			break;
-		auto block = Bitcoin::Block();
-		auto parse_error = std::string();
-		try {
-			block = Bitcoin::Block(hex);
-		} catch (std::exception const& e) {
-			parse_error = e.what();
-		}
-		if (!parse_error.empty()) {
-			co_await loge( "Block " + std::to_string(h)
-				     + " did not parse: " + parse_error
-				     );
-			break;
-		}
 		searched = h;
-		auto tx = block.spender(lockup_txid, std::uint32_t(lockupOut));
+		auto tx = block->spender(lockup_txid, std::uint32_t(lockupOut));
 		if (tx) {
 			found = Util::make_unique<LockupSpend>();
 			found->height = h;
