@@ -51,7 +51,6 @@ libclboss_la_SOURCES = \
 	Boltz/Detail/ServiceImpl.hpp \
 	Boltz/Detail/SwapSetupHandler.cpp \
 	Boltz/Detail/SwapSetupHandler.hpp \
-	Boltz/Detail/MusigImpl.hpp \
 	Boltz/Detail/compute_preimage.cpp \
 	Boltz/Detail/compute_preimage.hpp \
 	Boltz/Detail/create_connection.cpp \

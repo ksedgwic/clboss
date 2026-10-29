@@ -260,7 +260,7 @@ Ev::Io<void> ClaimTxHandler::prepare_keys() {
 		redeemScript = Bitcoin::pk_to_scriptpk(musigsession.get_output_key());
 	} catch (Secp256k1::InvalidPubKey const& e) {
 		error = e.what();
-	} catch (Musig::InvalidArg const& e) {
+	} catch (Secp256k1::Musig::InvalidArg const& e) {
 		error = e.what();
 	}
 	if (!error.empty()) {
@@ -447,7 +447,7 @@ Ev::Io<bool> ClaimTxHandler::cooperative_claim(Sha256::Hash sighash) {
 		 * are never stored or reused: every attempt makes new
 		 * ones.  */
 		local_pubnonce = musigsession.generate_local_nonces(random);
-	} catch (Musig::InvalidArg const& e) {
+	} catch (Secp256k1::Musig::InvalidArg const& e) {
 		error = e.what();
 	}
 	if (!error.empty()) {
@@ -519,12 +519,12 @@ Ev::Io<bool> ClaimTxHandler::cooperative_claim(Sha256::Hash sighash) {
 		musigsession.sign_partial();
 		musigsession.verify_part_sigs();
 		musigsession.aggregate_partials(aggsig_buffer);
-		aggregatesig = SchnorrSig::from_buffer(aggsig_buffer);
+		aggregatesig = Secp256k1::SchnorrSig::from_buffer(aggsig_buffer);
 		if (!aggregatesig.valid( musigsession.get_output_key()
 				       , musigsession.get_sighash()
 				       ))
 			error = "invalid aggsig for given sighash and output key";
-	} catch (Musig::InvalidArg const& e) {
+	} catch (Secp256k1::Musig::InvalidArg const& e) {
 		error = e.what();
 	} catch (Secp256k1::InvalidPrivKey const& e) {
 		error = e.what();
@@ -555,7 +555,7 @@ Ev::Io<void> ClaimTxHandler::script_path_claim(std::uint32_t feerate) {
 	auto control_block = std::vector<std::uint8_t>();
 	try {
 		auto keys = signer.get_keypair_tweak(tweak);
-		signature = SchnorrSig::create(keys.priv(), sighash, random)
+		signature = Secp256k1::SchnorrSig::create(keys.priv(), sighash, random)
 			.to_buffer();
 
 		/* The control block: the leaf version with the parity
@@ -572,7 +572,7 @@ Ev::Io<void> ClaimTxHandler::script_path_claim(std::uint32_t feerate) {
 		control_block.insert( control_block.end()
 				    , sibling.begin(), sibling.end()
 				    );
-	} catch (Musig::InvalidArg const& e) {
+	} catch (Secp256k1::Musig::InvalidArg const& e) {
 		error = e.what();
 	} catch (Secp256k1::InvalidPrivKey const& e) {
 		error = e.what();

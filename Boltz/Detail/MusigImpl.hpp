@@ -4,8 +4,6 @@
 #include"Secp256k1/Musig.hpp"
 #include"Secp256k1/SignerIF.hpp"
 
-using namespace Secp256k1;
-
 namespace Boltz {
 
 class MusigSession : public Secp256k1::Musig::Session {
@@ -28,7 +26,7 @@ public:
 	MusigSession( Secp256k1::PrivKey const& tweak
 				, Secp256k1::PubKey const& boltzpub_
 				, Secp256k1::SignerIF& signer)
-		: Musig::Session( signer.get_keypair_tweak(tweak)
+		: Secp256k1::Musig::Session( signer.get_keypair_tweak(tweak)
 						, {boltzpub_, signer.get_pubkey_tweak(tweak)}
 						)
 		, boltzpub(boltzpub_)
