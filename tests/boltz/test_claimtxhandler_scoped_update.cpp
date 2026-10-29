@@ -486,6 +486,33 @@ int main() {
 		});
 	};
 
+	/* Puts a row in the state after the reveal with no claim
+	 * broadcast: the preimage is out, the lockup was found in
+	 * the block at the tip, nothing was signed.  */
+	auto reveal_without_claim = [&](std::string swapId, Bitcoin::Tx lockup) {
+		return db.transact().then([&, swapId, lockup](Sqlite3::Tx tx) {
+			tx.query(R"QRY(
+			UPDATE "BoltzServiceFactory_rsub"
+			   SET preimageRevealed = 1
+			     , lockupTxid = :lockupTxid
+			     , lockupOut = 0
+			     , lockupTx = :lockupTx
+			     , lockupConfirmedHeight = :height
+			 WHERE apiAccess = :apiAccess
+			   AND swapId = :swapId
+			     ;
+			)QRY")
+				.bind(":lockupTxid", std::string(lockup.get_txid()))
+				.bind(":lockupTx", std::string(lockup))
+				.bind(":height", blockheight)
+				.bind(":apiAccess", api)
+				.bind(":swapId", swapId)
+				.execute();
+			tx.commit();
+			return Ev::lift();
+		});
+	};
+
 	auto code = Ev::lift().then([&]() {
 		return db.transact();
 	}).then([&](Sqlite3::Tx tx) {
@@ -1146,6 +1173,70 @@ int main() {
 		assert(broadcast_called);
 		assert(provider.path_seen == "");
 		assert(broadcast_tx.inputs[0].witness.witnesses.size() == 4);
+
+		/* A swap whose preimage went out but whose claim was
+		 * never broadcast, on the second lockup, which the
+		 * provider has spent since: the loss is noticed and
+		 * the row goes, the provider is not asked again.  */
+		return insert_swap(api, "swapG");
+	}).then([&]() {
+		return reveal_without_claim("swapG", lockup_tx2);
+	}).then([&]() {
+		env.cooperative = true;
+		provider.fail = false;
+		provider.path_seen = "";
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapG", blockheight + 12, Bitcoin::Tx()
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		assert(provider.path_seen == "");
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto gone = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapG'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		for (auto& r : gone)
+			assert(r.get<int>(0) == 0);
+		tx.commit();
+
+		/* The same, on the third lockup, which nothing spends,
+		 * long after the timeout: given up, not re-claimed.  */
+		return insert_swap(api, "swapH");
+	}).then([&]() {
+		return reveal_without_claim("swapH", lockup_tx3);
+	}).then([&]() {
+		provider.path_seen = "";
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapH", timeout + 432, Bitcoin::Tx()
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		assert(provider.path_seen == "");
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto gone = tx.query(R"QRY(
+		SELECT COUNT(*) FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapH'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		for (auto& r : gone)
+			assert(r.get<int>(0) == 0);
+		tx.commit();
 		return Ev::lift(0);
 	});
 
