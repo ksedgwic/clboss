@@ -116,7 +116,9 @@ private:
 	 * when the node does not have it yet or it did not parse.  */
 	Ev::Io<std::optional<Bitcoin::Block>> fetch_block(std::uint32_t h);
 	/* Finds the lockup in our own node's blocks and waits for
-	 * its depth, or ends the run without revealing anything.  */
+	 * its depth, or ends the run without revealing anything.
+	 * A lockup found on an earlier run is read again in its
+	 * block, and searched for again if it is gone.  */
 	Ev::Io<void> confirm_lockup();
 	/* Builds the unsigned claim at the given feerate for the
 	 * given path and returns the sighash that path signs, or
