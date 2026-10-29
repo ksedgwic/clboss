@@ -5,6 +5,7 @@
 #include"Secp256k1/Detail/context.hpp"
 #include"Secp256k1/PrivKey.hpp"
 #include"Secp256k1/PubKey.hpp"
+#include"Secp256k1/Random.hpp"
 #include"Secp256k1/Signature.hpp"
 #include"Sha256/Hash.hpp"
 #include"Util/Str.hpp"
@@ -173,11 +174,15 @@ SchnorrSig::SchnorrSig(std::uint8_t const buffer[64]) {
 
 SchnorrSig::SchnorrSig( Secp256k1::PrivKey const& sk
 		    , Sha256::Hash const& m
+		    , Secp256k1::Random& random
 		    ) {
 	std::uint8_t mbuf[32];
 	m.to_buffer(mbuf);
 	std::uint8_t skbuf[32];
 	sk.to_buffer(skbuf);
+	std::uint8_t aux_rand[32];
+	for (auto i = 0; i < 32; ++i)
+		aux_rand[i] = random.get();
 
 	secp256k1_keypair kp;
 	auto res = secp256k1_keypair_create
@@ -193,7 +198,8 @@ SchnorrSig::SchnorrSig( Secp256k1::PrivKey const& sk
 			, data
 			, mbuf
 			, &kp
-			, nullptr ); //FIXME 32 random bytes
+			, aux_rand
+			);
 	if (!res)
 		throw InvalidPrivKey();
 }

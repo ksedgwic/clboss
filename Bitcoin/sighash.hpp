@@ -117,7 +117,7 @@ sighash( Bitcoin::Tx const& tx
  *		[32] sha256(scriptpubkeys)
  * 		[32] sha256(nSequences)
  *
- * if (hashtype & 0x03 != SIGHASH_SINGLE || hashtype & 0x03 != SIGHASH_ANYONECANPAY)
+ * if (hashtype & 0x03 != SIGHASH_SINGLE && hashtype & 0x03 != SIGHASH_NONE)
  *		[32] sha256(outputs)
  *
  * [1] spendtype (bip341 ext_flag * 2 + annex flag)
@@ -135,6 +135,7 @@ sighash( Bitcoin::Tx const& tx
  *
  * if (hashtype & 0x03 == SIGHASH_SINGLE)
  *		[32] sha256(nominatedoutput)
+ *		(fails when there is no output at the input's index)
  *
  * script path only (bip342 extension; spendtype
  * has ext_flag 1, so 0x02):

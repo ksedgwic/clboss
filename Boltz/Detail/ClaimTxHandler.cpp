@@ -175,6 +175,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 		.execute();
 	auto found = 0;
 	auto db_lockupOut = std::uint32_t(0);
+	auto refund_pubkey_hex = std::string();
 	for (auto& r : fetch) {
 		++found;
 		tweak = Secp256k1::PrivKey(r.get<std::string>(0));
@@ -184,7 +185,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 		refundScript = Util::Str::hexread(r.get<std::string>(4));
 		timeoutBlockheight = r.get<std::uint32_t>(5);
 		onchainAmount = Ln::Amount::sat(r.get<std::uint64_t>(6));
-		refund_pubkey = Secp256k1::PubKey(r.get<std::string>(7));
+		refund_pubkey_hex = r.get<std::string>(7);
 		createdHeight = r.get<std::uint32_t>(8);
 		lockupConfirmedHeight = r.get<std::uint32_t>(9);
 		lockupSearchedHeight = r.get<std::uint32_t>(10);
@@ -221,6 +222,9 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 			     );
 		throw End();
 	}
+	/* A v1 row has no refund key either, so it is parsed only
+	 * past the check above.  */
+	refund_pubkey = Secp256k1::PubKey(refund_pubkey_hex);
 
 	/* A revealed swap works from the lockup recorded at the
 	 * reveal, not from whatever the provider reports now.  */
@@ -256,7 +260,7 @@ Ev::Io<void> ClaimTxHandler::prepare_keys() {
 		redeemScript = Bitcoin::pk_to_scriptpk(musigsession.get_output_key());
 	} catch (Secp256k1::InvalidPubKey const& e) {
 		error = e.what();
-	} catch (Musig::InvalidArg const& e) {
+	} catch (Secp256k1::Musig::InvalidArg const& e) {
 		error = e.what();
 	}
 	if (!error.empty()) {
@@ -443,7 +447,7 @@ Ev::Io<bool> ClaimTxHandler::cooperative_claim(Sha256::Hash sighash) {
 		 * are never stored or reused: every attempt makes new
 		 * ones.  */
 		local_pubnonce = musigsession.generate_local_nonces(random);
-	} catch (Musig::InvalidArg const& e) {
+	} catch (Secp256k1::Musig::InvalidArg const& e) {
 		error = e.what();
 	}
 	if (!error.empty()) {
@@ -515,12 +519,12 @@ Ev::Io<bool> ClaimTxHandler::cooperative_claim(Sha256::Hash sighash) {
 		musigsession.sign_partial();
 		musigsession.verify_part_sigs();
 		musigsession.aggregate_partials(aggsig_buffer);
-		aggregatesig = SchnorrSig::from_buffer(aggsig_buffer);
+		aggregatesig = Secp256k1::SchnorrSig::from_buffer(aggsig_buffer);
 		if (!aggregatesig.valid( musigsession.get_output_key()
 				       , musigsession.get_sighash()
 				       ))
 			error = "invalid aggsig for given sighash and output key";
-	} catch (Musig::InvalidArg const& e) {
+	} catch (Secp256k1::Musig::InvalidArg const& e) {
 		error = e.what();
 	} catch (Secp256k1::InvalidPrivKey const& e) {
 		error = e.what();
@@ -551,7 +555,8 @@ Ev::Io<void> ClaimTxHandler::script_path_claim(std::uint32_t feerate) {
 	auto control_block = std::vector<std::uint8_t>();
 	try {
 		auto keys = signer.get_keypair_tweak(tweak);
-		signature = SchnorrSig::create(keys.priv(), sighash).to_buffer();
+		signature = Secp256k1::SchnorrSig::create(keys.priv(), sighash, random)
+			.to_buffer();
 
 		/* The control block: the leaf version with the parity
 		 * of the output key, the internal key, and the merkle
@@ -567,7 +572,7 @@ Ev::Io<void> ClaimTxHandler::script_path_claim(std::uint32_t feerate) {
 		control_block.insert( control_block.end()
 				    , sibling.begin(), sibling.end()
 				    );
-	} catch (Musig::InvalidArg const& e) {
+	} catch (Secp256k1::Musig::InvalidArg const& e) {
 		error = e.what();
 	} catch (Secp256k1::InvalidPrivKey const& e) {
 		error = e.what();
