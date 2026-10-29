@@ -66,6 +66,7 @@ libclboss_la_SOURCES = \
 	Boltz/ServiceFactory.cpp \
 	Boltz/ServiceFactory.hpp \
 	Boltz/SwapInfo.hpp \
+	Boltz/claim_blocks_past_timeout.hpp \
 	Boss/JsonInput.cpp \
 	Boss/JsonInput.hpp \
 	Boss/Main.cpp \
