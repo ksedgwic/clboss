@@ -175,6 +175,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 		.execute();
 	auto found = 0;
 	auto db_lockupOut = std::uint32_t(0);
+	auto refund_pubkey_hex = std::string();
 	for (auto& r : fetch) {
 		++found;
 		tweak = Secp256k1::PrivKey(r.get<std::string>(0));
@@ -184,7 +185,7 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 		refundScript = Util::Str::hexread(r.get<std::string>(4));
 		timeoutBlockheight = r.get<std::uint32_t>(5);
 		onchainAmount = Ln::Amount::sat(r.get<std::uint64_t>(6));
-		refund_pubkey = Secp256k1::PubKey(r.get<std::string>(7));
+		refund_pubkey_hex = r.get<std::string>(7);
 		createdHeight = r.get<std::uint32_t>(8);
 		lockupConfirmedHeight = r.get<std::uint32_t>(9);
 		lockupSearchedHeight = r.get<std::uint32_t>(10);
@@ -221,6 +222,9 @@ Ev::Io<void> ClaimTxHandler::load_row() {
 			     );
 		throw End();
 	}
+	/* A v1 row has no refund key either, so it is parsed only
+	 * past the check above.  */
+	refund_pubkey = Secp256k1::PubKey(refund_pubkey_hex);
 
 	/* A revealed swap works from the lockup recorded at the
 	 * reveal, not from whatever the provider reports now.  */
