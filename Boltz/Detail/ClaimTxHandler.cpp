@@ -6,6 +6,7 @@
 #include"Boltz/Detail/swaptree.hpp"
 #include"Boltz/EnvIF.hpp"
 #include"Bitcoin/Block.hpp"
+#include"Boltz/claim_blocks_past_timeout.hpp"
 #include"Bitcoin/addr_to_scriptPubKey.hpp"
 #include"Bitcoin/pubkey_to_scriptPubKey.hpp"
 #include"Ev/Io.hpp"
@@ -43,9 +44,9 @@ auto const search_floor_blocks = std::uint32_t(288);
  * deeper than this cannot move the lockup out of its sight.  */
 auto const search_margin_blocks = std::uint32_t(6);
 /* A revealed swap whose lockup is still unspent this many blocks
- * after its timeout is given up: the same horizon the Swapper
- * modules write a swap off at.  */
-auto const give_up_blocks = std::uint32_t(432);
+ * after its timeout is given up; SwapManager waits for the same
+ * horizon before it writes a paid swap off.  */
+auto const give_up_blocks = Boltz::claim_blocks_past_timeout;
 
 }
 

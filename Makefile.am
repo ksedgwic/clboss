@@ -66,6 +66,7 @@ libclboss_la_SOURCES = \
 	Boltz/ServiceFactory.cpp \
 	Boltz/ServiceFactory.hpp \
 	Boltz/SwapInfo.hpp \
+	Boltz/claim_blocks_past_timeout.hpp \
 	Boss/JsonInput.cpp \
 	Boss/JsonInput.hpp \
 	Boss/Main.cpp \
@@ -618,6 +619,7 @@ TESTS = \
 	tests/bitcoin/test_tx \
 	tests/boltz/test_boltz_connection \
 	tests/boltz/test_claimtxhandler_scoped_update \
+	tests/boltz/test_normalconnection_timeout \
 	tests/boltz/test_servicefactory_migration \
 	tests/boltz/test_serviceimpl_revealed \
 	tests/boltz/test_swapsetuphandler_leaves \

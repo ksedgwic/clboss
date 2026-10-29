@@ -1,3 +1,4 @@
+#include"Boltz/claim_blocks_past_timeout.hpp"
 #include"Boss/Mod/SwapManager.hpp"
 #include"Boss/Msg/AcceptSwapQuotation.hpp"
 #include"Boss/Msg/Block.hpp"
@@ -532,7 +533,7 @@ private:
 			/* Fail the current swap.  */
 			needs_invoice.pop();
 			return Ev::yield().then([this, uuid]() {
-				return swap_reduce_or_fail(uuid);
+				return shrink_or_abandon(uuid);
 			}).then([this]() {
 				/* Go to next swap.  */
 				return loop_needs_invoice();
@@ -633,9 +634,10 @@ private:
 		});
 	}
 
-	/* Try to reduce the specified swap, and if we reduced,
-	 * put it back into the needs-invoice loop.  */
-	Ev::Io<void> swap_reduce_or_fail(Uuid uuid) {
+	/* The swap's attempt failed.  Try again with a smaller
+	 * amount, back in the needs-invoice loop, or abandon the
+	 * swap when it is at its minimum already.  */
+	Ev::Io<void> shrink_or_abandon(Uuid uuid) {
 		return db.transact().then([this, uuid](Sqlite3::Tx tx) {
 			auto fetch = tx.query(R"QRY(
 			SELECT amount, min_amount
@@ -654,7 +656,7 @@ private:
 
 			/* cannot go lower!  */
 			if (amount == min_amount)
-				return fail_swap(std::move(tx), uuid);
+				return abandon_swap(std::move(tx), uuid);
 
 			/* Reduce.  */
 			auto dist = std::uniform_int_distribution<std::uint64_t>(
@@ -693,9 +695,9 @@ private:
 		});
 	}
 
-	/* Called when we know that the swap will definitely fail
-	 * as we cannot go lower.  */
-	Ev::Io<void> fail_swap(Sqlite3::Tx tx, Uuid uuid) {
+	/* Gives up on the swap: its address goes back to the pool
+	 * and its row goes.  */
+	Ev::Io<void> abandon_swap(Sqlite3::Tx tx, Uuid uuid) {
 		/* Move the address to the addrcache.  */
 		auto fetch = tx.query(R"QRY(
 		SELECT address
@@ -806,7 +808,7 @@ private:
 				return Ev::lift();
 
 			/* Lower it or fail!  */
-			return swap_reduce_or_fail(uuid);
+			return shrink_or_abandon(uuid);
 		});
 	}
 
@@ -993,35 +995,69 @@ private:
 
 	Ev::Io<void> on_block(std::uint32_t height) {
 		return db.transact().then([this, height](Sqlite3::Tx tx) {
-			/* Gather items to remove.  */
-			auto remove = std::vector<Uuid>();
+			/* Swaps past their timeout.  One whose payment
+			 * succeeded has its preimage out and its claim
+			 * still pushed past the timeout, for as long as
+			 * the claim handler keeps at it; it is left alone
+			 * until then, and after that abandoned, not
+			 * retried: a smaller amount helps a payment, and
+			 * this one went through.  */
+			auto to_shrink = std::vector<Uuid>();
+			auto to_abandon = std::vector<Uuid>();
 			auto fetch = tx.query(R"QRY(
-			SELECT uuid
-			  FROM "SwapManager"
-			 WHERE state = :state
-			   AND timeout <= :height
+			SELECT S.uuid
+			     , P.payment_hash IS NOT NULL
+			  FROM "SwapManager" AS S
+			  LEFT JOIN "SwapManager_comp_pay" AS P
+			    ON P.payment_hash = S.payment_hash
+			 WHERE S.state = :state
+			   AND ( ( P.payment_hash IS NULL
+			       AND S.timeout <= :height
+			         )
+			      OR S.timeout + :horizon <= :height
+			       )
 			     ;
 			)QRY")
 				.bind(":height", height)
+				.bind(":horizon", Boltz::claim_blocks_past_timeout)
 				.bind(":state", (int)AwaitingResult)
 				.execute();
-			for (auto& r : fetch)
-				remove.push_back(Uuid(
-					r.get<std::string>(0)
-				));
+			for (auto& r : fetch) {
+				auto uuid = Uuid(r.get<std::string>(0));
+				if (r.get<bool>(1))
+					to_abandon.push_back(uuid);
+				else
+					to_shrink.push_back(uuid);
+			}
 			tx.commit();
 
-			/* Process items to remove.  */
-			auto f = [this](Uuid uuid) {
+			auto shrink = [this](Uuid uuid) {
 				return Boss::log( bus, Warn
 						, "SwapManager: Swap %s "
 						  "timed out."
 						, std::string(uuid).c_str()
 						).then([this, uuid]() {
-					return swap_reduce_or_fail(uuid);
+					return shrink_or_abandon(uuid);
 				});
 			};
-			return Ev::foreach(f, std::move(remove));
+			auto abandon = [this](Uuid uuid) {
+				return Boss::log( bus, Warn
+						, "SwapManager: Swap %s was "
+						  "paid, but its claim did not "
+						  "confirm within %u blocks "
+						  "past the timeout; given up."
+						, std::string(uuid).c_str()
+						, (unsigned) Boltz::claim_blocks_past_timeout
+						).then([this]() {
+					return db.transact();
+				}).then([this, uuid](Sqlite3::Tx tx) {
+					return abandon_swap(std::move(tx), uuid);
+				});
+			};
+			return Ev::foreach(shrink, std::move(to_shrink)
+			).then([abandon, to_abandon]() {
+				return Ev::foreach(abandon, to_abandon);
+			});
 		});
 	}
 
