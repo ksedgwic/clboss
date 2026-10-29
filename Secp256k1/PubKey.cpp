@@ -342,18 +342,18 @@ XonlyPubKey::to_buffer(std::uint8_t buffer[32]) const {
 
 XonlyPubKey
 XonlyPubKey::from_ecdsa_pk(PubKey const& ecpk) {
-	return from_ecdsa_pk(reinterpret_cast<std::uint8_t const*>(ecpk.get_key()));
+	return from_ecdsa_pk(static_cast<secp256k1_pubkey const*>(ecpk.get_key()));
 }
 
 XonlyPubKey
-XonlyPubKey::from_ecdsa_pk(std::uint8_t const ecpk_buf[33]) {
+XonlyPubKey::from_ecdsa_pk(secp256k1_pubkey const* ecpk) {
 	auto rv = XonlyPubKey();
 	int parity;
 	auto res = secp256k1_xonly_pubkey_from_pubkey
 				( context.get()
 				, (secp256k1_xonly_pubkey*) &(rv.pimpl->key)
 				, &parity
-				, (const secp256k1_pubkey*) ecpk_buf
+				, ecpk
 				);
 	assert(res == 1);
 	return rv;
