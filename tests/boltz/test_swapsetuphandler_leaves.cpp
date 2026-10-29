@@ -41,7 +41,9 @@
  * - rejects a refund leaf whose key is not the refundPublicKey the
  *   provider declared;
  * - rejects a refund leaf whose height is not pushed as a minimal
- *   script number, since the leaves must match ours byte for byte.
+ *   script number, since the leaves must match ours byte for byte;
+ * - rejects a refundPublicKey that is not hex, which the key
+ *   parser would otherwise throw past the handler.
  */
 
 namespace {
@@ -100,6 +102,7 @@ enum Variant
 , ForeignClaimKey
 , RefundKeyMismatch
 , NonMinimalTimeout
+, MalformedRefundKey
 };
 
 std::string hex(std::vector<std::uint8_t> const& v) {
@@ -202,7 +205,11 @@ public:
 			 +     hex(refundScript) + "\"}"
 			 + "},"
 			 + "\"lockupAddress\":\"bc1ptest\","
-			 + "\"refundPublicKey\":\"" + std::string(refund_key) + "\","
+			 + "\"refundPublicKey\":\""
+			 +   ( variant == MalformedRefundKey
+			     ? std::string("not-a-key")
+			     : std::string(refund_key)
+			     ) + "\","
 			 + "\"timeoutBlockHeight\":" + std::to_string(timeout) + ","
 			 + "\"onchainAmount\":" + std::to_string(invoice_amount - 1000)
 			 + "}"
@@ -332,6 +339,14 @@ int main() {
 	}).then([&](Outcome o) {
 		/* The right height in another encoding is another
 		 * leaf, rejected.  */
+		assert(o.invoice == "");
+		assert(o.rows == 0);
+		return run_variant( MalformedRefundKey, random, signer, env
+				  , refund_key, other_key
+				  );
+	}).then([&](Outcome o) {
+		/* A refundPublicKey that is not hex fails the swap
+		 * like a wrong leaf does.  */
 		assert(o.invoice == "");
 		assert(o.rows == 0);
 		return Ev::lift(0);
