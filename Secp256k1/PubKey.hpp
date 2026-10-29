@@ -14,6 +14,7 @@
 
 extern "C" {
 struct secp256k1_context_struct;
+struct secp256k1_pubkey;
 }
 
 namespace Secp256k1 { class PrivKey; }
@@ -177,9 +178,11 @@ public:
 
 	void to_buffer(std::uint8_t buffer[32]) const;
 
-	/* find the x-only equivalent key from a 33 byte ecdsa key. */
+	/* The x-only key of an ECDSA key: its x coordinate, the
+	 * parity dropped.  The second form takes the library's
+	 * parsed key.  */
 	static XonlyPubKey from_ecdsa_pk(PubKey const&);
-	static XonlyPubKey from_ecdsa_pk(std::uint8_t const buffer[33]);
+	static XonlyPubKey from_ecdsa_pk(secp256k1_pubkey const*);
 
 	static XonlyPubKey from_buffer(std::uint8_t const buffer[32]) {
 		return XonlyPubKey(buffer);

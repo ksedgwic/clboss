@@ -128,7 +128,7 @@ public:
 		if (!res)
 			throw InvalidArg("Tweak::Impl::tweak_musig secp256k1_musig_pubkey_xonly_tweak_add");
 
-		output_key = XonlyPubKey::from_ecdsa_pk(reinterpret_cast<const std::uint8_t*>(&ecpk));
+		output_key = XonlyPubKey::from_ecdsa_pk(&ecpk);
 		secp256k1_xonly_pubkey xonly;
 		int parity;
 		res = secp256k1_xonly_pubkey_from_pubkey
