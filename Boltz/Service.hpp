@@ -4,8 +4,10 @@
 #include<cstdint>
 #include<memory>
 #include<string>
+#include<vector>
 
 namespace Boltz { struct SwapInfo; }
+namespace Boltz { struct SwapStatus; }
 namespace Ev { template<typename a> class Io; }
 namespace Ln { class Amount; }
 
@@ -72,6 +74,14 @@ public:
 	    , std::string onchain_address
 	    , std::uint32_t current_blockheight
 	    ) =0;
+
+	/** Boltz::Service::list_swaps
+	 *
+	 * @brief the swaps this service has in flight, for
+	 * status reports.
+	 */
+	virtual
+	Ev::Io<std::vector<SwapStatus>> list_swaps() =0;
 };
 
 }

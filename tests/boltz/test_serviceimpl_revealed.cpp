@@ -3,6 +3,7 @@
 #include"Boltz/ConnectionIF.hpp"
 #include"Boltz/Detail/ServiceImpl.hpp"
 #include"Boltz/EnvIF.hpp"
+#include"Boltz/SwapStatus.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/start.hpp"
 #include"Jsmn/Object.hpp"
@@ -257,6 +258,30 @@ int main() {
 		}
 		assert(provider.paths_seen.size() == 2);
 		tx.commit();
+
+		/* The report lists what is left, with the claim's txid
+		 * read back from the stored transaction.  */
+		return service.list_swaps();
+	}).then([&](std::vector<Boltz::SwapStatus> swaps) {
+		assert(swaps.size() == 3);
+		auto seen = std::size_t(0);
+		for (auto const& s : swaps) {
+			assert(s.api_v2);
+			assert(s.created_height == 90);
+			assert(s.onchain_amount == Ln::Amount::sat(100000));
+			if (s.swap_id == "revealed") {
+				++seen;
+				assert(s.preimage_revealed);
+				assert(s.claim_txid == std::string(signed_claim.get_txid()));
+				assert(s.claim_feerate == 1000);
+				assert(s.timeout_height == 1000);
+			} else if (s.swap_id == "settled") {
+				++seen;
+				assert(!s.preimage_revealed);
+				assert(s.claim_txid.empty());
+			}
+		}
+		assert(seen == 2);
 
 		/* Next block our wallet holds the claim confirmed.  */
 		env.confirmed = std::string(signed_claim.get_txid()) + ":0";
