@@ -1,5 +1,6 @@
 #include"Boltz/Service.hpp"
 #include"Boltz/SwapInfo.hpp"
+#include"Boltz/SwapStatus.hpp"
 #include"Boss/Mod/BoltzSwapper/ServiceModule.hpp"
 #include"Boss/Msg/AcceptSwapQuotation.hpp"
 #include"Boss/Msg/Block.hpp"
@@ -17,6 +18,7 @@ class ServiceModule::Impl {
 private:
 	S::Bus& bus;
 	std::unique_ptr<Boltz::Service> service;
+	std::string raw_label;
 	std::string label;
 
 	std::unique_ptr<std::uint32_t> blockheight;
@@ -100,9 +102,28 @@ public:
 	    , std::string label_
 	    ) : bus(bus_)
 	      , service(std::move(service_))
+	      , raw_label(label_)
 	      , label(std::string("Boltz::Service(\"") + label_ + "\")")
 	      { start(); }
+
+	std::string const& get_label() const { return raw_label; }
+	std::uint32_t get_blockheight() const {
+		return blockheight ? *blockheight : 0;
+	}
+	Ev::Io<std::vector<Boltz::SwapStatus>> list_swaps() {
+		return service->list_swaps();
+	}
 };
+
+std::string const& ServiceModule::label() const {
+	return pimpl->get_label();
+}
+std::uint32_t ServiceModule::blockheight() const {
+	return pimpl->get_blockheight();
+}
+Ev::Io<std::vector<Boltz::SwapStatus>> ServiceModule::list_swaps() {
+	return pimpl->list_swaps();
+}
 
 ServiceModule::ServiceModule(ServiceModule&&) =default;
 ServiceModule& ServiceModule::operator=(ServiceModule&&) =default;

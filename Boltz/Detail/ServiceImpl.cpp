@@ -4,6 +4,7 @@
 #include"Boltz/Detail/SwapSetupHandler.hpp"
 #include"Boltz/Detail/reverse_terms.hpp"
 #include"Boltz/EnvIF.hpp"
+#include"Boltz/SwapStatus.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/foreach.hpp"
 #include"Jsmn/Object.hpp"
@@ -330,6 +331,68 @@ ServiceImpl::swap( Ln::Amount offchainAmount
 		, current_blockheight
 		);
 	return handler->run();
+}
+
+Ev::Io<std::vector<SwapStatus>> ServiceImpl::list_swaps() {
+	return db.transact().then([this](Sqlite3::Tx tx) {
+		auto fetch = tx.query(R"QRY(
+		SELECT swapId -- 0
+		     , claimScript -- 1
+		     , destinationAddress -- 2
+		     , createdHeight -- 3
+		     , timeoutBlockheight -- 4
+		     , onchainAmount -- 5
+		     , COALESCE(lockupTxid, '') -- 6
+		     , COALESCE(lockupConfirmedHeight, 0) -- 7
+		     , COALESCE(lockupSearchedHeight, 0) -- 8
+		     , preimageRevealed -- 9
+		     , claimTx -- 10
+		     , claimFeerate -- 11
+		     , COALESCE(lockupClaimFees, 0) -- 12
+		     , COALESCE(spendSearchedHeight, 0) -- 13
+		     , COALESCE(comment, '') -- 14
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		 ORDER BY id
+		     ;
+		)QRY")
+			.bind(":apiAccess", label)
+			.execute();
+		auto rv = std::vector<SwapStatus>();
+		for (auto& r : fetch) {
+			auto s = SwapStatus();
+			s.swap_id = r.get<std::string>(0);
+			/* A v1 row has no leaves.  */
+			s.api_v2 = !r.get<std::string>(1).empty();
+			s.destination_address = r.get<std::string>(2);
+			s.created_height = r.get<std::uint32_t>(3);
+			s.timeout_height = r.get<std::uint32_t>(4);
+			s.onchain_amount = Ln::Amount::sat(
+				r.get<std::uint64_t>(5)
+			);
+			s.lockup_txid = r.get<std::string>(6);
+			s.lockup_confirmed_height = r.get<std::uint32_t>(7);
+			s.lockup_searched_height = r.get<std::uint32_t>(8);
+			s.preimage_revealed = r.get<bool>(9);
+			auto claim_hex = r.get<std::string>(10);
+			if (!claim_hex.empty()) {
+				try {
+					s.claim_txid = std::string(
+						Bitcoin::Tx(claim_hex).get_txid()
+					);
+				} catch (std::exception const&) {
+					s.claim_txid = "unparseable";
+				}
+			}
+			s.claim_feerate = r.get<std::uint32_t>(11);
+			s.claim_fee = Ln::Amount::sat(r.get<std::uint64_t>(12));
+			s.spend_searched_height = r.get<std::uint32_t>(13);
+			s.comment = r.get<std::string>(14);
+			rv.push_back(std::move(s));
+		}
+		tx.commit();
+		return Ev::lift(std::move(rv));
+	});
 }
 
 Ev::Io<std::unique_ptr<Ln::Amount>>
