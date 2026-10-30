@@ -41,8 +41,7 @@ private:
 	XonlyPubKey output_key;
 	bool output_key_odd{false};
 	std::uint8_t sighash[32];
-	// TODO should we mlock the memory allocated for secnonce? does mlock
-	// port to other unix clones?
+	/* Made fresh for every signing round, never reused.  */
 	secp256k1_musig_secnonce secnonce{};
 	secp256k1_musig_aggnonce aggnonce{};
 	secp256k1_musig_session session{};
@@ -152,19 +151,17 @@ public:
 		if (!sighash_loaded)
 			throw InvalidArg("Session::generate_local_nonces sighash not loaded");
 
+		/* The fresh randomness the nonce needs.  The derivation
+		 * also takes our key, the aggregate key and the message,
+		 * and optional extra input, which from the same source
+		 * would add nothing.  */
 		unsigned char secrand[32];
 		for (auto i{0}; i < 32; ++i)
 			secrand[i] = random.get();
 
-		unsigned char extra32[32];
-		for (auto i{0}; i < 32; ++i)
-			extra32[i] = random.get();
-
 		auto *p_nonce = reinterpret_cast<secp256k1_musig_pubnonce*>(&(local.pubnonce));
 		auto res = secp256k1_musig_nonce_gen
 			( context.get()
-			// TODO should we mlock the memory allocated for secnonce? does mlock
-			// port to other unix clones?
 			, &secnonce
 			, p_nonce
 			, secrand
@@ -172,8 +169,7 @@ public:
 			, reinterpret_cast<const secp256k1_pubkey*>(local.public_key.get_key())
 			, reinterpret_cast<const unsigned char*>(sighash) /* msg32 */
 			, reinterpret_cast<const secp256k1_musig_keyagg_cache*>(&aggkey_cache)
-			// FIXME unclear on what's best practice, but if the rng is deficient, why use it twice?
-			, reinterpret_cast<const unsigned char*>(extra32)	/* extra32 */
+			, nullptr /* extra_input32 */
 			);
 
 		if (!res)
@@ -210,8 +206,10 @@ public:
 
 		size_t i = 0;
 		for (auto it = signers.begin(); it != signers.end(); ++it, ++i) {
-			if (!it->pubnonce_loaded) //TODO pubkey of the offender in the error msg?
-				throw InvalidArg("Session::aggregate_pubnonces missing or invalid pubnonce(s)");
+			if (!it->pubnonce_loaded)
+				throw InvalidArg( "Session::aggregate_pubnonces no pubnonce from "
+						+ std::string(it->public_key)
+						);
 
 			pubnoncearr[i] = reinterpret_cast<secp256k1_musig_pubnonce*>(it->pubnonce);
 		}
@@ -258,8 +256,10 @@ public:
 	void verify_part_sigs() {
 		auto res = 0;
 		for (auto it = signers.begin(); it != signers.end(); ++it) {
-			if (!it->partial_loaded) //TODO pubkey of the offender in the error msg?
-				throw InvalidArg("Session::verify_part_sigs missing or invalid partial sig(s)");
+			if (!it->partial_loaded)
+				throw InvalidArg( "Session::verify_part_sigs no partial sig from "
+						+ std::string(it->public_key)
+						);
 
 			res = secp256k1_musig_partial_sig_verify
 				( context.get()
@@ -359,8 +359,10 @@ public:
 		for ( ; it != signers.end(); ++it)
 			if (pk == it->public_key) break;
 
-		if (it == signers.end()) //TODO throw out of range?
-			throw InvalidArg("Musig::Session::Impl find_signer");
+		if (it == signers.end())
+			throw InvalidArg( "Musig::Session::Impl find_signer: not a signer: "
+					+ std::string(pk)
+					);
 
 		return *it;
 	}
