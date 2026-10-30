@@ -46,6 +46,7 @@ public:
 		return Ev::lift(true);
 	}
 	Ev::Io<void> logd(std::string) override { return Ev::lift(); }
+	Ev::Io<void> logi(std::string) override { return Ev::lift(); }
 	Ev::Io<void> loge(std::string) override { return Ev::lift(); }
 };
 

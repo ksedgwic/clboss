@@ -52,6 +52,9 @@ namespace Boltz { namespace Detail {
 Ev::Io<void> SwapSetupHandler::logd(std::string msg) {
 	return env.logd(prefixlog(std::move(msg)));
 }
+Ev::Io<void> SwapSetupHandler::logi(std::string msg) {
+	return env.logi(prefixlog(std::move(msg)));
+}
 Ev::Io<void> SwapSetupHandler::loge(std::string msg) {
 	return env.loge(prefixlog(std::move(msg)));
 }
@@ -368,6 +371,7 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		timeoutBlockheight = std::move(tmp_timeoutBlockheight);
 		onchainAmount = Ln::Amount::sat(tmp_onchainAmount);
 		invoice = std::move(tmp_invoice);
+		lockupAddress = std::move(tmp_lockupAddress);
 
 		return Ev::lift();
 	}).then([this]() {
@@ -460,7 +464,17 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 
 		tx.commit();
 
-		return logd(std::string("Swap created: ") + invoice);
+		auto os = std::ostringstream();
+		os << "Swap created: " << offchainAmount.to_sat()
+		   << " sat sent for " << onchainAmount.to_sat()
+		   << " sat on chain (quoted "
+		   << quotedOnchainAmount.to_sat()
+		   << "), lockup " << lockupAddress
+		   << ", timeout " << timeoutBlockheight << "."
+		    ;
+		return logi(os.str()).then([this]() {
+			return logd(std::string("Invoice: ") + invoice);
+		});
 	}).catching<Fail>([this](Fail const& _) {
 		invoice = "";
 		timeoutBlockheight = 0;

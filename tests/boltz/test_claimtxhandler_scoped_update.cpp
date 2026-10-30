@@ -119,6 +119,7 @@ public:
 		return Ev::lift(true);
 	}
 	Ev::Io<void> logd(std::string) override { return Ev::lift(); }
+	Ev::Io<void> logi(std::string) override { return Ev::lift(); }
 	Ev::Io<void> loge(std::string msg) override {
 		/* Visible when the handler stops early.  */
 		std::cerr << "ERROR " << msg << std::endl;

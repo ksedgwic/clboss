@@ -167,6 +167,7 @@ private:
 
 	/* Wrappers.  */
 	Ev::Io<void> logd(std::string);
+	Ev::Io<void> logi(std::string);
 	Ev::Io<void> loge(std::string);
 	std::string logprefix(std::string);
 

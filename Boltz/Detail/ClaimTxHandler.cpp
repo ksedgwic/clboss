@@ -63,6 +63,9 @@ std::string ClaimTxHandler::logprefix(std::string msg) {
 Ev::Io<void> ClaimTxHandler::logd(std::string msg) {
 	return env.logd(logprefix(msg));
 }
+Ev::Io<void> ClaimTxHandler::logi(std::string msg) {
+	return env.logi(logprefix(msg));
+}
 Ev::Io<void> ClaimTxHandler::loge(std::string msg) {
 	return env.loge(logprefix(msg));
 }
@@ -381,7 +384,7 @@ Ev::Io<void> ClaimTxHandler::confirm_lockup() {
 				     );
 			throw End();
 		}
-		co_await logd( std::string("Lockup transaction ")
+		co_await logi( std::string("Lockup transaction ")
 			     + std::string(lockup_txid)
 			     + " is in block "
 			     + std::to_string(lockupConfirmedHeight)
@@ -437,6 +440,13 @@ ClaimTxHandler::build_claim( std::uint32_t feerate
 }
 
 Ev::Io<void> ClaimTxHandler::persist_reveal() {
+	co_await logi( "Preimage leaving the node; claim "
+		     + std::string(claim_tx.get_txid())
+		     + " spends lockup " + std::string(lockup_txid)
+		     + ":" + std::to_string(lockupOut)
+		     + " for " + std::string(onchainAmount)
+		     + "."
+		     );
 	auto tx = co_await db.transact();
 	tx.query(R"QRY(
 	UPDATE "BoltzServiceFactory_rsub"
@@ -646,6 +656,11 @@ Ev::Io<void> ClaimTxHandler::broadcast_and_record(std::string const& how) {
 			     );
 		throw End();
 	}
+	co_await logi( "Claim " + std::string(claim_tx.get_txid())
+		     + " broadcast (" + how + ") at "
+		     + std::to_string(claimFeerate) + " perkw, fee "
+		     + std::string(lockupClaimFees) + "."
+		     );
 
 	/* Record the signed claim for rebroadcast until our node
 	 * sees it confirmed.  */
@@ -696,7 +711,7 @@ Ev::Io<void> ClaimTxHandler::track_claim() {
 		 * address from the claim request, and a payment of its
 		 * own to that address must not pass for the claim.  */
 		if (co_await env.has_confirmed_output(claim_txid, 0)) {
-			co_await logd( "Claim " + std::string(claim_txid)
+			co_await logi( "Claim " + std::string(claim_txid)
 				     + " confirmed; swap done."
 				     );
 			co_await remove_row();
@@ -718,7 +733,7 @@ Ev::Io<void> ClaimTxHandler::track_claim() {
 				pays_us = true;
 		auto spend_txid = std::string(spend->tx.get_txid());
 		if (pays_us)
-			co_await logd( "Claim " + spend_txid
+			co_await logi( "Claim " + spend_txid
 				     + " confirmed in block "
 				     + std::to_string(spend->height)
 				     + "; swap done."
@@ -814,7 +829,7 @@ Ev::Io<bool> ClaimTxHandler::bump_claim(std::uint32_t feerate) {
 				       / weight) + 1;
 	}
 
-	co_await logd( "Replacing the claim at "
+	co_await logi( "Replacing the claim at "
 		     + std::to_string(old_feerate) + " perkw, fee "
 		     + std::string(old_fee) + ", with one at "
 		     + std::to_string(feerate) + " perkw."
