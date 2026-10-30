@@ -353,8 +353,9 @@ Ev::Io<void> test_simple() {
  * as before.  The quotation and setup mocks fail on any retry that
  * is not queued, so a retry out of turn fails the test.  */
 Ev::Io<void> test_timeout_after_payment() {
-	auto const horizon = Boltz::claim_blocks_past_timeout;
-	auto const timeout = std::uint32_t(20000);
+	/* Constants, so the lambdas below need not capture them.  */
+	auto constexpr horizon = Boltz::claim_blocks_past_timeout;
+	auto constexpr timeout = std::uint32_t(20000);
 	auto const hash_late = Sha256::Hash("1111111111111111111111111111111111111111111111111111111111111111");
 	auto const hash_lost = Sha256::Hash("2222222222222222222222222222222222222222222222222222222222222222");
 	auto const hash_unpaid = Sha256::Hash("3333333333333333333333333333333333333333333333333333333333333333");
@@ -369,7 +370,7 @@ Ev::Io<void> test_timeout_after_payment() {
 	Uuid paid_lost = Uuid::random();
 	Uuid unpaid = Uuid::random();
 
-	return Ev::lift().then([paid_late, hash_late, timeout]() {
+	return Ev::lift().then([paid_late, hash_late]() {
 		/* Paid, and the claim lands after the timeout.  */
 		addresses.add("address-late");
 		quotations.add({Ln::Amount::sat(100)});
@@ -387,7 +388,7 @@ Ev::Io<void> test_timeout_after_payment() {
 		return paid(hash_late);
 	}).then([]() {
 		return wait();
-	}).then([timeout]() {
+	}).then([]() {
 		return bus.raise(Boss::Msg::Block{timeout});
 	}).then([]() {
 		return wait();
@@ -399,7 +400,7 @@ Ev::Io<void> test_timeout_after_payment() {
 					 });
 	}).then([]() {
 		return wait();
-	}).then([paid_late, paid_lost, hash_lost, timeout]() {
+	}).then([paid_late, paid_lost, hash_lost]() {
 		requester.expect_finished(paid_late, true);
 
 		/* Paid, and the claim never lands.  */
@@ -419,16 +420,16 @@ Ev::Io<void> test_timeout_after_payment() {
 		return paid(hash_lost);
 	}).then([]() {
 		return wait();
-	}).then([timeout, horizon]() {
+	}).then([]() {
 		return bus.raise(Boss::Msg::Block{timeout + horizon - 1});
 	}).then([]() {
 		return wait();
-	}).then([paid_lost, timeout, horizon]() {
+	}).then([paid_lost]() {
 		requester.expect_pending(paid_lost);
 		return bus.raise(Boss::Msg::Block{timeout + horizon});
 	}).then([]() {
 		return wait();
-	}).then([paid_lost, unpaid, hash_unpaid, hash_retry, timeout]() {
+	}).then([paid_lost, unpaid, hash_unpaid, hash_retry]() {
 		requester.expect_finished(paid_lost, false);
 
 		/* Not paid at the timeout: retried on the same
@@ -448,7 +449,7 @@ Ev::Io<void> test_timeout_after_payment() {
 					   );
 	}).then([]() {
 		return wait();
-	}).then([timeout]() {
+	}).then([]() {
 		return bus.raise(Boss::Msg::Block{timeout});
 	}).then([]() {
 		return wait();
