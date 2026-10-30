@@ -48,7 +48,9 @@
  *   parser would otherwise throw past the handler;
  * - rejects a leaf version other than 192, which is another tree;
  * - rejects a lockupAddress that is not the one the tree and the
- *   two keys yield, before the invoice would be paid.
+ *   two keys yield, before the invoice would be paid;
+ * - rejects an onchainAmount below what the provider's own terms
+ *   promised, past a small tolerance.
  */
 
 namespace {
@@ -110,6 +112,7 @@ enum Variant
 , MalformedRefundKey
 , WrongLeafVersion
 , WrongLockupAddress
+, Overcharge
 };
 
 std::string hex(std::vector<std::uint8_t> const& v) {
@@ -197,7 +200,19 @@ public:
 	   , std::unique_ptr<Json::Out> params
 	   ) override {
 		path_seen = path;
-		assert(params);
+		if (!params) {
+			/* The terms: 0.5% plus a 1000 sat lockup fee.  */
+			auto terms = std::string("{\"BTC\":{\"BTC\":{")
+				   + "\"hash\":\"terms\",\"rate\":1,"
+				   + "\"limits\":{\"minimal\":10000,"
+				   +   "\"maximal\":10000000},"
+				   + "\"fees\":{\"percentage\":0.5,"
+				   +   "\"minerFees\":{\"claim\":200,"
+				   +     "\"lockup\":1000}}"
+				   + "}}}"
+				   ;
+			return Ev::lift(Jsmn::Object::parse_json(terms.c_str()));
+		}
 		auto req = Jsmn::Object::parse_json(params->output().c_str());
 		auto preimage_hash = Sha256::Hash(std::string(req["preimageHash"]));
 		auto claim_key = Secp256k1::PubKey(std::string(req["claimPublicKey"]));
@@ -294,7 +309,13 @@ public:
 			     : std::string(refund_key)
 			     ) + "\","
 			 + "\"timeoutBlockHeight\":" + std::to_string(timeout) + ","
-			 + "\"onchainAmount\":" + std::to_string(invoice_amount - 1000)
+			 + "\"onchainAmount\":"
+			 +   std::to_string( variant == Overcharge
+					   /* 3,000 sat below the quoted
+					    * 98,503, twice the tolerance.  */
+					   ? invoice_amount - 4500
+					   : invoice_amount - 1000
+					   )
 			 + "}"
 			 ;
 		return Ev::lift(Jsmn::Object::parse_json(res.c_str()));
@@ -446,6 +467,13 @@ int main() {
 	}).then([&](Outcome o) {
 		/* A lockup address that is not the tree's key is
 		 * rejected before anything is paid.  */
+		assert(o.invoice == "");
+		assert(o.rows == 0);
+		return run_variant( Overcharge, random, signer, env
+				  , refund_key, other_key
+				  );
+	}).then([&](Outcome o) {
+		/* An on-chain amount well below the terms is rejected.  */
 		assert(o.invoice == "");
 		assert(o.rows == 0);
 		return Ev::lift(0);

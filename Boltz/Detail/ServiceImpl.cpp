@@ -2,6 +2,7 @@
 #include"Boltz/Detail/ClaimTxHandler.hpp"
 #include"Boltz/Detail/ServiceImpl.hpp"
 #include"Boltz/Detail/SwapSetupHandler.hpp"
+#include"Boltz/Detail/reverse_terms.hpp"
 #include"Boltz/EnvIF.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/foreach.hpp"
@@ -336,29 +337,9 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 	return conn->api("/v2/swap/reverse", nullptr
 			).then([this, offchainAmount](Jsmn::Object res) {
 
-		auto rate = double();
-		auto fee_percent = double();
-		auto fee_lockup = Ln::Amount();
-		auto minimal = Ln::Amount();
-		auto maximal = Ln::Amount();
-
-		/* The pairs are keyed by the asset sent on Lightning,
-		 * then by the asset received onchain.  A pair the
-		 * provider does not offer is simply absent, which the
-		 * TypeError below reports.  */
+		auto terms = ReverseTerms();
 		try {
-			auto pair = res["BTC"]["BTC"];
-			rate = (double) pair["rate"];
-			minimal = Ln::Amount::sat(
-				(double) pair["limits"]["minimal"]
-			);
-			maximal = Ln::Amount::sat(
-				(double) pair["limits"]["maximal"]
-			);
-			fee_percent = (double) pair["fees"]["percentage"];
-			fee_lockup = Ln::Amount::sat((double)
-				pair["fees"]["minerFees"]["lockup"]
-			);
+			terms = parse_reverse_terms(res);
 		} catch (Jsmn::TypeError const& _) {
 			auto os = std::ostringstream();
 			os << "/v2/swap/reverse unexpected result: " << res;
@@ -368,30 +349,20 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 		}
 
 		/* Check range.  */
-		if (minimal > offchainAmount || maximal < offchainAmount) {
+		if (terms.minimal > offchainAmount || terms.maximal < offchainAmount) {
 			auto os = std::ostringstream();
 			os << "/v2/swap/reverse out-of-range "
-			   << minimal.to_sat() << " < "
+			   << terms.minimal.to_sat() << " < "
 			   << offchainAmount.to_sat() << " < "
-			   << maximal.to_sat()
+			   << terms.maximal.to_sat()
 			    ;
 			return loge(os.str()).then([]() {
 				return Ev::lift(std::unique_ptr<Ln::Amount>());
 			});
 		}
 
-		/* Compute.  */
-		auto onchainAmount = (offchainAmount * rate * 100)
-				   / (100 + fee_percent)
-				   ;
-		if (onchainAmount > offchainAmount)
-			onchainAmount = offchainAmount;
-		if (onchainAmount > fee_lockup)
-			onchainAmount -= fee_lockup;
-		else
-			onchainAmount = Ln::Amount::sat(0);
 		return Ev::lift(Util::make_unique<Ln::Amount>(
-			offchainAmount - onchainAmount
+			offchainAmount - quoted_onchain_amount(terms, offchainAmount)
 		));
 	}).catching<ApiError>([this](ApiError const& e) {
 		return logd("/v2/swap/reverse not accessible.").then([]() {
