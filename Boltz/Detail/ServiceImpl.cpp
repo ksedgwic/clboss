@@ -2,7 +2,9 @@
 #include"Boltz/Detail/ClaimTxHandler.hpp"
 #include"Boltz/Detail/ServiceImpl.hpp"
 #include"Boltz/Detail/SwapSetupHandler.hpp"
+#include"Boltz/Detail/reverse_terms.hpp"
 #include"Boltz/EnvIF.hpp"
+#include"Boltz/SwapStatus.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/foreach.hpp"
 #include"Jsmn/Object.hpp"
@@ -333,34 +335,76 @@ ServiceImpl::swap( Ln::Amount offchainAmount
 	return handler->run();
 }
 
+Ev::Io<std::vector<SwapStatus>> ServiceImpl::list_swaps() {
+	return db.transact().then([this](Sqlite3::Tx tx) {
+		auto fetch = tx.query(R"QRY(
+		SELECT swapId -- 0
+		     , claimScript -- 1
+		     , destinationAddress -- 2
+		     , createdHeight -- 3
+		     , timeoutBlockheight -- 4
+		     , onchainAmount -- 5
+		     , COALESCE(lockupTxid, '') -- 6
+		     , COALESCE(lockupConfirmedHeight, 0) -- 7
+		     , COALESCE(lockupSearchedHeight, 0) -- 8
+		     , preimageRevealed -- 9
+		     , claimTx -- 10
+		     , claimFeerate -- 11
+		     , COALESCE(lockupClaimFees, 0) -- 12
+		     , COALESCE(spendSearchedHeight, 0) -- 13
+		     , COALESCE(comment, '') -- 14
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		 ORDER BY id
+		     ;
+		)QRY")
+			.bind(":apiAccess", label)
+			.execute();
+		auto rv = std::vector<SwapStatus>();
+		for (auto& r : fetch) {
+			auto s = SwapStatus();
+			s.swap_id = r.get<std::string>(0);
+			/* A v1 row has no leaves.  */
+			s.api_v2 = !r.get<std::string>(1).empty();
+			s.destination_address = r.get<std::string>(2);
+			s.created_height = r.get<std::uint32_t>(3);
+			s.timeout_height = r.get<std::uint32_t>(4);
+			s.onchain_amount = Ln::Amount::sat(
+				r.get<std::uint64_t>(5)
+			);
+			s.lockup_txid = r.get<std::string>(6);
+			s.lockup_confirmed_height = r.get<std::uint32_t>(7);
+			s.lockup_searched_height = r.get<std::uint32_t>(8);
+			s.preimage_revealed = r.get<bool>(9);
+			auto claim_hex = r.get<std::string>(10);
+			if (!claim_hex.empty()) {
+				try {
+					s.claim_txid = std::string(
+						Bitcoin::Tx(claim_hex).get_txid()
+					);
+				} catch (std::exception const&) {
+					s.claim_txid = "unparseable";
+				}
+			}
+			s.claim_feerate = r.get<std::uint32_t>(11);
+			s.claim_fee = Ln::Amount::sat(r.get<std::uint64_t>(12));
+			s.spend_searched_height = r.get<std::uint32_t>(13);
+			s.comment = r.get<std::string>(14);
+			rv.push_back(std::move(s));
+		}
+		tx.commit();
+		return Ev::lift(std::move(rv));
+	});
+}
+
 Ev::Io<std::unique_ptr<Ln::Amount>>
 ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 	return conn->api("/v2/swap/reverse", nullptr
 			).then([this, offchainAmount](Jsmn::Object res) {
 
-		auto rate = double();
-		auto fee_percent = double();
-		auto fee_lockup = Ln::Amount();
-		auto minimal = Ln::Amount();
-		auto maximal = Ln::Amount();
-
-		/* The pairs are keyed by the asset sent on Lightning,
-		 * then by the asset received onchain.  A pair the
-		 * provider does not offer is simply absent, which the
-		 * TypeError below reports.  */
+		auto terms = ReverseTerms();
 		try {
-			auto pair = res["BTC"]["BTC"];
-			rate = (double) pair["rate"];
-			minimal = Ln::Amount::sat(
-				(double) pair["limits"]["minimal"]
-			);
-			maximal = Ln::Amount::sat(
-				(double) pair["limits"]["maximal"]
-			);
-			fee_percent = (double) pair["fees"]["percentage"];
-			fee_lockup = Ln::Amount::sat((double)
-				pair["fees"]["minerFees"]["lockup"]
-			);
+			terms = parse_reverse_terms(res);
 		} catch (Jsmn::TypeError const& _) {
 			auto os = std::ostringstream();
 			os << "/v2/swap/reverse unexpected result: " << res;
@@ -370,30 +414,20 @@ ServiceImpl::get_quotation(Ln::Amount offchainAmount) {
 		}
 
 		/* Check range.  */
-		if (minimal > offchainAmount || maximal < offchainAmount) {
+		if (terms.minimal > offchainAmount || terms.maximal < offchainAmount) {
 			auto os = std::ostringstream();
 			os << "/v2/swap/reverse out-of-range "
-			   << minimal.to_sat() << " < "
+			   << terms.minimal.to_sat() << " < "
 			   << offchainAmount.to_sat() << " < "
-			   << maximal.to_sat()
+			   << terms.maximal.to_sat()
 			    ;
 			return loge(os.str()).then([]() {
 				return Ev::lift(std::unique_ptr<Ln::Amount>());
 			});
 		}
 
-		/* Compute.  */
-		auto onchainAmount = (offchainAmount * rate * 100)
-				   / (100 + fee_percent)
-				   ;
-		if (onchainAmount > offchainAmount)
-			onchainAmount = offchainAmount;
-		if (onchainAmount > fee_lockup)
-			onchainAmount -= fee_lockup;
-		else
-			onchainAmount = Ln::Amount::sat(0);
 		return Ev::lift(Util::make_unique<Ln::Amount>(
-			offchainAmount - onchainAmount
+			offchainAmount - quoted_onchain_amount(terms, offchainAmount)
 		));
 	}).catching<ApiError>([this](ApiError const& e) {
 		return logd( std::string("/v2/swap/reverse not accessible: ")

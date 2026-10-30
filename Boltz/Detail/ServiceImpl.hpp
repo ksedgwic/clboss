@@ -55,6 +55,7 @@ public:
 	    , std::string onchain_address
 	    , std::uint32_t current_blockheight
 	    ) override;
+	Ev::Io<std::vector<SwapStatus>> list_swaps() override;
 
 private:
 	/* Logging.  */

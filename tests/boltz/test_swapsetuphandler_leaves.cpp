@@ -1,7 +1,9 @@
 #undef NDEBUG
 #include"Bitcoin/Tx.hpp"
 #include"Boltz/ConnectionIF.hpp"
+#include"Boltz/Detail/MusigImpl.hpp"
 #include"Boltz/Detail/SwapSetupHandler.hpp"
+#include"Boltz/Detail/swaptree.hpp"
 #include"Boltz/EnvIF.hpp"
 #include"Boltz/SwapInfo.hpp"
 #include"Ev/Io.hpp"
@@ -43,7 +45,12 @@
  * - rejects a refund leaf whose height is not pushed as a minimal
  *   script number, since the leaves must match ours byte for byte;
  * - rejects a refundPublicKey that is not hex, which the key
- *   parser would otherwise throw past the handler.
+ *   parser would otherwise throw past the handler;
+ * - rejects a leaf version other than 192, which is another tree;
+ * - rejects a lockupAddress that is not the one the tree and the
+ *   two keys yield, before the invoice would be paid;
+ * - rejects an onchainAmount below what the provider's own terms
+ *   promised, past a small tolerance.
  */
 
 namespace {
@@ -103,10 +110,60 @@ enum Variant
 , RefundKeyMismatch
 , NonMinimalTimeout
 , MalformedRefundKey
+, WrongLeafVersion
+, WrongLockupAddress
+, Overcharge
 };
 
 std::string hex(std::vector<std::uint8_t> const& v) {
 	return Util::Str::hexdump(&v[0], v.size());
+}
+
+/* The bech32m P2TR address for a 32-byte output key (BIP 350),
+ * as the backend reports the lockup address.  */
+std::uint32_t bech32_polymod(std::vector<std::uint8_t> const& values) {
+	static std::uint32_t const gen[] =
+		{ 0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3 };
+	auto chk = std::uint32_t(1);
+	for (auto v : values) {
+		auto top = chk >> 25;
+		chk = ((chk & 0x1ffffff) << 5) ^ v;
+		for (auto i = 0; i < 5; ++i)
+			if ((top >> i) & 1)
+				chk ^= gen[i];
+	}
+	return chk;
+}
+std::string p2tr_address(std::string const& hrp, std::uint8_t const key[32]) {
+	auto const charset = std::string("qpzry9x8gf2tvdw0s3jn54khce6mua7l");
+	auto data = std::vector<std::uint8_t>{1};
+	auto acc = std::uint32_t(0);
+	auto bits = 0;
+	for (auto i = 0; i < 32; ++i) {
+		acc = (acc << 8) | key[i];
+		bits += 8;
+		while (bits >= 5) {
+			bits -= 5;
+			data.push_back((acc >> bits) & 31);
+		}
+	}
+	if (bits > 0)
+		data.push_back((acc << (5 - bits)) & 31);
+	auto values = std::vector<std::uint8_t>();
+	for (auto c : hrp)
+		values.push_back(std::uint8_t(c) >> 5);
+	values.push_back(0);
+	for (auto c : hrp)
+		values.push_back(std::uint8_t(c) & 31);
+	values.insert(values.end(), data.begin(), data.end());
+	values.insert(values.end(), 6, 0);
+	auto polymod = bech32_polymod(values) ^ 0x2bc830a3;
+	auto rv = hrp + "1";
+	for (auto d : data)
+		rv += charset[d];
+	for (auto i = 0; i < 6; ++i)
+		rv += charset[(polymod >> (5 * (5 - i))) & 31];
+	return rv;
 }
 
 /* Mock provider: builds the swap tree from the request, as the
@@ -118,6 +175,10 @@ private:
 	Secp256k1::PubKey refund_key;
 	Secp256k1::PubKey other_key;
 	std::uint32_t timeout;
+	/* For the lockup address: the aggregate key is computed
+	 * the way the client computes it, from the same two
+	 * keys in the same order.  */
+	Secp256k1::SignerIF& signer;
 
 public:
 	std::string path_seen;
@@ -126,10 +187,12 @@ public:
 		    , Secp256k1::PubKey const& refund_key_
 		    , Secp256k1::PubKey const& other_key_
 		    , std::uint32_t timeout_
+		    , Secp256k1::SignerIF& signer_
 		    ) : variant(variant_)
 		      , refund_key(refund_key_)
 		      , other_key(other_key_)
 		      , timeout(timeout_)
+		      , signer(signer_)
 		      { }
 
 	Ev::Io<Jsmn::Object>
@@ -137,7 +200,19 @@ public:
 	   , std::unique_ptr<Json::Out> params
 	   ) override {
 		path_seen = path;
-		assert(params);
+		if (!params) {
+			/* The terms: 0.5% plus a 1000 sat lockup fee.  */
+			auto terms = std::string("{\"BTC\":{\"BTC\":{")
+				   + "\"hash\":\"terms\",\"rate\":1,"
+				   + "\"limits\":{\"minimal\":10000,"
+				   +   "\"maximal\":10000000},"
+				   + "\"fees\":{\"percentage\":0.5,"
+				   +   "\"minerFees\":{\"claim\":200,"
+				   +     "\"lockup\":1000}}"
+				   + "}}}"
+				   ;
+			return Ev::lift(Jsmn::Object::parse_json(terms.c_str()));
+		}
 		auto req = Jsmn::Object::parse_json(params->output().c_str());
 		auto preimage_hash = Sha256::Hash(std::string(req["preimageHash"]));
 		auto claim_key = Secp256k1::PubKey(std::string(req["claimPublicKey"]));
@@ -195,23 +270,52 @@ public:
 				   );
 		refundScript.push_back(0xb1);
 
+		/* The lockup address from the tree as sent, so a
+		 * wrong leaf fails on the leaf and not here.  */
+		auto session = Boltz::MusigSession
+			( Secp256k1::PrivKey(std::string(
+				"0909090909090909090909090909090909090909090909090909090909090909"
+			  ))
+			, refund_key
+			, signer
+			);
+		session.apply_xonly_tweak(Boltz::Detail::compute_root_hash
+			( claimScript
+			, refundScript
+			));
+		std::uint8_t output_key[32];
+		if (variant == WrongLockupAddress)
+			Secp256k1::XonlyPubKey::from_ecdsa_pk(other_key)
+				.to_buffer(output_key);
+		else
+			session.get_output_key().to_buffer(output_key);
+		auto lockup_address = p2tr_address("bc", output_key);
+		auto claim_version = variant == WrongLeafVersion ? 193 : 192;
+
 		auto res = std::string("{")
 			 + "\"id\":\"swapA\","
 			 + "\"invoice\":\"lnbc1testinvoice\","
 			 + "\"swapTree\":{"
-			 +   "\"claimLeaf\":{\"version\":192,\"output\":\""
+			 +   "\"claimLeaf\":{\"version\":"
+			 +     std::to_string(claim_version) + ",\"output\":\""
 			 +     hex(claimScript) + "\"},"
 			 +   "\"refundLeaf\":{\"version\":192,\"output\":\""
 			 +     hex(refundScript) + "\"}"
 			 + "},"
-			 + "\"lockupAddress\":\"bc1ptest\","
+			 + "\"lockupAddress\":\"" + lockup_address + "\","
 			 + "\"refundPublicKey\":\""
 			 +   ( variant == MalformedRefundKey
 			     ? std::string("not-a-key")
 			     : std::string(refund_key)
 			     ) + "\","
 			 + "\"timeoutBlockHeight\":" + std::to_string(timeout) + ","
-			 + "\"onchainAmount\":" + std::to_string(invoice_amount - 1000)
+			 + "\"onchainAmount\":"
+			 +   std::to_string( variant == Overcharge
+					   /* 3,000 sat below the quoted
+					    * 98,503, twice the tolerance.  */
+					   ? invoice_amount - 4500
+					   : invoice_amount - 1000
+					   )
 			 + "}"
 			 ;
 		return Ev::lift(Jsmn::Object::parse_json(res.c_str()));
@@ -268,6 +372,7 @@ Ev::Io<Outcome> run_variant( Variant variant
 	auto db = std::make_shared<Sqlite3::Db>(":memory:");
 	auto provider = std::make_shared<MockProvider>(
 		variant, refund_key, other_key, std::uint32_t(100 + 144)
+	      , signer
 	);
 	auto outcome = std::make_shared<Outcome>();
 	return db->transact().then([db](Sqlite3::Tx tx) {
@@ -347,6 +452,28 @@ int main() {
 	}).then([&](Outcome o) {
 		/* A refundPublicKey that is not hex fails the swap
 		 * like a wrong leaf does.  */
+		assert(o.invoice == "");
+		assert(o.rows == 0);
+		return run_variant( WrongLeafVersion, random, signer, env
+				  , refund_key, other_key
+				  );
+	}).then([&](Outcome o) {
+		/* A leaf version other than 192 is another tree.  */
+		assert(o.invoice == "");
+		assert(o.rows == 0);
+		return run_variant( WrongLockupAddress, random, signer, env
+				  , refund_key, other_key
+				  );
+	}).then([&](Outcome o) {
+		/* A lockup address that is not the tree's key is
+		 * rejected before anything is paid.  */
+		assert(o.invoice == "");
+		assert(o.rows == 0);
+		return run_variant( Overcharge, random, signer, env
+				  , refund_key, other_key
+				  );
+	}).then([&](Outcome o) {
+		/* An on-chain amount well below the terms is rejected.  */
 		assert(o.invoice == "");
 		assert(o.rows == 0);
 		return Ev::lift(0);
