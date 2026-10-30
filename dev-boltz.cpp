@@ -75,6 +75,12 @@ public:
 			return Ev::lift();
 		});
 	}
+	Ev::Io<void> logi(std::string msg) override {
+		return Ev::lift().then([msg]() {
+			std::cout << "INFO   " << msg << std::endl;
+			return Ev::lift();
+		});
+	}
 	Ev::Io<void> loge(std::string msg) override {
 		return Ev::lift().then([msg]() {
 			std::cout << "ERRROR " << msg << std::endl;

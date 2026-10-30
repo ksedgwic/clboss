@@ -79,6 +79,14 @@ public:
 	virtual
 	Ev::Io<void> logd(std::string) =0;
 
+	/** Boltz::EnvIF::logi
+	 *
+	 * @brief prints an Info-level log: the milestones of a
+	 * swap, few enough to read at that level.
+	 */
+	virtual
+	Ev::Io<void> logi(std::string) =0;
+
 	/** Boltz::EnvIF::loge
 	 *
 	 * @brief prints an Erro-level log.

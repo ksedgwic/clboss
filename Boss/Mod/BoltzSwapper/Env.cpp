@@ -130,6 +130,11 @@ Ev::Io<void> Env::logd(std::string msg) {
 			, "%s", msg.c_str()
 			);
 }
+Ev::Io<void> Env::logi(std::string msg) {
+	return Boss::log( bus, Info
+			, "%s", msg.c_str()
+			);
+}
 Ev::Io<void> Env::loge(std::string msg) {
 	return Boss::log( bus, Warn
 			, "%s", msg.c_str()

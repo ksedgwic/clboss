@@ -98,6 +98,7 @@ private:
 	Ev::Io<void> core_run();
 
 	Ev::Io<void> logd(std::string);
+	Ev::Io<void> logi(std::string);
 	Ev::Io<void> loge(std::string);
 	std::string prefixlog(std::string);
 
@@ -120,6 +121,7 @@ private:
 	/* What the provider's terms promised for offchainAmount,
 	 * read just before the swap was created.  */
 	Ln::Amount quotedOnchainAmount;
+	std::string lockupAddress;
 
 	/* The invoice to pay, or empty string on failure.  */
 	std::string invoice;
