@@ -1,10 +1,12 @@
 #ifndef SECP256K1_SIGNERIF_HPP
 #define SECP256K1_SIGNERIF_HPP
 
+#include<vector>
 #include<cstdint>
 
 namespace Secp256k1 { class PrivKey; }
 namespace Secp256k1 { class PubKey; }
+namespace Secp256k1 { class KeyPair; }
 namespace Secp256k1 { class Signature; }
 namespace Sha256 { class Hash; }
 
@@ -51,6 +53,12 @@ public:
 	Sha256::Hash
 	get_privkey_salted_hash( std::uint8_t salt[32]
 			       ) =0;
+
+	/* Get the keypair corresponding to a given tweak.  */
+	virtual
+	Secp256k1::KeyPair
+	get_keypair_tweak(Secp256k1::PrivKey const& tweak) =0;
+
 };
 
 }

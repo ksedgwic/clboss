@@ -50,9 +50,10 @@ public:
 	Jsmn::Object run( std::string const& proxy
 			, std::string const& api
 			, std::unique_ptr<Json::Out> parms
+			, std::uint32_t request_timeout
 			) {
 		EasyHandle self;
-		self.run_core(proxy, api, std::move(parms));
+		self.run_core(proxy, api, std::move(parms), request_timeout);
 		return std::move(self.result);
 	}
 
@@ -74,6 +75,7 @@ private:
 	void run_core( std::string const& proxy
 		     , std::string const& api
 		     , std::unique_ptr<Json::Out> parms
+		     , std::uint32_t request_timeout
 		     ) {
 
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &write_cb_s);
@@ -107,6 +109,9 @@ private:
 				, (long) CURL_HTTP_VERSION_2TLS
 				);
 		curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1);
+		/* Keepalive notices a dead peer; this notices a live
+		 * one that sends nothing.  */
+		curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long) request_timeout);
 
 		auto ret = curl_easy_perform(curl);
 		if (ret != 0) {
@@ -128,6 +133,7 @@ private:
 	Ev::ThreadPool& threadpool;
 	std::string api_base;
 	std::string proxy;
+	std::uint32_t request_timeout;
 
 public:
 	Impl() =delete;
@@ -137,9 +143,11 @@ public:
 	Impl( Ev::ThreadPool& threadpool_
 	    , std::string api_base_
 	    , std::string proxy_
+	    , std::uint32_t request_timeout_
 	    ) : threadpool(threadpool_)
 	      , api_base(std::move(api_base_))
 	      , proxy(std::move(proxy_))
+	      , request_timeout(request_timeout_)
 	      { }
 
 	Ev::Io<Jsmn::Object>
@@ -154,6 +162,7 @@ public:
 			return EasyHandle::run( proxy
 					      , api_base + api
 					      , std::move(*pparams)
+					      , request_timeout
 					      );
 		});
 	}
@@ -164,9 +173,11 @@ NormalConnection::NormalConnection(NormalConnection&&) =default;
 NormalConnection::NormalConnection( Ev::ThreadPool& threadpool
 				  , std::string api_base
 				  , std::string proxy
+				  , std::uint32_t request_timeout
 				  ) : pimpl(Util::make_unique<Impl>( threadpool
 								   , std::move(api_base)
 								   , std::move(proxy)
+								   , request_timeout
 								   ))
 				    { }
 

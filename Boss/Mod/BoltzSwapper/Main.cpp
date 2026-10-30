@@ -13,10 +13,11 @@ namespace {
      * The boltz.exchange service thus uses the API endpoint as the label for
      * back-compatibility.
      * Other services since then were added after we had a separate label.
+     * The URLs are API roots: the service appends the /v2/... paths.
      */
       {
           { "https://boltz.exchange/api",
-          "https://boltz.exchange/api",
+          "https://api.boltz.exchange",
           "http://boltzzzbnus4m7mta3cxmflnps4fp7dueu2tgurstbvrbt6xswzcocyd.onion/api"
           },
           { "AutonomousOrganization@github.com",
@@ -36,7 +37,7 @@ namespace {
         { Boss::Msg::Network_Testnet,
             {
               { "https://testnet.boltz.exchange/api",
-                  "https://testnet.boltz.exchange/api",
+                  "https://api.testnet.boltz.exchange",
                   "http://tboltzzrsoc3npe6sydcrh37mtnfhnbrilqi45nao6cgc6dr7n2eo3id.onion/api"
               }
           }

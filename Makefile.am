@@ -12,6 +12,8 @@ noinst_PROGRAMS = \
 # in the main file.
 noinst_LTLIBRARIES = libclboss.la
 libclboss_la_SOURCES = \
+	Bitcoin/Block.cpp \
+	Bitcoin/Block.hpp \
 	Bitcoin/Tx.cpp \
 	Bitcoin/Tx.hpp \
 	Bitcoin/TxId.cpp \
@@ -24,6 +26,8 @@ libclboss_la_SOURCES = \
 	Bitcoin/WitnessField.hpp \
 	Bitcoin/addr_to_scriptPubKey.cpp \
 	Bitcoin/addr_to_scriptPubKey.hpp \
+	Bitcoin/pubkey_to_scriptPubKey.cpp \
+	Bitcoin/pubkey_to_scriptPubKey.hpp \
 	Bitcoin/hash160.cpp \
 	Bitcoin/hash160.hpp \
 	Bitcoin/le.cpp \
@@ -38,6 +42,7 @@ libclboss_la_SOURCES = \
 	Boltz/Detail/ClaimTxHandler.hpp \
 	Boltz/Detail/FallbackConnection.cpp \
 	Boltz/Detail/FallbackConnection.hpp \
+	Boltz/Detail/MusigImpl.hpp \
 	Boltz/Detail/NormalConnection.cpp \
 	Boltz/Detail/NormalConnection.hpp \
 	Boltz/Detail/NullConnection.cpp \
@@ -54,13 +59,17 @@ libclboss_la_SOURCES = \
 	Boltz/Detail/find_lockup_outnum.hpp \
 	Boltz/Detail/initial_claim_tx.cpp \
 	Boltz/Detail/initial_claim_tx.hpp \
-	Boltz/Detail/match_lockscript.cpp \
-	Boltz/Detail/match_lockscript.hpp \
+	Boltz/Detail/reverse_terms.cpp \
+	Boltz/Detail/reverse_terms.hpp \
+	Boltz/Detail/swaptree.cpp \
+	Boltz/Detail/swaptree.hpp \
 	Boltz/EnvIF.hpp \
 	Boltz/Service.hpp \
 	Boltz/ServiceFactory.cpp \
 	Boltz/ServiceFactory.hpp \
 	Boltz/SwapInfo.hpp \
+	Boltz/SwapStatus.hpp \
+	Boltz/claim_blocks_past_timeout.hpp \
 	Boss/JsonInput.cpp \
 	Boss/JsonInput.hpp \
 	Boss/Main.cpp \
@@ -497,6 +506,8 @@ libclboss_la_SOURCES = \
 	Secp256k1/G.cpp \
 	Secp256k1/G.hpp \
 	Secp256k1/KeyPair.hpp \
+	Secp256k1/Musig.cpp \
+	Secp256k1/Musig.hpp \
 	Secp256k1/PrivKey.cpp \
 	Secp256k1/PrivKey.hpp \
 	Secp256k1/PubKey.cpp \
@@ -506,6 +517,10 @@ libclboss_la_SOURCES = \
 	Secp256k1/Signature.cpp \
 	Secp256k1/Signature.hpp \
 	Secp256k1/SignerIF.hpp \
+	Secp256k1/TapscriptTree.cpp \
+	Secp256k1/TapscriptTree.hpp \
+	Secp256k1/tagged_hashes.cpp \
+	Secp256k1/tagged_hashes.hpp \
 	Sha256/Hash.cpp \
 	Sha256/Hash.hpp \
 	Sha256/Hasher.cpp \
@@ -598,11 +613,17 @@ ACLOCAL_AMFLAGS = -I m4
 AM_DEFAULT_SOURCE_EXT = .cpp
 TESTS = \
 	tests/bitcoin/test_addr_to_scriptpubkey \
+	tests/bitcoin/test_block \
 	tests/bitcoin/test_serial \
 	tests/bitcoin/test_sighash \
+	tests/bitcoin/test_tapscript_sighash \
 	tests/bitcoin/test_tx \
 	tests/boltz/test_claimtxhandler_scoped_update \
-	tests/boltz/test_match_lockscript \
+	tests/boltz/test_normalconnection_timeout \
+	tests/boltz/test_servicefactory_migration \
+	tests/boltz/test_serviceimpl_revealed \
+	tests/boltz/test_swapsetuphandler_leaves \
+	tests/boltz/test_swaptree \
 	tests/boss/channelcandidateinvestigator/test_evictionpolicy \
 	tests/boss/channelcandidateinvestigator/test_gumshoe \
 	tests/boss/channelcandidateinvestigator/test_manager_offline \
@@ -696,6 +717,8 @@ TESTS = \
 	tests/s/test_bus \
 	tests/sha256/test_hash \
 	tests/sha256/test_hasher \
+	tests/secp256k1/test_bip327 \
+	tests/secp256k1/test_bip341sighash \
 	tests/sqlite3/test_sqlite3 \
 	tests/stats/test_reservoir_sampler \
 	tests/stats/test_running_mean \
