@@ -39,6 +39,7 @@ public:
 					 ) override;
 	Ev::Io<bool> broadcast_tx(Bitcoin::Tx) override;
 	Ev::Io<void> logd(std::string) override;
+	Ev::Io<void> logi(std::string) override;
 	Ev::Io<void> loge(std::string) override;
 };
 
