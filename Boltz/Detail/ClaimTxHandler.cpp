@@ -77,6 +77,12 @@ Ev::Io<void> ClaimTxHandler::run() {
 		return self->core_run();
 	}).catching<End>([self](End const&) {
 		return Ev::lift();
+	}).catching<std::exception>([self](std::exception const& e) {
+		/* A failure the handler did not foresee ends this run
+		 * and nothing more; the next block tries again.  */
+		return self->loge( std::string("Run ended by an error: ")
+				 + e.what()
+				 );
 	});
 }
 
