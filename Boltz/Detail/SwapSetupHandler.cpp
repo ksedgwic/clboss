@@ -82,6 +82,23 @@ Ev::Io<SwapInfo> SwapSetupHandler::run() {
 
 Ev::Io<void> SwapSetupHandler::core_run() {
 	return Ev::lift().then([this]() {
+		/* The address the claim will pay to must be one we can
+		 * write the script for, before anything is created or
+		 * paid.  */
+		auto parses = true;
+		try {
+			Bitcoin::addr_to_scriptPubKey(destinationAddress);
+		} catch (Bitcoin::UnknownAddrType const&) {
+			parses = false;
+		}
+		if (!parses) {
+			return loge( "Destination address \"" + destinationAddress
+				   + "\" is not an address we can pay to."
+				   ).then([]() {
+				throw Fail();
+				return Ev::lift(Jsmn::Object());
+			});
+		}
 		/* The provider's current terms, which the created
 		 * swap is held to below.  */
 		return conn.api("/v2/swap/reverse", nullptr);
@@ -483,6 +500,12 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 		invoice = "";
 		timeoutBlockheight = 0;
 		return loge("Failed to access API endpoint.");
+	}).catching<std::exception>([this](std::exception const& e) {
+		/* A failure the setup did not foresee fails the swap
+		 * rather than the plugin.  */
+		invoice = "";
+		timeoutBlockheight = 0;
+		return loge(std::string("Setup failed: ") + e.what());
 	});
 }
 
