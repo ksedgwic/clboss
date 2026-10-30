@@ -117,6 +117,9 @@ private:
 	std::vector<std::uint8_t> refundScript;
 	std::uint32_t timeoutBlockheight;
 	Ln::Amount onchainAmount;
+	/* What the provider's terms promised for offchainAmount,
+	 * read just before the swap was created.  */
+	Ln::Amount quotedOnchainAmount;
 
 	/* The invoice to pay, or empty string on failure.  */
 	std::string invoice;

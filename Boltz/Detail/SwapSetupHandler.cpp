@@ -5,6 +5,7 @@
 #include"Boltz/Detail/MusigImpl.hpp"
 #include"Boltz/Detail/SwapSetupHandler.hpp"
 #include"Boltz/Detail/compute_preimage.hpp"
+#include"Boltz/Detail/reverse_terms.hpp"
 #include"Boltz/Detail/swaptree.hpp"
 #include"Boltz/EnvIF.hpp"
 #include"Boltz/SwapInfo.hpp"
@@ -36,6 +37,13 @@ auto const max_timeout = std::uint32_t(288);
  * the leaf hash, so a tree with another version pays to another
  * key than the one we compute.  */
 auto const tapscript_leaf_version = std::uint32_t(192);
+
+/* How far below the quoted on-chain amount a created swap may
+ * come: a quarter of the quoted fee, or this much, whichever is
+ * more.  The provider's miner fee estimate may move between the
+ * terms and the swap.  */
+auto const fee_tolerance_floor = Ln::Amount::sat(1500);
+auto const fee_tolerance_ratio = double(0.25);
 
 }
 
@@ -71,6 +79,27 @@ Ev::Io<SwapInfo> SwapSetupHandler::run() {
 
 Ev::Io<void> SwapSetupHandler::core_run() {
 	return Ev::lift().then([this]() {
+		/* The provider's current terms, which the created
+		 * swap is held to below.  */
+		return conn.api("/v2/swap/reverse", nullptr);
+	}).then([this](Jsmn::Object res) {
+		auto terms = ReverseTerms();
+		try {
+			terms = parse_reverse_terms(res);
+		} catch (Jsmn::TypeError const& _) {
+			auto os = std::ostringstream();
+			os << "Unexpected terms from service: " << res;
+			return loge(os.str()).then([]() {
+				throw Fail();
+				return Ev::lift();
+			});
+		}
+		quotedOnchainAmount = quoted_onchain_amount
+			( terms
+			, offchainAmount
+			);
+		return Ev::lift();
+	}).then([this]() {
 		/* Set up.  */
 		/* PubKey.  */
 		tweakPubKey = signer.get_pubkey_tweak(tweak);
@@ -288,15 +317,25 @@ Ev::Io<void> SwapSetupHandler::core_run() {
 			});
 		}
 
-		/* FIXME: We should check the latest quotation!  */
-		if ( (Ln::Amount::sat(tmp_onchainAmount) / offchainAmount)
-		   < 0.90
+		/* The swap must hold to the terms read just before it
+		 * was created: the on-chain amount they promise for this
+		 * invoice amount, less a tolerance for a miner fee
+		 * estimate that moved in between.  */
+		auto tolerance = (offchainAmount - quotedOnchainAmount)
+			       * fee_tolerance_ratio
+			       ;
+		if (tolerance < fee_tolerance_floor)
+			tolerance = fee_tolerance_floor;
+		if ( Ln::Amount::sat(tmp_onchainAmount) + tolerance
+		   < quotedOnchainAmount
 		   ) {
 			auto os = std::ostringstream();
-			os << "Onchain amount "
-			   << tmp_onchainAmount
-			   << " too low compared to offchain amount "
-			   << offchainAmount
+			os << "Onchain amount " << tmp_onchainAmount
+			   << " is below the quoted "
+			   << quotedOnchainAmount.to_sat()
+			   << " by more than " << tolerance.to_sat()
+			   << " for offchain amount "
+			   << offchainAmount.to_sat()
 			    ;
 			return loge(os.str()).then([]() {
 				throw Fail();

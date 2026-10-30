@@ -59,6 +59,8 @@ libclboss_la_SOURCES = \
 	Boltz/Detail/find_lockup_outnum.hpp \
 	Boltz/Detail/initial_claim_tx.cpp \
 	Boltz/Detail/initial_claim_tx.hpp \
+	Boltz/Detail/reverse_terms.cpp \
+	Boltz/Detail/reverse_terms.hpp \
 	Boltz/Detail/swaptree.cpp \
 	Boltz/Detail/swaptree.hpp \
 	Boltz/EnvIF.hpp \
