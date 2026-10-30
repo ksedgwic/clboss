@@ -1299,6 +1299,52 @@ int main() {
 	}).then([&]() {
 		assert(broadcast_called);
 		assert(provider.path_seen == "/v2/swap/reverse/swapI/claim");
+
+		/* A row whose destination address has no script: the
+		 * claim cannot be built, and the run ends with a log
+		 * line, not an exception out of the handler.  */
+		return insert_swap(api, "swapJ");
+	}).then([&]() {
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		tx.query(R"QRY(
+		UPDATE "BoltzServiceFactory_rsub"
+		   SET destinationAddress = 'null'
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapJ'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		tx.commit();
+		provider.path_seen = "";
+		broadcast_called = false;
+		auto handler = Boltz::Detail::ClaimTxHandler::create(
+			signer, db, env, api, provider, random
+		      , "swapJ", blockheight + 12, lockup_tx
+		);
+		return handler->run();
+	}).then([&]() {
+		assert(!broadcast_called);
+		assert(provider.path_seen == "");
+		return db.transact();
+	}).then([&](Sqlite3::Tx tx) {
+		auto rows = tx.query(R"QRY(
+		SELECT preimageRevealed
+		  FROM "BoltzServiceFactory_rsub"
+		 WHERE apiAccess = :apiAccess
+		   AND swapId = 'swapJ'
+		     ;
+		)QRY")
+			.bind(":apiAccess", api)
+			.execute();
+		auto found = false;
+		for (auto& r : rows) {
+			found = true;
+			assert(!r.get<bool>(0));
+		}
+		assert(found);
+		tx.commit();
 		return Ev::lift(0);
 	});
 

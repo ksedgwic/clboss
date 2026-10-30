@@ -87,7 +87,16 @@ Ev::Io<void> ServiceImpl::on_block(std::uint32_t blockheight) {
 		});
 	}).then([this, blockheight](std::vector<std::string> swapIds) {
 		auto f = [this, blockheight](std::string swapId) {
-			return swap_on_block(blockheight, std::move(swapId));
+			auto p_swapId = std::make_shared<std::string>(swapId);
+			return swap_on_block(blockheight, std::move(swapId)
+			).catching<std::exception>([ this, p_swapId
+						   ](std::exception const& e) {
+				/* One swap's trouble must not stop the
+				 * others, or the plugin.  */
+				return loge( "Swap \"" + *p_swapId
+					   + "\" failed this block: " + e.what()
+					   );
+			});
 		};
 
 		return Ev::foreach(f, std::move(swapIds));

@@ -50,7 +50,9 @@
  * - rejects a lockupAddress that is not the one the tree and the
  *   two keys yield, before the invoice would be paid;
  * - rejects an onchainAmount below what the provider's own terms
- *   promised, past a small tolerance.
+ *   promised, past a small tolerance;
+ * - rejects a destination address it cannot write a script for,
+ *   before anything is asked of the provider.
  */
 
 namespace {
@@ -361,6 +363,8 @@ CREATE TABLE "BoltzServiceFactory_rsub"
 struct Outcome {
 	std::string invoice;
 	int rows;
+	/* The last path the provider was asked; "" for none.  */
+	std::string path_seen;
 };
 
 Ev::Io<Outcome> run_variant( Variant variant
@@ -369,6 +373,8 @@ Ev::Io<Outcome> run_variant( Variant variant
 			   , MockEnv& env
 			   , Secp256k1::PubKey const& refund_key
 			   , Secp256k1::PubKey const& other_key
+			   , std::string const& address
+			     = "bc1qg430dgu75qvphu8nn3kvcp3yg2km2tavpc8lqs"
 			   ) {
 	auto db = std::make_shared<Sqlite3::Db>(":memory:");
 	auto provider = std::make_shared<MockProvider>(
@@ -380,16 +386,16 @@ Ev::Io<Outcome> run_variant( Variant variant
 		tx.query_execute(schema);
 		tx.commit();
 		return Ev::lift();
-	}).then([&, db, provider]() {
+	}).then([&, db, provider, address]() {
 		auto handler = Boltz::Detail::SwapSetupHandler::create(
 			signer, *db, env, "testapi", *provider, random
-		      , "bc1qg430dgu75qvphu8nn3kvcp3yg2km2tavpc8lqs"
+		      , address
 		      , Ln::Amount::sat(100000)
 		      , std::uint32_t(100)
 		);
 		return handler->run();
 	}).then([db, provider, outcome](Boltz::SwapInfo info) {
-		assert(provider->path_seen == "/v2/swap/reverse");
+		outcome->path_seen = provider->path_seen;
 		outcome->invoice = info.invoice;
 		return db->transact();
 	}).then([outcome](Sqlite3::Tx tx) {
@@ -424,6 +430,7 @@ int main() {
 		/* A correct swap tree is accepted and recorded.  */
 		assert(o.invoice == "lnbc1testinvoice");
 		assert(o.rows == 1);
+		assert(o.path_seen == "/v2/swap/reverse");
 		return run_variant( ForeignClaimKey, random, signer, env
 				  , refund_key, other_key
 				  );
@@ -477,6 +484,16 @@ int main() {
 		/* An on-chain amount well below the terms is rejected.  */
 		assert(o.invoice == "");
 		assert(o.rows == 0);
+		return run_variant( Honest, random, signer, env
+				  , refund_key, other_key
+				  , "null"
+				  );
+	}).then([&](Outcome o) {
+		/* A destination address with no script fails the swap
+		 * before the provider is asked anything.  */
+		assert(o.invoice == "");
+		assert(o.rows == 0);
+		assert(o.path_seen == "");
 		return Ev::lift(0);
 	});
 
