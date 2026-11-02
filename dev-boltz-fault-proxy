@@ -1,0 +1,409 @@
+#!/usr/bin/env python3
+"""A Boltz API relay that misbehaves on request.
+
+Sits between a Boltz client (dev-boltz, or CLBOSS pointed at it) and
+the provider, passing every request and reply through unchanged until
+a fault is armed.  One fault fires on the next request it applies to,
+the proxy prints what it changed, and it goes back to passing
+things through.  The faults are the provider behaviors the client is
+supposed to refuse or survive; the printed lines are the evidence.
+
+Usage:
+
+    dev-boltz-fault-proxy [--listen 127.0.0.1:8081]
+                          [--upstream http://127.0.0.1:8080]
+                          [--control /tmp/boltz-fault]
+                          [--stall-seconds 3600]
+
+    BOLTZ_API_BASE=http://127.0.0.1:8081 dev-boltz swap ...
+
+Arming a fault is writing its name into the control file, from another
+terminal, at any point of a swap:
+
+    echo claim-500 > /tmp/boltz-fault
+
+An empty or missing file means pass-through.  The file is emptied when
+the fault fires.  A name the proxy does not know is reported on every
+request and nothing fires.
+
+Faults on the swap creation reply (POST /v2/swap/reverse), which the
+client must refuse before paying:
+
+    claim-leaf      the claim leaf carries another key than ours
+    refund-key      refundPublicKey is another key than the one in
+                    the refund leaf
+    lockup-address  lockupAddress is another address
+    leaf-version    the claim leaf's version is not the tapscript one
+    amount          onchainAmount is a tenth short of the created one
+    invoice FILE    the invoice is the one in FILE, from another swap,
+                    so its payment hash and amount do not match; tests
+                    a client that checks the invoice it is told to pay
+                    (dev-boltz prints the invoice and does not pay it)
+
+Faults on the cooperative claim (POST /v2/swap/reverse/ID/claim),
+which the client must survive by claiming through the script path:
+
+    claim-500       the request is not forwarded; the reply is a 500
+                    with an error body
+    claim-stall     the request is not forwarded and no reply comes
+                    until the client hangs up, or --stall-seconds
+
+Faults on anything:
+
+    html            the next request of any kind gets an HTML page with
+                    status 200 instead of JSON
+    quote-stall     the next terms request (GET /v2/swap/reverse) gets
+                    no reply, as claim-stall
+
+Standard library only.  The proxy listens on localhost and speaks
+plain HTTP; the upstream may be http or https.
+"""
+
+import argparse
+import hashlib
+import http.client
+import http.server
+import json
+import os
+import select
+import socket
+import sys
+import time
+import urllib.parse
+
+# The secp256k1 generator point: a valid key that is nobody's.
+OTHER_KEY_X = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+OTHER_KEY = "02" + OTHER_KEY_X
+
+HOP_BY_HOP = {
+    "connection", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailer", "transfer-encoding",
+    "upgrade", "host", "accept-encoding", "content-length",
+}
+
+
+def now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def log(msg):
+    print(now() + " " + msg, flush=True)
+
+
+# -- bech32m, enough to write a witness v1 address (BIP 350) --------
+
+BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+
+def bech32_polymod(values):
+    gen = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+    chk = 1
+    for v in values:
+        top = chk >> 25
+        chk = ((chk & 0x1ffffff) << 5) ^ v
+        for i in range(5):
+            if (top >> i) & 1:
+                chk ^= gen[i]
+    return chk
+
+
+def bech32m_encode(hrp, witver, program):
+    data = [witver]
+    acc = 0
+    bits = 0
+    for b in program:
+        acc = (acc << 8) | b
+        bits += 8
+        while bits >= 5:
+            bits -= 5
+            data.append((acc >> bits) & 31)
+    if bits:
+        data.append((acc << (5 - bits)) & 31)
+    hrp_expanded = [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+    polymod = bech32_polymod(hrp_expanded + data + [0] * 6) ^ 0x2bc830a3
+    checksum = [(polymod >> 5 * (5 - i)) & 31 for i in range(6)]
+    return hrp + "1" + "".join(BECH32_CHARSET[d] for d in data + checksum)
+
+
+def other_address(address):
+    """A valid taproot address on the same network as ADDRESS, paying
+    to a key nobody has."""
+    hrp = address.rsplit("1", 1)[0].lower()
+    program = hashlib.sha256(b"dev-boltz-fault-proxy lockup").digest()
+    return bech32m_encode(hrp, 1, program)
+
+
+# -- the faults ----------------------------------------------------
+
+class LeaveArmed(Exception):
+    """The fault could not be applied to this reply; it stays armed."""
+
+
+def rewrite_claim_leaf(body, arg):
+    leaf = body["swapTree"]["claimLeaf"]
+    output = leaf["output"]
+    # OP_SIZE 32 OP_EQUALVERIFY OP_HASH160 <20> OP_EQUALVERIFY <32> OP_CHECKSIG:
+    # the key is the 32-byte push before the final OP_CHECKSIG.
+    if len(output) < 68 or not output.endswith("ac") or output[-68:-66] != "20":
+        raise LeaveArmed("claimLeaf.output does not end in a key push and OP_CHECKSIG: " + output)
+    leaf["output"] = output[:-66] + OTHER_KEY_X + "ac"
+
+
+def rewrite_refund_key(body, arg):
+    body["refundPublicKey"] = OTHER_KEY
+
+
+def rewrite_lockup_address(body, arg):
+    body["lockupAddress"] = other_address(body["lockupAddress"])
+
+
+def rewrite_leaf_version(body, arg):
+    body["swapTree"]["claimLeaf"]["version"] = 194
+
+
+def rewrite_amount(body, arg):
+    body["onchainAmount"] = int(body["onchainAmount"]) * 9 // 10
+
+
+def rewrite_invoice(body, arg):
+    if not arg:
+        raise LeaveArmed("invoice needs a file: echo 'invoice FILE' > control")
+    try:
+        with open(arg) as f:
+            invoice = f.read().strip()
+    except OSError as e:
+        raise LeaveArmed("invoice file: " + str(e))
+    if not invoice:
+        raise LeaveArmed("invoice file is empty: " + arg)
+    body["invoice"] = invoice
+
+
+def is_create(method, path):
+    return method == "POST" and path == "/v2/swap/reverse"
+
+
+def is_claim(method, path):
+    return (method == "POST" and path.startswith("/v2/swap/reverse/")
+            and path.endswith("/claim"))
+
+
+def is_terms(method, path):
+    return method == "GET" and path == "/v2/swap/reverse"
+
+
+def is_any(method, path):
+    return True
+
+
+# name -> (applies to, kind, rewrite function or None)
+FAULTS = {
+    "claim-leaf":     (is_create, "rewrite", rewrite_claim_leaf),
+    "refund-key":     (is_create, "rewrite", rewrite_refund_key),
+    "lockup-address": (is_create, "rewrite", rewrite_lockup_address),
+    "leaf-version":   (is_create, "rewrite", rewrite_leaf_version),
+    "amount":         (is_create, "rewrite", rewrite_amount),
+    "invoice":        (is_create, "rewrite", rewrite_invoice),
+    "claim-500":      (is_claim, "error", None),
+    "claim-stall":    (is_claim, "stall", None),
+    "html":           (is_any, "html", None),
+    "quote-stall":    (is_terms, "stall", None),
+}
+
+HTML_PAGE = (b"<!DOCTYPE html><html><head><title>Service</title></head>"
+             b"<body><h1>Temporarily behind a web page</h1></body></html>")
+
+
+class Control:
+    def __init__(self, path):
+        self.path = path
+
+    def read(self):
+        """The armed fault as (name, argument), or None."""
+        try:
+            with open(self.path) as f:
+                line = f.read().strip()
+        except OSError:
+            return None
+        if not line:
+            return None
+        parts = line.split(None, 1)
+        return parts[0], (parts[1].strip() if len(parts) > 1 else "")
+
+    def clear(self):
+        try:
+            with open(self.path, "w"):
+                pass
+        except OSError as e:
+            log("control file %s could not be cleared: %s" % (self.path, e))
+
+
+class Proxy(http.server.BaseHTTPRequestHandler):
+    upstream = None        # urllib.parse.SplitResult
+    control = None         # Control
+    stall_seconds = 3600
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def do_GET(self):
+        self.relay()
+
+    def do_POST(self):
+        self.relay()
+
+    def relay(self):
+        method = self.command
+        path = self.path
+        length = int(self.headers.get("Content-Length") or 0)
+        request_body = self.rfile.read(length) if length else b""
+
+        armed = self.control.read()
+        fault = None
+        if armed:
+            name, arg = armed
+            if name not in FAULTS:
+                log("%s %s: control file holds unknown fault %r, passing through"
+                    % (method, path, name))
+            elif FAULTS[name][0](method, path):
+                fault = (name, arg) + FAULTS[name][1:]
+
+        if fault and fault[2] == "stall":
+            self.control.clear()
+            log("%s %s: fault %s fired, holding the reply, not forwarded"
+                % (method, path, fault[0]))
+            self.stall()
+            return
+
+        if fault and fault[2] == "error":
+            self.control.clear()
+            body = json.dumps({"error": "fault injected: " + fault[0]}).encode()
+            log("%s %s: fault %s fired -> 500 %s, not forwarded"
+                % (method, path, fault[0], body.decode()))
+            self.reply(500, "Internal Server Error", "application/json", body)
+            return
+
+        if fault and fault[2] == "html":
+            self.control.clear()
+            log("%s %s: fault %s fired -> 200 text/html, not forwarded"
+                % (method, path, fault[0]))
+            self.reply(200, "OK", "text/html", HTML_PAGE)
+            return
+
+        try:
+            status, reason, headers, body = self.forward(method, path, request_body)
+        except (OSError, http.client.HTTPException) as e:
+            body = json.dumps({"error": "proxy: upstream unreachable: " + str(e)}).encode()
+            log("%s %s: upstream %s unreachable: %s"
+                % (method, path, self.upstream.geturl(), e))
+            self.reply(502, "Bad Gateway", "application/json", body)
+            return
+
+        content_type = headers.get("Content-Type", "application/json")
+        if fault and fault[2] == "rewrite":
+            name, arg, _, rewrite = fault
+            try:
+                parsed = json.loads(body.decode())
+                rewrite(parsed, arg)
+            except (ValueError, KeyError, TypeError) as e:
+                log("%s %s -> %d: fault %s armed but the reply has no field for it (%s), left armed"
+                    % (method, path, status, name, e))
+            except LeaveArmed as e:
+                log("%s %s -> %d: fault %s armed but not applied: %s"
+                    % (method, path, status, name, e))
+            else:
+                self.control.clear()
+                rewritten = json.dumps(parsed, separators=(",", ":")).encode()
+                log("%s %s -> %d: fault %s fired" % (method, path, status, name))
+                log("  original:  " + body.decode(errors="replace"))
+                log("  rewritten: " + rewritten.decode())
+                body = rewritten
+                content_type = "application/json"
+        else:
+            log("%s %s -> %d (%d bytes)" % (method, path, status, len(body)))
+
+        self.reply(status, reason, content_type, body)
+
+    def forward(self, method, path, request_body):
+        up = self.upstream
+        if up.scheme == "https":
+            conn = http.client.HTTPSConnection(up.hostname, up.port or 443, timeout=600)
+        else:
+            conn = http.client.HTTPConnection(up.hostname, up.port or 80, timeout=600)
+        headers = {}
+        for key, value in self.headers.items():
+            if key.lower() not in HOP_BY_HOP:
+                headers[key] = value
+        headers["Host"] = up.netloc
+        if request_body:
+            headers["Content-Length"] = str(len(request_body))
+        try:
+            conn.request(method, up.path.rstrip("/") + path, body=request_body or None,
+                         headers=headers)
+            res = conn.getresponse()
+            body = res.read()
+            return res.status, res.reason, res.headers, body
+        finally:
+            conn.close()
+
+    def reply(self, status, reason, content_type, body):
+        self.send_response(status, reason)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def stall(self):
+        """Hold the connection open without answering until the client
+        hangs up or the stall limit passes."""
+        start = time.time()
+        sock = self.connection
+        while time.time() - start < self.stall_seconds:
+            readable, _, _ = select.select([sock], [], [], 1.0)
+            if readable:
+                try:
+                    if sock.recv(1, socket.MSG_PEEK) == b"":
+                        log("  client hung up after %d s" % (time.time() - start))
+                        return
+                except OSError:
+                    log("  client hung up after %d s" % (time.time() - start))
+                    return
+        log("  stall limit of %d s reached, closing without a reply"
+            % self.stall_seconds)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="A Boltz API relay that misbehaves on request.")
+    ap.add_argument("--listen", default="127.0.0.1:8081",
+                    help="address to listen on (default 127.0.0.1:8081)")
+    ap.add_argument("--upstream", default="http://127.0.0.1:8080",
+                    help="the provider's API base (default http://127.0.0.1:8080)")
+    ap.add_argument("--control", default="/tmp/boltz-fault",
+                    help="file holding the armed fault (default /tmp/boltz-fault)")
+    ap.add_argument("--stall-seconds", type=int, default=3600,
+                    help="how long a stalled reply is held (default 3600)")
+    args = ap.parse_args()
+
+    host, _, port = args.listen.rpartition(":")
+    upstream = urllib.parse.urlsplit(args.upstream)
+    if upstream.scheme not in ("http", "https") or not upstream.hostname:
+        sys.exit("--upstream must be an http:// or https:// URL")
+
+    Proxy.upstream = upstream
+    Proxy.control = Control(args.control)
+    Proxy.stall_seconds = args.stall_seconds
+
+    server = http.server.ThreadingHTTPServer((host or "127.0.0.1", int(port)), Proxy)
+    log("listening on %s:%d, upstream %s, control file %s, faults: %s"
+        % (server.server_address[0], server.server_address[1], args.upstream,
+           args.control, " ".join(FAULTS)))
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

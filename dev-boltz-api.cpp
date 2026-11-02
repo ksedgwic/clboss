@@ -14,7 +14,7 @@
  * argv[2] == JSON
  *
  * Environment overrides:
- *   BOLTZ_API_BASE  URL prefix (default: https://boltz.exchange/api)
+ *   BOLTZ_API_BASE  API root (default: https://api.boltz.exchange)
  *   BOLTZ_PROXY     libcurl proxy (e.g. socks5h://127.0.0.1:9050)
  */
 int main(int argc, char** argv) {
@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
 		);
 	}
 
-	auto base = std::string("https://boltz.exchange/api");
+	auto base = std::string("https://api.boltz.exchange");
 	if (auto e = std::getenv("BOLTZ_API_BASE")) base = e;
 	auto proxy = std::string("");
 	if (auto e = std::getenv("BOLTZ_PROXY")) proxy = e;

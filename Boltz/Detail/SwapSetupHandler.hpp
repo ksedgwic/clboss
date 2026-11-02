@@ -98,6 +98,7 @@ private:
 	Ev::Io<void> core_run();
 
 	Ev::Io<void> logd(std::string);
+	Ev::Io<void> logi(std::string);
 	Ev::Io<void> loge(std::string);
 	std::string prefixlog(std::string);
 
@@ -112,9 +113,15 @@ private:
 
 	/* Data from server.  */
 	std::unique_ptr<std::string> swapId;
-	std::vector<std::uint8_t> redeemScript;
+	std::string refundPubkey;
+	std::vector<std::uint8_t> claimScript;
+	std::vector<std::uint8_t> refundScript;
 	std::uint32_t timeoutBlockheight;
 	Ln::Amount onchainAmount;
+	/* What the provider's terms promised for offchainAmount,
+	 * read just before the swap was created.  */
+	Ln::Amount quotedOnchainAmount;
+	std::string lockupAddress;
 
 	/* The invoice to pay, or empty string on failure.  */
 	std::string invoice;

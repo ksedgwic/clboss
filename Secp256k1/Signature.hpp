@@ -9,6 +9,8 @@
 
 namespace Secp256k1 { class PrivKey; }
 namespace Secp256k1 { class PubKey; }
+namespace Secp256k1 { class Random; }
+namespace Secp256k1 { class XonlyPubKey; }
 namespace Sha256 { class Hash; }
 
 namespace Secp256k1 {
@@ -76,6 +78,50 @@ public:
 	 */
 	static
 	Signature der_decode(std::vector<std::uint8_t> const& d);
+};
+
+class SchnorrSig {
+private:
+	std::uint8_t data[64];
+
+	SchnorrSig( Secp256k1::PrivKey const&
+		 , Sha256::Hash const&
+		 , Secp256k1::Random&
+		 );
+	SchnorrSig(std::uint8_t const buffer[64]);
+
+public:
+	SchnorrSig();
+	SchnorrSig(SchnorrSig const&) =default;
+	SchnorrSig& operator=(SchnorrSig const&) =default;
+
+	static
+	SchnorrSig from_buffer(std::uint8_t buffer[64]) {
+		return SchnorrSig(buffer);
+	}
+
+	void to_buffer(std::uint8_t buffer[64]) const;
+	std::vector<std::uint8_t> to_buffer() const;
+
+	/* Check if the signature is valid for the given pubkey
+	 * and message hash.
+	 * We impose the low-s rule. // TODO investigate
+	 */
+	bool valid( Secp256k1::XonlyPubKey const& pk
+		  , Sha256::Hash const& m
+		  ) const;
+
+	/* Create a valid signature for the given privkey and
+	 * message hash.  The random source supplies the auxiliary
+	 * randomness BIP340 mixes into the nonce.
+	 */
+	static
+	SchnorrSig create( Secp256k1::PrivKey const& sk
+			, Sha256::Hash const& m
+			, Secp256k1::Random& random
+			) {
+		return SchnorrSig(sk, m, random);
+	}
 };
 
 }
