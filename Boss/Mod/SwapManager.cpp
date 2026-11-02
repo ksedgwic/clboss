@@ -645,6 +645,33 @@ private:
 				.execute();
 		}
 
+		return finish_abandon(std::move(tx), uuid);
+	}
+
+	/* Gives up on a swap whose payment went through.  Its
+	 * address stays out of the pool: a claim broadcast before
+	 * the give-up can still confirm, and funds arriving at a
+	 * recycled address would be credited to whichever swap got
+	 * it next.  Its payment record goes with it; nothing is
+	 * left to match it to.  */
+	Ev::Io<void> abandon_paid_swap(Sqlite3::Tx tx, Uuid uuid) {
+		tx.query(R"QRY(
+		DELETE FROM "SwapManager_comp_pay"
+		 WHERE payment_hash = ( SELECT payment_hash
+					  FROM "SwapManager"
+					 WHERE uuid = :uuid
+				      )
+		     ;
+		)QRY")
+			.bind(":uuid", std::string(uuid))
+			.execute();
+
+		return finish_abandon(std::move(tx), uuid);
+	}
+
+	/* The tail of both: the row goes and the requester hears
+	 * of the failure.  */
+	Ev::Io<void> finish_abandon(Sqlite3::Tx tx, Uuid uuid) {
 		/* Delete the swap itself.  */
 		tx.query(R"QRY(
 		DELETE FROM "SwapManager"
@@ -977,7 +1004,7 @@ private:
 						).then([this]() {
 					return db.transact();
 				}).then([this, uuid](Sqlite3::Tx tx) {
-					return abandon_swap(std::move(tx), uuid);
+					return abandon_paid_swap(std::move(tx), uuid);
 				});
 			};
 			return Ev::foreach(shrink, std::move(to_shrink)
