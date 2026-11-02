@@ -1,0 +1,559 @@
+#!/usr/bin/env python3
+
+# Experimental, work in progress: the output is a reading of the data, not
+# a recommendation.  NOTICE below is printed with every run.
+#
+# How each side of each channel is being used.  A channel has two stocks:
+# our balance (the outbound side, what we can sell) and the peer's balance
+# (the inbound side, what we can receive).  Each stock is consumed by
+# forwards in one direction and refilled by forwards the other way (free),
+# by rebalances (paid), or by nothing.  Per bucket of time the tool gives
+# each side a state:
+#
+#   E exhausted   the stock was gone most of the bucket
+#   I idle        stock present, under --min-turns of it moved
+#   P paid        it moved, and rebalances supplied at least --paid-frac
+#                 of what moved (fills for the outbound side, drains for
+#                 the inbound side)
+#   S self-fed    it moved, and forwards the other way supplied at least
+#                 --fed-frac of it
+#   D draining    it moved, nothing refilled it, and its stock fell by at
+#                 least --edge of capacity over the bucket (a trickle with
+#                 no refill and no fall reads I)
+#   ? unknown     no balance samples (a private channel, or an unmanaged
+#                 peer's)
+#
+# and a channel state from the two sides in the latest bucket and who
+# opened the channel: unused (I/E, we opened), spent through (I/E, the
+# peer opened), dormant (E/I, the peer opened), sold out (E/I, we opened;
+# "+demand" when forwards were refused), balanced (S/S), outbound paid,
+# inbound paid, draining.  One row per channel; the timeline columns show
+# the state letters per bucket, oldest first.  The net-yield sort uses
+# tral from clboss-forwarding-stats: net earnings over the time-weighted
+# average of our balance, per operational day, annualized in basis
+# points, so young channels compare with old ones.
+
+import argparse
+import json
+import math
+import sys
+import time
+
+from tabulate import tabulate
+from wcwidth import wcswidth
+
+from clboss import node_data as nd
+
+NOTICE = (
+    "EXPERIMENTAL: work in progress.  The states are a reading of CLBOSS's "
+    "balance samples, CLN's forwards and CLBOSS's rebalance records, not a "
+    "recommendation; check a row against what you know of the peer before "
+    "you act on it.  Feedback: https://github.com/ksedgwic/clboss/issues")
+
+HOLD_MAX = 6 * 3600  # a balance sample stands in for at most this long
+BUCKET_DAYS = {"day": 1, "week": 7, "fortnight": 14, "month": 28}
+STATE_WORDS = {
+    ("I", "E"): {"local": "unused", "remote": "spent through"},
+    ("E", "I"): {"local": "sold out", "remote": "dormant"},
+    ("S", "S"): "balanced",
+    ("P", "P"): "both paid",
+    ("I", "I"): "quiet",
+    ("S", "I"): "outbound self-fed",
+    ("I", "S"): "inbound self-fed",
+}
+STOCK_FLOOR = 10_000_000  # msat: no rate is printed on a smaller stock
+VIEWS = ["net", "out", "in", "pair"]
+
+
+def fmt_m(msat):
+    return f"{msat / 1e9:.1f}"
+
+
+def fmt_num(value, digits=1, dash="-"):
+    if value is None:
+        return dash
+    return f"{value:.{digits}f}"
+
+
+def fmt_dep(value):
+    """Dependence over 9.99 prints as >9: the refills outran the flow
+    many times over."""
+    return ">9" if value > 9.99 else f"{value:.2f}"
+
+
+class Samples:
+    """A peer's hourly balance samples in the window, sample-and-hold."""
+
+    def __init__(self, records, since, before):
+        rows = []
+        for r in records:
+            our = r.get("balance_our_msat")
+            total = r.get("balance_total_msat")
+            ts = r.get("ts")
+            if our is None or not total or ts is None:
+                continue
+            if ts < since or ts >= before:
+                continue
+            rows.append((ts, our, total))
+        self.rows = sorted(set(rows))
+        self.before = before
+
+    def __bool__(self):
+        return bool(self.rows)
+
+    def share_at(self, t, end):
+        """Our share of capacity at time t by sample-and-hold: the last
+        sample at or before t, else the first sample before end; None
+        without one."""
+        last = None
+        for ts, our, total in self.rows:
+            if ts <= t:
+                last = (our, total)
+            else:
+                if last is None and ts < end:
+                    last = (our, total)
+                break
+        return last[0] / last[1] if last else None
+
+    def integrate(self, start, end, low, high):
+        """Time-weighted sums over [start, end): seconds sampled, mean our
+        and total balance, and the share of sampled time with our side
+        under low and over high."""
+        w_all = w_our = w_total = w_low = w_high = 0.0
+        for i, (ts, our, total) in enumerate(self.rows):
+            nxt = self.rows[i + 1][0] if i + 1 < len(self.rows) else self.before
+            hold_end = min(ts + HOLD_MAX, nxt)
+            a = max(ts, start)
+            b = min(hold_end, end)
+            if b <= a:
+                continue
+            w = b - a
+            w_all += w
+            w_our += w * our
+            w_total += w * total
+            frac = our / total
+            if frac < low:
+                w_low += w
+            elif frac > high:
+                w_high += w
+        if w_all <= 0:
+            return None
+        return {
+            "seconds": w_all,
+            "our": w_our / w_all,
+            "total": w_total / w_all,
+            "low": w_low / w_all,
+            "high": w_high / w_all,
+        }
+
+
+def bucket_index(t, since, before, bucket_s, n):
+    if t < since or t >= before:
+        return None
+    k = n - 1 - int((before - t - 1e-9) // bucket_s)
+    return k if 0 <= k < n else None
+
+
+def side_state(sampled, empty_frac, turns_w, dependence, fed, drop, args):
+    """E and I are the states of a side that did not move.  A side that
+    moved is P or S by what refilled it, however little stock it held on
+    average (a fast-cycling side reads empty most hours and still
+    trades); with neither refill it is D when its stock fell by at
+    least --edge of capacity over the bucket, else I (a trickle)."""
+    if not sampled:
+        return "?"
+    if turns_w < args.min_turns:
+        return "E" if empty_frac > 0.5 else "I"
+    if dependence >= args.paid_frac:
+        return "P"
+    if fed >= args.fed_frac:
+        return "S"
+    if drop is not None and drop >= args.edge / 100.0:
+        return "D"
+    return "I"
+
+
+def channel_word(o, i, opener, refused, out_empty, in_empty):
+    """The channel's state from the two sides' letters in the latest
+    bucket, who opened it, and whether an active side ran on an empty
+    stock (starved) or an empty side turned forwards away (demand)."""
+    if o == "?" or i == "?":
+        return "unknown"
+    entry = STATE_WORDS.get((o, i))
+    if isinstance(entry, dict):
+        word = entry.get(opener or "local", "unused")
+    elif entry:
+        word = entry
+    elif o == "P":
+        word = "outbound paid"
+    elif i == "P":
+        word = "inbound paid"
+    elif "D" in (o, i):
+        word = "draining"
+    elif o == "E":
+        word = "sold out"
+    elif i == "E":
+        word = "spent through" if opener == "remote" else "inbound dry"
+    else:
+        word = f"{o}/{i}"
+    flags = []
+    if o == "E" and refused > 0:
+        flags.append("demand")
+    if o in "PSD" and out_empty > 0.5:
+        flags.append("out starved")
+    if i in "PSD" and in_empty > 0.5:
+        flags.append("in starved")
+    if flags:
+        word += " +" + " +".join(flags)
+    return word
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="How each side of each channel is being used: a state "
+                    "per side per bucket of time, and net yield.")
+    nd.add_network_args(parser)
+    nd.add_capture_args(parser)
+    parser.add_argument("--days", type=int, default=90,
+                        help="window length in days (default 90)")
+    parser.add_argument("--since", type=int,
+                        help="window start, unix seconds (default: --days "
+                             "before --before)")
+    parser.add_argument("--before", type=int,
+                        help="window end, unix seconds (default now)")
+    parser.add_argument("--bucket", choices=list(BUCKET_DAYS), default="week",
+                        help="time bucket for the states and timelines "
+                             "(default week)")
+    parser.add_argument("--edge", type=float, default=10.0,
+                        help="a side is empty when its stock is under this "
+                             "percent of capacity (default 10)")
+    parser.add_argument("--min-turns", type=float, default=0.1,
+                        help="a side is idle when under this multiple of "
+                             "its stock moved per week (default 0.1)")
+    parser.add_argument("--paid-frac", type=float, default=0.5,
+                        help="a side is paid when rebalances supplied at "
+                             "least this share of what moved (default 0.5)")
+    parser.add_argument("--fed-frac", type=float, default=0.5,
+                        help="a side is self-fed when forwards the other "
+                             "way supplied at least this share (default 0.5)")
+    parser.add_argument("--view", choices=VIEWS, default="net",
+                        help="sort: net (tral), out (outbound yield), in "
+                             "(inbound yield), pair (paid sides first, by "
+                             "dependence)")
+    parser.add_argument("--min-days", type=float, default=0.0,
+                        help="hide channels with fewer sampled days "
+                             "(default 0: show all, prorated)")
+    parser.add_argument("--ids", action="store_true",
+                        help="show peer node ids instead of aliases")
+    parser.add_argument("--json", action="store_true",
+                        help="print the rows as JSON")
+    parser.add_argument("--page", type=int, default=10000,
+                        help="listforwards page size (default 10000)")
+    args = parser.parse_args()
+
+    if args.days <= 0:
+        parser.error("--days must be positive")
+    low = args.edge / 100.0
+    high = 1.0 - low
+
+    cli = nd.Cli(nd.lightning_dir(args), nd.network_option(args))
+    store = nd.Store(cli, record=args.record, replay=args.replay)
+    since, before = nd.window(store, args)
+    bucket_s = BUCKET_DAYS[args.bucket] * 86400
+    n = max(1, math.ceil((before - since) / bucket_s))
+    starts = [max(since, before - (n - k) * bucket_s) for k in range(n)]
+    ends = [before - (n - k - 1) * bucket_s for k in range(n)]
+
+    channels = nd.open_channels(store)
+    if not channels:
+        print("no open channels", file=sys.stderr)
+        return 1
+    peers = sorted({c["peer_id"] for c in channels.values()})
+    peer_cap = {}
+    for c in channels.values():
+        peer_cap[c["peer_id"]] = peer_cap.get(c["peer_id"], 0) + c["cap"]
+    alias = nd.aliases(store, peers)
+
+    samples = {p: Samples(nd.feemon_history(store, p, since, before),
+                          since, before) for p in peers}
+
+    # CLBOSS's per-peer day buckets, apportioned to our buckets by
+    # overlap: earnings and expenditures per direction, rebalanced volume
+    # (out_rebalanced = fills into our side, in_rebalanced = drains out)
+    earn_fields = ("in_earnings", "out_earnings", "in_expenditures",
+                   "out_expenditures", "in_rebalanced", "out_rebalanced")
+    earn = {p: [{f: 0.0 for f in earn_fields} for _ in range(n)]
+            for p in peers}
+    for entry in nd.earnings_history_all(store):
+        p = entry.get("node")
+        bt = entry.get("bucket_time")
+        if p not in earn or bt is None:
+            continue
+        for k in range(n):
+            ov = min(bt + 86400, ends[k]) - max(bt, starts[k])
+            if ov <= 0:
+                continue
+            share = ov / 86400.0
+            for f in earn_fields:
+                earn[p][k][f] += share * entry.get(f, 0)
+
+    # forwards per channel per bucket
+    fwd_fields = ("out_vol", "out_fee", "in_vol", "in_fee", "refused")
+    acc = {scid: [{f: 0.0 for f in fwd_fields} for _ in range(n)]
+           for scid in channels}
+    last_fwd = {scid: None for scid in channels}
+    for fwd in nd.forwards(store, "settled", since, before, args.page):
+        t = fwd.get("received_time", 0)
+        k = bucket_index(t, since, before, bucket_s, n)
+        if k is None:
+            continue
+        fee = nd.msat(fwd.get("fee_msat"))
+        o = fwd.get("out_channel")
+        i = fwd.get("in_channel")
+        if o in acc:
+            acc[o][k]["out_vol"] += nd.msat(fwd.get("out_msat"))
+            acc[o][k]["out_fee"] += fee
+            last_fwd[o] = max(last_fwd[o] or 0, t)
+        if i in acc:
+            acc[i][k]["in_vol"] += nd.msat(fwd.get("in_msat"))
+            acc[i][k]["in_fee"] += fee
+            last_fwd[i] = max(last_fwd[i] or 0, t)
+    for fwd in nd.forwards(store, "local_failed", since, before, args.page):
+        if fwd.get("failcode") != 4103:  # WIRE_TEMPORARY_CHANNEL_FAILURE
+            continue
+        o = fwd.get("out_channel")
+        if o not in acc:
+            continue
+        k = bucket_index(fwd.get("received_time", 0), since, before,
+                         bucket_s, n)
+        if k is not None:
+            acc[o][k]["refused"] += nd.msat(fwd.get("in_msat"))
+
+    rows = []
+    now = before
+    for scid, ch in channels.items():
+        p = ch["peer_id"]
+        share = ch["cap"] / peer_cap[p] if peer_cap.get(p) else 1.0
+        s = samples[p]
+        whole = s.integrate(since, before, low, high) if s else None
+        op_days = whole["seconds"] / 86400.0 if whole else 0.0
+        avg_our = whole["our"] * share if whole else None
+        buckets = []
+        out_line = []
+        in_line = []
+        for k in range(n):
+            seg = s.integrate(starts[k], ends[k], low, high) if s else None
+            days = (ends[k] - starts[k]) / 86400.0
+            weeks = days / 7.0
+            a = acc[scid][k]
+            e = earn[p][k]
+            if seg:
+                our_stock = seg["our"] * share
+                their_stock = (seg["total"] - seg["our"]) * share
+            else:
+                our_stock = ch["ours"]
+                their_stock = ch["inbound"]
+            fills = e["out_rebalanced"] * share
+            drains = e["in_rebalanced"] * share
+            # our share of capacity at the bucket's ends: a fall is the
+            # outbound side draining, a rise the inbound side
+            s0 = s.share_at(starts[k], ends[k]) if s else None
+            s1 = s.share_at(ends[k] - 1, ends[k]) if s else None
+            out_drop = (s0 - s1) if s0 is not None and s1 is not None \
+                else None
+            in_drop = -out_drop if out_drop is not None else None
+
+            def side(stock, vol, fee, paid, fed_vol, empty_frac, drop):
+                turns_w = (vol / stock / weeks) if stock > 0 and weeks > 0 \
+                    else 0.0
+                dep = paid / vol if vol > 0 else 0.0
+                fed = fed_vol / vol if vol > 0 else 0.0
+                rated = stock >= STOCK_FLOOR and days > 0
+                return {
+                    "stock": stock,
+                    "turns": vol / stock / days if rated else None,
+                    "yield": fee / 1000.0 / (stock / 1e9) / days
+                    if rated else None,
+                    "dep": dep,
+                    "fed": fed,
+                    "empty": empty_frac,
+                    "drop": drop,
+                    "state": side_state(bool(seg), empty_frac, turns_w, dep,
+                                        fed, drop, args),
+                }
+            out = side(our_stock, a["out_vol"], a["out_fee"], fills,
+                       a["in_vol"], seg["low"] if seg else 0.0, out_drop)
+            inn = side(their_stock, a["in_vol"], a["in_fee"], drains,
+                       a["out_vol"], seg["high"] if seg else 0.0, in_drop)
+            out["refused"] = a["refused"]
+            buckets.append({"start": starts[k], "end": ends[k],
+                            "out": out, "in": inn})
+            out_line.append(out["state"])
+            in_line.append(inn["state"])
+
+        latest = buckets[-1]
+        o_state, i_state = latest["out"]["state"], latest["in"]["state"]
+        word = channel_word(o_state, i_state, ch["opener"],
+                            latest["out"]["refused"],
+                            latest["out"]["empty"], latest["in"]["empty"])
+        since_n = 0
+        for b in reversed(buckets):
+            if (b["out"]["state"], b["in"]["state"]) != (o_state, i_state):
+                break
+            since_n += 1
+
+        # window totals per side
+        def total(side_key, vol_key, fee_key, paid_key):
+            vol = sum(acc[scid][k][vol_key] for k in range(n))
+            fee = sum(acc[scid][k][fee_key] for k in range(n))
+            paid = sum(earn[p][k][paid_key] for k in range(n)) * share
+            stock = (sum(b[side_key]["stock"] * (b["end"] - b["start"])
+                         for b in buckets)
+                     / max(before - since, 1))
+            days = op_days if op_days > 0 else (before - since) / 86400.0
+            rated = stock >= STOCK_FLOOR
+            return {
+                "stock": stock,
+                "turns": vol / stock / days if rated else None,
+                "yield": fee / 1000.0 / (stock / 1e9) / days
+                if rated else None,
+                "dep": paid / vol if vol > 0 else 0.0,
+                "vol": vol,
+                "fee": fee,
+                "paid": paid,
+            }
+        out_t = total("out", "out_vol", "out_fee", "out_rebalanced")
+        in_t = total("in", "in_vol", "in_fee", "in_rebalanced")
+        out_t["refused"] = sum(acc[scid][k]["refused"] for k in range(n))
+
+        earned = sum(e["in_earnings"] + e["out_earnings"]
+                     for e in earn[p]) * share
+        spent = sum(e["in_expenditures"] + e["out_expenditures"]
+                    for e in earn[p]) * share
+        net = earned - spent
+        tral = (net / avg_our / op_days * 365 * 100 * 100
+                if avg_our and op_days >= 1 else None)
+        fral = ((out_t["vol"] + in_t["vol"]) / avg_our / op_days
+                if avg_our and op_days >= 1 else None)
+
+        rows.append({
+            "peer_id": p,
+            "alias": alias.get(p, p),
+            "scid": scid,
+            "cap": ch["cap"],
+            "ours_now": ch["ours"],
+            "opener": ch["opener"],
+            "connected": ch["connected"],
+            "peer_ppm": ch["peer_ppm"],
+            "sampled_days": op_days,
+            "state": word,
+            "out_state": o_state,
+            "in_state": i_state,
+            "since_buckets": since_n,
+            "tral_bps": tral,
+            "fral": fral,
+            "net_sat": net / 1000.0,
+            "avg_our": avg_our,
+            "out": out_t,
+            "in": in_t,
+            "out_timeline": "".join(out_line),
+            "in_timeline": "".join(in_line),
+            "quiet_days": ((now - last_fwd[scid]) / 86400.0
+                           if last_fwd[scid] else None),
+            "buckets": buckets,
+        })
+
+    rows = [r for r in rows if r["sampled_days"] >= args.min_days]
+
+    def paid_key(r):
+        dep = max(r["out"]["dep"] if r["out_state"] == "P" else 0.0,
+                  r["in"]["dep"] if r["in_state"] == "P" else 0.0)
+        paid = "P" in (r["out_state"], r["in_state"])
+        return (0 if paid else 1, -dep, -(r["tral_bps"] or -1e18))
+
+    def desc(value):
+        return -(value if value is not None else -1e18)
+
+    sorts = {
+        "net": lambda r: desc(r["tral_bps"]),
+        "out": lambda r: desc(r["out"]["yield"]),
+        "in": lambda r: desc(r["in"]["yield"]),
+        "pair": paid_key,
+    }
+    rows.sort(key=sorts[args.view])
+
+    if args.json:
+        json.dump({"since": since, "before": before, "bucket": args.bucket,
+                   "rows": rows}, sys.stdout, indent=1)
+        print()
+        return 0
+
+    print(NOTICE)
+    print()
+    print(f"window {time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(since))} .. "
+          f"{time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(before))} "
+          f"({(before - since) / 86400:.1f} d), bucket {args.bucket} "
+          f"x{n}, edge {args.edge:g}%, view {args.view}")
+    print()
+    headers = ["Alias", "SCID", "Cap", "Opn", "Up", "Days", "State",
+               "Since", "Tral", "Net",
+               "OutStock", "OutTurn", "OutYield", "OutDep", "Refused",
+               "OutTimeline",
+               "InStock", "InTurn", "InYield", "InDep", "InTimeline"]
+    table = []
+    for r in rows:
+        table.append([
+            r["peer_id"] if args.ids else r["alias"],
+            r["scid"],
+            fmt_m(r["cap"]),
+            {"local": "L", "remote": "R"}.get(r["opener"], "?"),
+            "y" if r["connected"] else "n",
+            f"{r['sampled_days']:.0f}",
+            r["state"],
+            str(r["since_buckets"]),
+            fmt_num(r["tral_bps"], 0),
+            f"{r['net_sat']:.0f}",
+            fmt_m(r["out"]["stock"]),
+            fmt_num(r["out"]["turns"], 2),
+            fmt_num(r["out"]["yield"], 0),
+            fmt_dep(r["out"]["dep"]),
+            fmt_m(r["out"]["refused"]),
+            r["out_timeline"],
+            fmt_m(r["in"]["stock"]),
+            fmt_num(r["in"]["turns"], 2),
+            fmt_num(r["in"]["yield"], 0),
+            fmt_dep(r["in"]["dep"]),
+            r["in_timeline"],
+        ])
+    print(tabulate(table, headers=headers, tablefmt="plain",
+                   disable_numparse=True))
+    print()
+    print(LEGEND)
+    return 0
+
+
+LEGEND = """\
+Cap, OutStock, InStock  M sat; stocks are time-weighted means over the window
+Opn      who opened the channel: L us, R the peer
+Days     days with balance samples (operational days): rates are prorated by them
+State    from the two sides' latest letters and the opener: unused (I/E, we opened), spent through (I/E,
+         the peer opened), dormant (E/I, the peer opened), sold out (E/I, we opened), balanced (S/S),
+         outbound/inbound self-fed (S/I, I/S), outbound/inbound paid (P on that side), draining (D on a
+         side), quiet (I/I); +demand: the empty side turned forwards away; +starved: an active side ran on
+         an empty stock most of the bucket
+Since    buckets the two sides have shown their current letters
+Tral     net earnings over the time-weighted mean of our balance, per operational day, annualized, basis points
+Net      forwarding fees less rebalance spend, sat over the window, as CLBOSS attributes them to the peer
+OutTurn, InTurn    volume moved over that side's stock, per day
+OutYield, InYield  fees on forwards leaving (arriving) over that side's stock, sat per M per day
+OutDep, InDep      rebalanced volume over forwarded volume: fills over sales (out), drains over receipts (in)
+Refused  outbound volume refused on this channel, M sat (retries inflate it)
+Timelines  one letter per bucket, oldest first: E exhausted, I idle, P paid, S self-fed, D draining (no refill
+         and the stock fell by at least the edge over the bucket), ? no samples; buckets are aligned to the
+         window's end, so the first may be short and the last is whole
+A peer with several channels shares its samples and rebalance figures among them by capacity.\
+"""
+
+
+if __name__ == "__main__":
+    sys.exit(main())

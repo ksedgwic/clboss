@@ -61,6 +61,8 @@ cd contrib/
 
 ./clboss-channel-sizing
 
+./clboss-liquidity-states
+
 ./recently-closed
 
 ./clboss-xrebalance-view
@@ -197,6 +199,32 @@ how many days of earnings history are considered when ranking channels.
   earn rates, the share of refused forwards that happened at the edge and
   the balance range used, `--sort` picks a flat order instead of groups,
   `--json` dumps the rows with their group and holds.
+- **`clboss-liquidity-states`** (***EXPERIMENTAL***, work in progress)
+  shows how each side of each channel is being used.  Our balance is the
+  outbound side (what we can sell), the peer's balance the inbound side
+  (what we can receive); each is consumed by forwards in one direction
+  and refilled by forwards the other way, by rebalances, or by nothing.
+  Per bucket of time (`--bucket day|week|fortnight|month`, default week)
+  each side gets a letter: `E` exhausted (empty, nothing moved), `I`
+  idle (stock present, under `--min-turns` of it moved per week), `P`
+  paid (it moved and rebalances supplied at least `--paid-frac` of what
+  moved: fills on the outbound side, drains on the inbound side), `S`
+  self-fed (forwards the other way supplied at least `--fed-frac`), `D`
+  draining (it moved, nothing refilled it), `?` no balance samples.  The
+  two letters in the latest bucket and who opened the channel give the
+  channel's `State`: unused, spent through, dormant, sold out, balanced,
+  outbound or inbound self-fed, outbound or inbound paid, draining,
+  quiet; `+demand` marks an empty outbound side that turned forwards
+  away and `+starved` an active side that ran on an empty stock.  One
+  row per channel with both sides' stock, turns, yield and dependence
+  (rebalanced over forwarded volume) and a timeline of letters per side,
+  oldest first.  `Tral` is clboss-forwarding-stats' figure: net earnings
+  over the time-weighted mean of our balance per operational day,
+  annualized in basis points, so a young channel compares with an old
+  one.  `--view` sorts the same rows by tral (`net`), outbound or inbound
+  yield (`out`, `in`), or paid sides first (`pair`).  `--record DIR`
+  saves the data a live run used and `--replay DIR` reruns from it, so a
+  run can be repeated elsewhere or later with different flags.
 - **`clboss-routing-stats`** ranks peers using recent earnings data and also
   accepts the `--days` option.
 - **`recently-closed`** lists channels that closed within the last N days, also
