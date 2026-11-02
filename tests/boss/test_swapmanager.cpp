@@ -306,6 +306,25 @@ MockRequester requester(bus);
 /* Object under test.  */
 Boss::Mod::SwapManager swapper(bus);
 
+/* Payment records on the given hash.  */
+Ev::Io<std::uint64_t> count_comp_pay(Sha256::Hash hash) {
+	return db.transact().then([hash](Sqlite3::Tx tx) {
+		auto fetch = tx.query(R"QRY(
+		SELECT COUNT(*)
+		  FROM "SwapManager_comp_pay"
+		 WHERE payment_hash = :hash
+		     ;
+		)QRY")
+			.bind(":hash", std::string(hash))
+			.execute();
+		auto count = std::uint64_t(0);
+		for (auto& r : fetch)
+			count = r.get<std::uint64_t>(0);
+		tx.commit();
+		return Ev::lift(count);
+	});
+}
+
 /*-----------------------------------------------------------------------------
 Tests
 -----------------------------------------------------------------------------*/
@@ -488,18 +507,24 @@ Ev::Io<void> test_timeout_after_payment() {
 		return bus.raise(Boss::Msg::Block{timeout + horizon});
 	}).then([]() {
 		return wait();
-	}).then([paid_lost, unpaid, hash_unpaid, hash_retry]() {
+	}).then([paid_lost, hash_lost]() {
 		requester.expect_finished(paid_lost, false);
+		/* Its payment record went with it.  */
+		return count_comp_pay(hash_lost);
+	}).then([unpaid, hash_unpaid, hash_retry](std::uint64_t records) {
+		assert(records == 0);
 
 		/* Not paid at the timeout: retried on the same
 		 * address with the second queued setup.  The address
-		 * is the abandoned swap's, back from the pool.  */
+		 * is a fresh one: the abandoned swap's stays out of
+		 * the pool, since its claim can still land there.  */
+		addresses.add("address-unpaid");
 		quotations.add({Ln::Amount::sat(100)});
-		swapsetups.add({ "address-lost", true, "invoice-unpaid"
+		swapsetups.add({ "address-unpaid", true, "invoice-unpaid"
 			       , hash_unpaid, timeout
 			       });
 		quotations.add({Ln::Amount::sat(100)});
-		swapsetups.add({ "address-lost", true, "invoice-retry"
+		swapsetups.add({ "address-unpaid", true, "invoice-retry"
 			       , hash_retry, timeout + 100
 			       });
 		return requester.start_swap( unpaid
@@ -513,8 +538,20 @@ Ev::Io<void> test_timeout_after_payment() {
 	}).then([]() {
 		return wait();
 	}).then([unpaid]() {
+		assert(addresses.empty());
 		assert(quotations.empty());
 		assert(swapsetups.okay());
+		requester.expect_pending(unpaid);
+
+		/* The abandoned swap's claim lands after all: the
+		 * funds are ours, and no swap is credited.  */
+		return onchain.listfunds({ { "address-lost"
+					   , Ln::Amount::sat(12100)
+					   }
+					 });
+	}).then([]() {
+		return wait();
+	}).then([unpaid]() {
 		requester.expect_pending(unpaid);
 		return Ev::lift();
 	});
