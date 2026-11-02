@@ -592,6 +592,7 @@ SUBDIRS = \
 	external/secp256k1/
 EXTRA_DIST = \
 	create-tarball.in \
+	dev-boltz-fault-proxy \
 	external/jsmn/LICENSE \
 	external/jsmn/jsmn.h \
 	new-mod \
