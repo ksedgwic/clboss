@@ -11,6 +11,7 @@ repeated on another machine, or later, from the data it actually used.
 Record layout (one directory):
   meta.json                 since, before, recorded_at (unix seconds)
   channels.json             listpeerchannels
+  closed.json               listclosedchannels
   aliases.json              peer id -> alias
   feemon/<peer id>.json     clboss-feemon-history <peer> <since> <before>
   earnings-all.json         clboss-earnings-history all
@@ -199,6 +200,20 @@ def open_channels(store):
             "channel_id": ch.get("channel_id"),
         }
     return channels
+
+
+def closed_channels(store):
+    """Short channel id -> peer id for the channels CLN remembers as
+    closed, so forwards through a channel since closed, or replaced by a
+    resize, still count for its peer."""
+    data = store.fetch("closed.json",
+                       lambda: store.cli("listclosedchannels"))
+    out = {}
+    for ch in (data or {}).get("closedchannels", []):
+        scid = ch.get("short_channel_id")
+        if scid and ch.get("peer_id"):
+            out[scid] = ch["peer_id"]
+    return out
 
 
 def aliases(store, peer_ids):
