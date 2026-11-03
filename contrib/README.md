@@ -216,9 +216,11 @@ how many days of earnings history are considered when ranking channels.
   outbound or inbound self-fed, outbound or inbound paid, draining,
   quiet; `+demand` marks an empty outbound side that turned forwards
   away and `+starved` an active side that ran on an empty stock.  One
-  row per channel with both sides' stock, turns, yield and dependence
-  (rebalanced over forwarded volume) and a timeline of letters per side,
-  oldest first.  `Tral` is clboss-forwarding-stats' figure: net earnings
+  row per peer (its open channels summed; forwards through channels
+  since closed count too, so a resize keeps its history) with both
+  sides' stock, turns, yield and dependence (rebalanced over forwarded
+  volume) and a timeline of letters per side, oldest first.  `Tral` is
+  clboss-forwarding-stats' figure: net earnings
   over the time-weighted mean of our balance per operational day,
   annualized in basis points, so a young channel compares with an old
   one.  `--view` sorts the same rows by tral (`net`), outbound or inbound

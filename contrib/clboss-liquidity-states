@@ -27,8 +27,10 @@
 # opened the channel: unused (I/E, we opened), spent through (I/E, the
 # peer opened), dormant (E/I, the peer opened), sold out (E/I, we opened;
 # "+demand" when forwards were refused), balanced (S/S), outbound paid,
-# inbound paid, draining.  One row per channel; the timeline columns show
-# the state letters per bucket, oldest first.  The net-yield sort uses
+# inbound paid, draining.  One row per peer: its open channels summed,
+# plus the forwards of channels to the peer that have since closed, so a
+# resize keeps its history.  The timeline columns show the state letters
+# per bucket, oldest first.  The net-yield sort uses
 # tral from clboss-forwarding-stats: net earnings over the time-weighted
 # average of our balance, per operational day, annualized in basis
 # points, so young channels compare with old ones.
@@ -268,10 +270,25 @@ def main():
     if not channels:
         print("no open channels", file=sys.stderr)
         return 1
-    peers = sorted({c["peer_id"] for c in channels.values()})
-    peer_cap = {}
-    for c in channels.values():
-        peer_cap[c["peer_id"]] = peer_cap.get(c["peer_id"], 0) + c["cap"]
+    # one row per peer: its open channels summed; forwards through the
+    # peer's closed channels count too (a resize keeps its history)
+    peer_rows = {}
+    for scid, c in channels.items():
+        r = peer_rows.setdefault(c["peer_id"], {
+            "scids": [], "cap": 0, "ours": 0, "inbound": 0,
+            "connected": c["connected"], "opener": None, "largest": -1,
+            "peer_ppm": c["peer_ppm"]})
+        r["scids"].append(scid)
+        r["cap"] += c["cap"]
+        r["ours"] += c["ours"]
+        r["inbound"] += c["inbound"]
+        if c["cap"] > r["largest"]:
+            r["largest"], r["opener"] = c["cap"], c["opener"]
+    peers = sorted(peer_rows)
+    scid_peer = {scid: c["peer_id"] for scid, c in channels.items()}
+    for scid, peer in nd.closed_channels(store).items():
+        if peer in peer_rows:
+            scid_peer.setdefault(scid, peer)
     alias = nd.aliases(store, peers)
 
     samples = {p: Samples(nd.feemon_history(store, p, since, before),
@@ -297,19 +314,19 @@ def main():
             for f in earn_fields:
                 earn[p][k][f] += share * entry.get(f, 0)
 
-    # forwards per channel per bucket
+    # forwards per peer per bucket
     fwd_fields = ("out_vol", "out_fee", "in_vol", "in_fee", "refused")
-    acc = {scid: [{f: 0.0 for f in fwd_fields} for _ in range(n)]
-           for scid in channels}
-    last_fwd = {scid: None for scid in channels}
+    acc = {p: [{f: 0.0 for f in fwd_fields} for _ in range(n)]
+           for p in peers}
+    last_fwd = {p: None for p in peers}
     for fwd in nd.forwards(store, "settled", since, before, args.page):
         t = fwd.get("received_time", 0)
         k = bucket_index(t, since, before, bucket_s, n)
         if k is None:
             continue
         fee = nd.msat(fwd.get("fee_msat"))
-        o = fwd.get("out_channel")
-        i = fwd.get("in_channel")
+        o = scid_peer.get(fwd.get("out_channel"))
+        i = scid_peer.get(fwd.get("in_channel"))
         if o in acc:
             acc[o][k]["out_vol"] += nd.msat(fwd.get("out_msat"))
             acc[o][k]["out_fee"] += fee
@@ -321,7 +338,7 @@ def main():
     for fwd in nd.forwards(store, "local_failed", since, before, args.page):
         if fwd.get("failcode") != 4103:  # WIRE_TEMPORARY_CHANNEL_FAILURE
             continue
-        o = fwd.get("out_channel")
+        o = scid_peer.get(fwd.get("out_channel"))
         if o not in acc:
             continue
         k = bucket_index(fwd.get("received_time", 0), since, before,
@@ -331,13 +348,11 @@ def main():
 
     rows = []
     now = before
-    for scid, ch in channels.items():
-        p = ch["peer_id"]
-        share = ch["cap"] / peer_cap[p] if peer_cap.get(p) else 1.0
+    for p, ch in peer_rows.items():
         s = samples[p]
         whole = s.integrate(since, before, low, high) if s else None
         op_days = whole["seconds"] / 86400.0 if whole else 0.0
-        avg_our = whole["our"] * share if whole else None
+        avg_our = whole["our"] if whole else None
         buckets = []
         out_line = []
         in_line = []
@@ -345,16 +360,16 @@ def main():
             seg = s.integrate(starts[k], ends[k], low, high) if s else None
             days = (ends[k] - starts[k]) / 86400.0
             weeks = days / 7.0
-            a = acc[scid][k]
+            a = acc[p][k]
             e = earn[p][k]
             if seg:
-                our_stock = seg["our"] * share
-                their_stock = (seg["total"] - seg["our"]) * share
+                our_stock = seg["our"]
+                their_stock = seg["total"] - seg["our"]
             else:
                 our_stock = ch["ours"]
                 their_stock = ch["inbound"]
-            fills = e["out_rebalanced"] * share
-            drains = e["in_rebalanced"] * share
+            fills = e["out_rebalanced"]
+            drains = e["in_rebalanced"]
             # our share of capacity at the bucket's ends: a fall is the
             # outbound side draining, a rise the inbound side
             s0 = s.share_at(starts[k], ends[k]) if s else None
@@ -403,13 +418,10 @@ def main():
             since_n += 1
 
         # window totals per side
-        def total(side_key, vol_key, fee_key, paid_key):
-            vol = sum(acc[scid][k][vol_key] for k in range(n))
-            fee = sum(acc[scid][k][fee_key] for k in range(n))
-            paid = sum(earn[p][k][paid_key] for k in range(n)) * share
-            stock = (sum(b[side_key]["stock"] * (b["end"] - b["start"])
-                         for b in buckets)
-                     / max(before - since, 1))
+        def total(stock, vol_key, fee_key, paid_key):
+            vol = sum(acc[p][k][vol_key] for k in range(n))
+            fee = sum(acc[p][k][fee_key] for k in range(n))
+            paid = sum(earn[p][k][paid_key] for k in range(n))
             days = op_days if op_days > 0 else (before - since) / 86400.0
             rated = stock >= STOCK_FLOOR
             return {
@@ -422,14 +434,18 @@ def main():
                 "fee": fee,
                 "paid": paid,
             }
-        out_t = total("out", "out_vol", "out_fee", "out_rebalanced")
-        in_t = total("in", "in_vol", "in_fee", "in_rebalanced")
-        out_t["refused"] = sum(acc[scid][k]["refused"] for k in range(n))
+        # window stocks over the sampled time, as Days is
+        out_stock = whole["our"] if whole else ch["ours"]
+        in_stock = (whole["total"] - whole["our"]) if whole \
+            else ch["inbound"]
+        out_t = total(out_stock, "out_vol", "out_fee", "out_rebalanced")
+        in_t = total(in_stock, "in_vol", "in_fee", "in_rebalanced")
+        out_t["refused"] = sum(acc[p][k]["refused"] for k in range(n))
 
         earned = sum(e["in_earnings"] + e["out_earnings"]
-                     for e in earn[p]) * share
+                     for e in earn[p])
         spent = sum(e["in_expenditures"] + e["out_expenditures"]
-                    for e in earn[p]) * share
+                    for e in earn[p])
         net = earned - spent
         tral = (net / avg_our / op_days * 365 * 100 * 100
                 if avg_our and op_days >= 1 else None)
@@ -439,7 +455,7 @@ def main():
         rows.append({
             "peer_id": p,
             "alias": alias.get(p, p),
-            "scid": scid,
+            "scids": ch["scids"],
             "cap": ch["cap"],
             "ours_now": ch["ours"],
             "opener": ch["opener"],
@@ -458,8 +474,8 @@ def main():
             "in": in_t,
             "out_timeline": "".join(out_line),
             "in_timeline": "".join(in_line),
-            "quiet_days": ((now - last_fwd[scid]) / 86400.0
-                           if last_fwd[scid] else None),
+            "quiet_days": ((now - last_fwd[p]) / 86400.0
+                           if last_fwd[p] else None),
             "buckets": buckets,
         })
 
@@ -504,7 +520,7 @@ def main():
     for r in rows:
         table.append([
             r["peer_id"] if args.ids else r["alias"],
-            r["scid"],
+            ",".join(r["scids"]),
             fmt_m(r["cap"]),
             {"local": "L", "remote": "R"}.get(r["opener"], "?"),
             "y" if r["connected"] else "n",
@@ -537,7 +553,7 @@ def main():
 
 
 LEGEND = """\
-Cap, OutStock, InStock  M sat; stocks are time-weighted means over the window
+Cap, OutStock, InStock  M sat; stocks are time-weighted means over the sampled time
 Opn      who opened the channel: L us, R the peer
 Days     days with balance samples (operational days): rates are prorated by them
 State    from the two sides' latest letters and the opener: unused (I/E, we opened), spent through (I/E,
@@ -555,7 +571,8 @@ Refused  outbound volume refused on this channel, M sat (retries inflate it)
 Timelines  one letter per bucket, oldest first: E exhausted, I idle, P paid, S self-fed, D draining (no refill
          and the stock fell by at least the edge over the bucket), ? no samples; buckets are aligned to the
          window's end, so the first may be short and the last is whole
-A peer with several channels shares its samples and rebalance figures among them by capacity.\
+One row per peer: its open channels summed (SCID lists them); forwards through channels to the peer that
+         have since closed count too, so a resize keeps its history.\
 """
 
 
