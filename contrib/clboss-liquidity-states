@@ -525,8 +525,12 @@ def main():
             fmt_dep(r["in"]["dep"]),
             r["in_timeline"],
         ])
+    text = {"Alias", "SCID", "Opn", "Up", "State", "OutTimeline",
+            "InTimeline"}
     print(tabulate(table, headers=headers, tablefmt="plain",
-                   disable_numparse=True))
+                   disable_numparse=True,
+                   colalign=tuple("left" if h in text else "right"
+                                  for h in headers)))
     print()
     print(LEGEND)
     return 0
