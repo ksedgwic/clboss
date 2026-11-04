@@ -301,6 +301,7 @@ def main():
         if peer in peer_rows:
             scid_peer.setdefault(scid, peer)
     alias = nd.aliases(store, peers)
+    connect_rate = nd.connect_rates(store)
 
     # ages at 144 blocks a day: the newest open channel's, and the peer's
     # since the earliest channel we had with it, closed ones included
@@ -489,6 +490,7 @@ def main():
             "peer_age_days": ch["peer_age_days"],
             "opener": ch["opener"],
             "connected": ch["connected"],
+            "connect_rate_3d": connect_rate.get(p),
             "peer_ppm": ch["peer_ppm"],
             "sampled_days": op_days,
             "state": word,
@@ -540,8 +542,8 @@ def main():
           f"({(before - since) / 86400:.1f} d), bucket {args.bucket} "
           f"x{n}, edge {args.edge:g}%, view {args.view}")
     print()
-    headers = ["Alias", "SCID", "Cap", "Ours", "Inb", "Opn", "Up", "Age",
-               "Days", "State",
+    headers = ["Alias", "SCID", "Cap", "Ours", "Inb", "Opn", "Up", "Up3d",
+               "Age", "Days", "State",
                "Since", "Tral", "Net",
                "OutStock", "OutTurn", "OutYield", "OutDep", "Refused",
                "OutTimeline",
@@ -556,6 +558,8 @@ def main():
             fmt_m(r["inbound_now"]),
             {"local": "L", "remote": "R"}.get(r["opener"], "?"),
             "y" if r["connected"] else "n",
+            "?" if r["connect_rate_3d"] is None
+            else f"{r['connect_rate_3d'] * 100:.0f}",
             fmt_age(r["age_days"], r["peer_age_days"]),
             f"{r['sampled_days']:.0f}",
             r["state"],
@@ -589,6 +593,8 @@ LEGEND = """\
 Cap, OutStock, InStock  M sat; stocks are time-weighted means over the sampled time
 Ours, Inb  our side and the peer's side now, M sat: a close returns Ours and forfeits Inb
 Opn      who opened the channel: L us, R the peer
+Up, Up3d connected now; 3-day connect rate, % (? = not in clboss-status: an unmanaged peer, or a recording
+         made before the rate was kept)
 Age      days since the newest open channel's block, at 144 blocks a day; after a slash, when the peer goes
          back further, days since the earliest channel we had with it, closed ones included
 Days     days with balance samples (operational days): rates are prorated by them
