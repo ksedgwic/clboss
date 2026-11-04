@@ -16,6 +16,7 @@ Record layout (one directory):
   aliases.json              peer id -> alias
   feemon/<peer id>.json     clboss-feemon-history <peer> <since> <before>
   earnings-all.json         clboss-earnings-history all
+  status.json               clboss-status (peer_metrics: 3-day connect rate)
   forwards-<status>.json    the forwards of that status in the window
 """
 
@@ -263,6 +264,19 @@ def feemon_history(store, peer_id, since, before):
                          str(before))
     data = store.fetch(os.path.join("feemon", f"{peer_id}.json"), live)
     return (data or {}).get("history", [])
+
+
+# peer metrics
+
+def connect_rates(store):
+    """Peer id -> 3-day connect rate (0..1) from clboss-status
+    peer_metrics; peers CLBOSS does not manage are absent."""
+    data = store.fetch("status.json", lambda: store.cli("clboss-status"))
+    out = {}
+    for peer_id, m in ((data or {}).get("peer_metrics") or {}).items():
+        if m.get("connect_rate") is not None:
+            out[peer_id] = float(m["connect_rate"])
+    return out
 
 
 # earnings
