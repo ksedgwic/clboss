@@ -224,10 +224,11 @@ how many days of earnings history are considered when ranking channels.
   clboss-forwarding-stats' figure: net earnings
   over the time-weighted mean of our balance per operational day,
   annualized in basis points, so a young channel compares with an old
-  one.  An `Action` column reads `close`, or `fill+close` when the peer
-  holds enough that a fill can carry the inbound elsewhere first, for a
-  channel we opened that has had `--close-min-days` of samples and earns
-  at most `--close-max-tral`; `, offline` when the peer is down.
+  one.  An `Action` column lists the steps to a close, `close`,
+  `fill+close` or `online+fill+close`, for a channel we opened that has
+  had `--close-min-days` of samples and earns at most `--close-max-tral`:
+  `fill+` when the peer holds enough that a fill can carry the inbound
+  elsewhere first, `online+` when the peer is down.
   `--view` sorts the same rows by tral (`net`), outbound or inbound
   yield (`out`, `in`), or paid sides first (`pair`).  `--record DIR`
   saves the data a live run used and `--replay DIR` reruns from it, so a

@@ -222,9 +222,11 @@ def channel_word(o, i, opener, refused, out_empty, in_empty):
 
 
 def close_action(r, args):
-    """close, or fill+close, for a channel we opened that has had the
-    time and earns nothing on it; empty otherwise.  A sold-out side that
-    turned forwards away is a refill question, not a close."""
+    """The steps to a close, joined with +, for a channel we opened that
+    has had the time and earns nothing on it: online (the peer is down),
+    fill (its side is worth carrying elsewhere first), close.  Empty
+    otherwise.  A sold-out side that turned forwards away is a refill
+    question, not a close."""
     if r["opener"] != "local" or r["sampled_days"] < args.close_min_days:
         return ""
     if r["tral_bps"] is None or r["tral_bps"] > args.close_max_tral:
@@ -234,11 +236,11 @@ def close_action(r, args):
     fill = (r["inbound_now"] >= args.fill_min * 1e9
             and r["peer_ppm"] is not None
             and r["peer_ppm"] <= args.fill_max_ppm)
-    word = "fill+close" if fill else "close"
     rate = r["connect_rate_3d"]
-    if not r["connected"] or (rate is not None and rate < 0.5):
-        word += ", offline"
-    return word
+    offline = not r["connected"] or (rate is not None and rate < 0.5)
+    steps = (["online"] if offline else []) + (["fill"] if fill else []) \
+        + ["close"]
+    return "+".join(steps)
 
 
 def main():
@@ -658,10 +660,11 @@ Refused  outbound volume refused on this channel, M sat (retries inflate it)
 Timelines  one letter per bucket, oldest first: E exhausted, I idle, P paid, S self-fed, D draining (no refill
          and the stock fell by at least the edge over the bucket), ? no samples; buckets are aligned to the
          window's end, so the first may be short and the last is whole
-Action   close: we opened it, --close-min-days of samples, tral at or under --close-max-tral, and no sold-out
-         side turning forwards away (that is a refill question); fill+close: the peer holds at least --fill-min
-         and its fee toward us is at most --fill-max-ppm, so a fill can carry the inbound to another channel
-         first; ", offline": the peer is down or under 50% connected over 3 days, so a cooperative close waits
+Action   the steps to a close, in order: close alone when we opened it, it has --close-min-days of samples,
+         tral at or under --close-max-tral, and no sold-out side turning forwards away (that is a refill
+         question); fill+ first when the peer holds at least --fill-min and its fee toward us is at most
+         --fill-max-ppm, so a fill carries the inbound to another channel; online+ first when the peer is
+         down or under 50% connected over 3 days, since a cooperative close needs it
 One row per peer: its open channels summed (SCID lists them); forwards through channels to the peer that
          have since closed count too, so a resize keeps its history.\
 """
