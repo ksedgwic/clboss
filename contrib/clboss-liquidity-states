@@ -221,6 +221,26 @@ def channel_word(o, i, opener, refused, out_empty, in_empty):
     return word
 
 
+def close_action(r, args):
+    """close, or fill+close, for a channel we opened that has had the
+    time and earns nothing on it; empty otherwise.  A sold-out side that
+    turned forwards away is a refill question, not a close."""
+    if r["opener"] != "local" or r["sampled_days"] < args.close_min_days:
+        return ""
+    if r["tral_bps"] is None or r["tral_bps"] > args.close_max_tral:
+        return ""
+    if r["out_state"] == "E" and r["out"]["refused"] > 0:
+        return ""
+    fill = (r["inbound_now"] >= args.fill_min * 1e9
+            and r["peer_ppm"] is not None
+            and r["peer_ppm"] <= args.fill_max_ppm)
+    word = "fill+close" if fill else "close"
+    rate = r["connect_rate_3d"]
+    if not r["connected"] or (rate is not None and rate < 0.5):
+        word += ", offline"
+    return word
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="How each side of each channel is being used: a state "
@@ -253,6 +273,18 @@ def main():
                         help="sort: net (tral), out (outbound yield), in "
                              "(inbound yield), pair (paid sides first, by "
                              "dependence)")
+    parser.add_argument("--close-min-days", type=float, default=28.0,
+                        help="Action reads close only after this many "
+                             "sampled days (default 28)")
+    parser.add_argument("--close-max-tral", type=float, default=10.0,
+                        help="Action reads close when tral is at or under "
+                             "this, basis points (default 10)")
+    parser.add_argument("--fill-min", type=float, default=0.5,
+                        help="fill before the close when the peer holds at "
+                             "least this, M sat (default 0.5)")
+    parser.add_argument("--fill-max-ppm", type=int, default=1000,
+                        help="and its fee toward us is at most this, ppm "
+                             "(default 1000)")
     parser.add_argument("--min-days", type=float, default=0.0,
                         help="hide channels with fewer sampled days "
                              "(default 0: show all, prorated)")
@@ -514,6 +546,8 @@ def main():
             "buckets": buckets,
         })
 
+    for r in rows:
+        r["action"] = close_action(r, args)
     rows = [r for r in rows if r["sampled_days"] >= args.min_days]
 
     def paid_key(r):
@@ -547,11 +581,12 @@ def main():
           f"x{n}, edge {args.edge:g}%, view {args.view}")
     print()
     headers = ["Alias", "SCID", "Cap", "Ours", "Inb", "PeerPpm", "Opn", "Up",
-               "Up3d", "Age", "Days", "State",
+               "Up3d", "Age", "Days", "Quiet", "State",
                "Since", "Tral", "Net",
                "OutStock", "OutTurn", "OutYield", "OutDep", "Refused",
                "OutTimeline",
-               "InStock", "InTurn", "InYield", "InDep", "InTimeline"]
+               "InStock", "InTurn", "InYield", "InDep", "InTimeline",
+               "Action"]
     table = []
     for r in rows:
         table.append([
@@ -567,6 +602,7 @@ def main():
             else f"{r['connect_rate_3d'] * 100:.0f}",
             fmt_age(r["age_days"], r["peer_age_days"]),
             f"{r['sampled_days']:.0f}",
+            "-" if r["quiet_days"] is None else f"{r['quiet_days']:.0f}",
             r["state"],
             str(r["since_buckets"]),
             fmt_num(r["tral_bps"], 0),
@@ -582,9 +618,10 @@ def main():
             fmt_num(r["in"]["yield"], 0),
             fmt_dep(r["in"]["dep"]),
             r["in_timeline"],
+            r["action"],
         ])
     text = {"Alias", "SCID", "Opn", "Up", "State", "OutTimeline",
-            "InTimeline"}
+            "InTimeline", "Action"}
     print(tabulate(table, headers=headers, tablefmt="plain",
                    disable_numparse=True,
                    colalign=tuple("left" if h in text else "right"
@@ -605,6 +642,7 @@ Up, Up3d connected now; 3-day connect rate, % (? = not in clboss-status: an unma
 Age      days since the newest open channel's block, at 144 blocks a day; after a slash, when the peer goes
          back further, days since the earliest channel we had with it, closed ones included
 Days     days with balance samples (operational days): rates are prorated by them
+Quiet    days since the last settled forward either way; - = none in the window
 State    from the two sides' latest letters and the opener: unused (I/E, we opened), spent through (I/E,
          the peer opened), dormant (E/I, the peer opened), sold out (E/I, we opened), balanced (S/S),
          outbound/inbound self-fed (S/I, I/S), outbound/inbound paid (P on that side), draining (D on a
@@ -620,6 +658,10 @@ Refused  outbound volume refused on this channel, M sat (retries inflate it)
 Timelines  one letter per bucket, oldest first: E exhausted, I idle, P paid, S self-fed, D draining (no refill
          and the stock fell by at least the edge over the bucket), ? no samples; buckets are aligned to the
          window's end, so the first may be short and the last is whole
+Action   close: we opened it, --close-min-days of samples, tral at or under --close-max-tral, and no sold-out
+         side turning forwards away (that is a refill question); fill+close: the peer holds at least --fill-min
+         and its fee toward us is at most --fill-max-ppm, so a fill can carry the inbound to another channel
+         first; ", offline": the peer is down or under 50% connected over 3 days, so a cooperative close waits
 One row per peer: its open channels summed (SCID lists them); forwards through channels to the peer that
          have since closed count too, so a resize keeps its history.\
 """
