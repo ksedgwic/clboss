@@ -10,6 +10,7 @@ repeated on another machine, or later, from the data it actually used.
 
 Record layout (one directory):
   meta.json                 since, before, recorded_at (unix seconds)
+  getinfo.json              getinfo (the block height dates the channels)
   channels.json             listpeerchannels
   closed.json               listclosedchannels
   aliases.json              peer id -> alias
@@ -171,7 +172,23 @@ def window(store, args, now=None):
     return since, before
 
 
+# node
+
+def node_info(store):
+    """getinfo: blockheight, id, alias."""
+    return store.fetch("getinfo.json", lambda: store.cli("getinfo")) or {}
+
+
 # channels
+
+def channel_peers(store):
+    """Short channel id -> peer id for every channel listpeerchannels
+    knows, whatever its state (a closing channel still dates the peer)."""
+    data = store.fetch("channels.json", lambda: store.cli("listpeerchannels"))
+    return {ch["short_channel_id"]: ch["peer_id"]
+            for ch in (data or {}).get("channels", [])
+            if ch.get("short_channel_id") and ch.get("peer_id")}
+
 
 def open_channels(store):
     """Open channels by short channel id: peer, capacity, our side,
