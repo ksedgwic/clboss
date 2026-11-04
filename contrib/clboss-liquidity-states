@@ -77,6 +77,17 @@ def fmt_num(value, digits=1, dash="-"):
     return f"{value:.{digits}f}"
 
 
+def fmt_age(age_days, peer_age_days):
+    """Days of the newest open channel, then, after a slash when the peer
+    goes back further, days since our earliest channel with it."""
+    if age_days is None:
+        return "?"
+    age = f"{age_days:.0f}"
+    if peer_age_days is None or f"{peer_age_days:.0f}" == age:
+        return age
+    return f"{age}/{peer_age_days:.0f}"
+
+
 def fmt_dep(value):
     """Dependence over 9.99 prints as >9: the refills outran the flow
     many times over."""
@@ -291,6 +302,21 @@ def main():
             scid_peer.setdefault(scid, peer)
     alias = nd.aliases(store, peers)
 
+    # ages at 144 blocks a day: the newest open channel's, and the peer's
+    # since the earliest channel we had with it, closed ones included
+    tip = nd.node_info(store).get("blockheight")
+    first_block = {}
+    for scid, peer in list(nd.channel_peers(store).items()) + \
+            list(nd.closed_channels(store).items()):
+        block = int(scid.split("x")[0])
+        if peer in peer_rows and block < first_block.get(peer, block + 1):
+            first_block[peer] = block
+    for p, r in peer_rows.items():
+        newest = max(int(scid.split("x")[0]) for scid in r["scids"])
+        r["age_days"] = (tip - newest) / 144.0 if tip else None
+        r["peer_age_days"] = ((tip - first_block[p]) / 144.0
+                              if tip and p in first_block else None)
+
     samples = {p: Samples(nd.feemon_history(store, p, since, before),
                           since, before) for p in peers}
 
@@ -458,6 +484,9 @@ def main():
             "scids": ch["scids"],
             "cap": ch["cap"],
             "ours_now": ch["ours"],
+            "inbound_now": ch["inbound"],
+            "age_days": ch["age_days"],
+            "peer_age_days": ch["peer_age_days"],
             "opener": ch["opener"],
             "connected": ch["connected"],
             "peer_ppm": ch["peer_ppm"],
@@ -511,7 +540,8 @@ def main():
           f"({(before - since) / 86400:.1f} d), bucket {args.bucket} "
           f"x{n}, edge {args.edge:g}%, view {args.view}")
     print()
-    headers = ["Alias", "SCID", "Cap", "Opn", "Up", "Days", "State",
+    headers = ["Alias", "SCID", "Cap", "Ours", "Inb", "Opn", "Up", "Age",
+               "Days", "State",
                "Since", "Tral", "Net",
                "OutStock", "OutTurn", "OutYield", "OutDep", "Refused",
                "OutTimeline",
@@ -522,8 +552,11 @@ def main():
             r["peer_id"] if args.ids else r["alias"],
             ",".join(r["scids"]),
             fmt_m(r["cap"]),
+            fmt_m(r["ours_now"]),
+            fmt_m(r["inbound_now"]),
             {"local": "L", "remote": "R"}.get(r["opener"], "?"),
             "y" if r["connected"] else "n",
+            fmt_age(r["age_days"], r["peer_age_days"]),
             f"{r['sampled_days']:.0f}",
             r["state"],
             str(r["since_buckets"]),
@@ -554,7 +587,10 @@ def main():
 
 LEGEND = """\
 Cap, OutStock, InStock  M sat; stocks are time-weighted means over the sampled time
+Ours, Inb  our side and the peer's side now, M sat: a close returns Ours and forfeits Inb
 Opn      who opened the channel: L us, R the peer
+Age      days since the newest open channel's block, at 144 blocks a day; after a slash, when the peer goes
+         back further, days since the earliest channel we had with it, closed ones included
 Days     days with balance samples (operational days): rates are prorated by them
 State    from the two sides' latest letters and the opener: unused (I/E, we opened), spent through (I/E,
          the peer opened), dormant (E/I, the peer opened), sold out (E/I, we opened), balanced (S/S),
