@@ -128,6 +128,35 @@ class Samples:
                 break
         return last[0] / last[1] if last else None
 
+    def size_span(self, days):
+        """The start of the samples at the present size, at most `days`
+        back from the newest one; None without samples.  A resize
+        changes the sampled capacity, so the span stops there."""
+        if not self.rows:
+            return None
+        last_ts, _, size = self.rows[-1]
+        start = last_ts
+        for ts, _, total in reversed(self.rows):
+            if total != size or ts < last_ts - days * 86400:
+                break
+            start = ts
+        return start
+
+    def day_swings(self, start):
+        """Per UTC day from `start`: the highest less the lowest sample
+        of our balance.  Days with under half their hourly samples are
+        left out."""
+        days = {}
+        for ts, our, _ in self.rows:
+            if ts >= start:
+                days.setdefault(ts // 86400, []).append(our)
+        return [max(v) - min(v) for v in days.values() if len(v) >= 12]
+
+    def span_range(self, start):
+        """Lowest and highest sample of our balance from `start`."""
+        ours = [our for ts, our, _ in self.rows if ts >= start]
+        return (min(ours), max(ours)) if ours else (None, None)
+
     def integrate(self, start, end, low, high):
         """Time-weighted sums over [start, end): seconds sampled, mean our
         and total balance, and the share of sampled time with our side
@@ -243,6 +272,62 @@ def close_action(r, args):
     return "+".join(steps)
 
 
+def resize_action(r, s, low, high, args):
+    """grow(+N) or shrink(-N), N in M sat, from one number: the size the
+    channel's own traffic calls for.  That is the larger of --size-factor
+    times the busy-day swing of our balance (the 90th percentile, over
+    the days at the present size, of the day's highest less its lowest)
+    and the whole range our balance covered over those days.  grow when
+    that size is at least --size-ratio times the present size, and only
+    for a channel self-fed on both sides (its traffic refills it); shrink
+    when it is at most the present size over --size-ratio, for a channel
+    with a side that moved (an idle channel is a close question).
+    Neither for a channel whose our side sat empty most of the time: it
+    sells what arrives, added stock sells once, and the capacity is the
+    peer's.  A size from --size-near of the way to the step counts, and
+    prints as the whole step (5M called to 9M prints grow(+5M)): a
+    resize costs the same at any size, so a near step is taken whole.
+    Changes under --size-min-change are not shown; N is rounded to
+    0.5M."""
+    start = s.size_span(args.size_days) if s else None
+    if start is None:
+        return ""
+    swings = sorted(s.day_swings(start))
+    if len(swings) < args.size_min_days:
+        return ""
+    swing = swings[min(len(swings) - 1, int(0.9 * len(swings)))]
+    lo, hi = s.span_range(start)
+    size = s.rows[-1][2]
+    rule = max(args.size_factor * swing, hi - lo)
+    r["busy_day_swing"] = swing
+    r["rule_size"] = rule
+    span = s.integrate(start, s.before, low, high)
+    if not span or span["low"] > 0.5:
+        return ""
+    o, i = r["out_state"], r["in_state"]
+    step = args.size_ratio * size
+    if rule >= args.size_near * step:
+        if (o, i) != ("S", "S") or "out starved" in r["state"]:
+            return ""
+        sampled = [b for b in r["buckets"] if b["out"]["state"] != "?"]
+        both = [b for b in sampled
+                if (b["out"]["state"], b["in"]["state"]) == ("S", "S")]
+        if not sampled or len(both) * 2 < len(sampled):
+            return ""
+        change = max(rule, step) - size
+        word = "grow(+"
+    elif rule * args.size_ratio * args.size_near <= size:
+        if o not in "PSD" and i not in "PSD":
+            return ""
+        change = size - min(rule, size / args.size_ratio)
+        word = "shrink(-"
+    else:
+        return ""
+    if change < args.size_min_change * 1e9:
+        return ""
+    return f"{word}{round(change / 0.5e9) * 0.5:g}M)"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="How each side of each channel is being used: a state "
@@ -287,6 +372,28 @@ def main():
     parser.add_argument("--fill-max-ppm", type=int, default=1000,
                         help="and its fee toward us is at most this, ppm "
                              "(default 1000)")
+    parser.add_argument("--size-days", type=float, default=30.0,
+                        help="Action reads grow or shrink from the samples "
+                             "of this many days at the present size "
+                             "(default 30)")
+    parser.add_argument("--size-min-days", type=int, default=14,
+                        help="and needs this many sampled days there "
+                             "(default 14)")
+    parser.add_argument("--size-factor", type=float, default=2.0,
+                        help="the size called for is this multiple of the "
+                             "busy-day swing of our balance, or the range "
+                             "it covered if larger (default 2)")
+    parser.add_argument("--size-ratio", type=float, default=2.0,
+                        help="grow when the size called for is at least "
+                             "this times the present size, shrink when at "
+                             "most the present size over this (default 2)")
+    parser.add_argument("--size-near", type=float, default=0.8,
+                        help="a size this share of the way to the "
+                             "--size-ratio step counts, and prints as the "
+                             "whole step (default 0.8)")
+    parser.add_argument("--size-min-change", type=float, default=1.0,
+                        help="show no grow or shrink under this, M sat "
+                             "(default 1)")
     parser.add_argument("--min-days", type=float, default=0.0,
                         help="hide channels with fewer sampled days "
                              "(default 0: show all, prorated)")
@@ -549,7 +656,9 @@ def main():
         })
 
     for r in rows:
-        r["action"] = close_action(r, args)
+        r["busy_day_swing"] = r["rule_size"] = None
+        r["action"] = close_action(r, args) or resize_action(
+            r, samples[r["peer_id"]], low, high, args)
     rows = [r for r in rows if r["sampled_days"] >= args.min_days]
 
     def paid_key(r):
@@ -664,7 +773,15 @@ Action   the steps to a close, in order: close alone when we opened it, it has -
          tral at or under --close-max-tral, and no sold-out side turning forwards away (that is a refill
          question); fill+ first when the peer holds at least --fill-min and its fee toward us is at most
          --fill-max-ppm, so a fill carries the inbound to another channel; online+ first when the peer is
-         down or under 50% connected over 3 days, since a cooperative close needs it
+         down or under 50% connected over 3 days, since a cooperative close needs it.
+         grow(+N), shrink(-N): add or take away N M sat, from the size the channel's own traffic calls for
+         over the last --size-days at its present size (--size-min-days or more): the larger of --size-factor
+         times the busy-day swing of our balance (90th percentile of the day's highest less its lowest) and
+         the whole range our balance covered.  grow when that is at least --size-ratio times the present
+         size, only for a channel self-fed on both sides now and in half its sampled buckets, with our side
+         not empty most of the time; shrink when it is at most the present size over --size-ratio, for a
+         channel with a side that moved and our side not empty most of the time.  A size --size-near of the
+         way to the step counts and prints as the whole step.  Changes under --size-min-change are not shown
 One row per peer: its open channels summed (SCID lists them); forwards through channels to the peer that
          have since closed count too, so a resize keeps its history.\
 """
