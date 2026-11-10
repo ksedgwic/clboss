@@ -68,7 +68,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   with a certificate issued under a compromised certificate
   authority, could have had CLBOSS pay an invoice of their
   choosing for the swap amount (#329).
-
 - With two or more channels to one peer, the fee modifier by
   balance read only the first live channel, applied the multiplier
   it derived to all of them and recorded that one channel's balance
@@ -76,19 +75,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the peer's live channels, so the multiplier reflects the whole
   position and the balance samples `PeerTrackRecord` and the
   contrib tools read are the peer's (#352).
-
 - With two or more channels to one peer, the active prober sized
   its probe from the first live channel listed, which could be the
   smaller one.  It now probes through the channel with the most to
   spend; the probe names that channel, so its amount stays within
   one channel (#352).
-
 - `clboss-auto-close` on a peer with more than one channel issued
   `close id=<node>`, which lightningd refuses ("Peer has multiple
   channels"); the error was logged and the close retried every
   cycle.  It now closes each closable channel by channel id
   (#352).
-
 - `contrib/clboss-channel-sizing` reads a peer's balance history
   recorded before 0.17.3 against the one channel it describes.  Those
   samples carry the first channel's balance and capacity, not the
@@ -98,11 +94,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   sample's total is not the peer's summed capacity, the channel whose
   capacity matches reads the samples and the peer's other channels
   read as young (#352).
-
 - A new signet node can find peers again.  Signet has no DNS seed, so
   the hardcoded seeds are the only way in, and all four of them had
   stopped accepting connections; they are replaced with seven nodes
   that accept them.
+
+### Credits
+
+Thanks to the contributors to this release:
+- The contributor who sent the API v2 draft: the first version of
+  the Boltz API v2 code, with taproot reverse swaps and MuSig2
+  claims (#254).
+- @Mohil-Ahuja: the three fixes for several channels to one peer
+  (#368, #371, #369), the balance-sample fix in
+  `contrib/clboss-channel-sizing` (#378) and the replacement signet
+  seeds (#379).
+- @Amperstrand: reported that a swap invoice was paid without a
+  check of its payment hash (#329).
+- @tsjk: runs the signet swap backend that the swap changes were
+  tested against.
 
 ## [0.17.2] - 2026-10-19: "Lost in the Flow"
 
