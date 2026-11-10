@@ -99,6 +99,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   capacity matches reads the samples and the peer's other channels
   read as young (#352).
 
+- A new signet node can find peers again.  Signet has no DNS seed, so
+  the hardcoded seeds are the only way in, and all four of them had
+  stopped accepting connections; they are replaced with seven nodes
+  that accept them.
+
 ## [0.17.2] - 2026-10-19: "Lost in the Flow"
 
 ### Added
