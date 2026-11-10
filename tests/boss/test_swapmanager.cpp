@@ -15,6 +15,7 @@
 #include"Boss/Msg/SwapCreation.hpp"
 #include"Boss/Msg/SwapRequest.hpp"
 #include"Boss/Msg/SwapResponse.hpp"
+#include"Boss/Msg/Timer10Minutes.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/foreach.hpp"
 #include"Ev/start.hpp"
@@ -53,11 +54,18 @@ public:
 class MockNewaddr {
 private:
 	std::queue<std::string> addresses;
+	bool swallow_next_flag = false;
 public:
 	MockNewaddr(S::Bus& bus) {
 		bus.subscribe<Boss::Msg::RequestNewaddr
 			     >([ this, &bus
 			       ](Boss::Msg::RequestNewaddr const& r) {
+			/* Simulate the newaddr chain dying mid-flight:
+			 * no response ever arrives.  */
+			if (swallow_next_flag) {
+				swallow_next_flag = false;
+				return Ev::lift();
+			}
 			assert(!addresses.empty());
 			auto addr = addresses.front();
 			addresses.pop();
@@ -69,6 +77,7 @@ public:
 	void add(std::string addr) {
 		addresses.emplace(std::move(addr));
 	}
+	void swallow_next() { swallow_next_flag = true; }
 	bool empty() const { return addresses.empty(); }
 };
 struct MockProvider {};
@@ -365,6 +374,56 @@ Ev::Io<void> test_simple() {
 	});
 }
 
+/* A newaddr chain that never responds must not wedge the address
+ * loop forever: the periodic tick's watchdog clears the stuck
+ * serialization flag and the restarted loop retries the swap.  */
+Ev::Io<void> test_stall_recovery() {
+
+	Uuid uuid = Uuid::random();
+
+	return Ev::lift().then([&, uuid]() {
+		/* Make the watchdog fire on the next tick.  */
+		swapper.set_stall_timeout_secs(0.0);
+
+		/* The address request will get no response, wedging
+		 * the loop with its flag set.  */
+		addresses.swallow_next();
+		return requester.start_swap( uuid
+					   , Ln::Amount::btc(0.001)
+					   , Ln::Amount::btc(0.012)
+					   );
+	}).then([&]() {
+		return wait();
+	}).then([&]() {
+		/* Stock the mocks for the retry, then tick: the
+		 * watchdog resets the flag and the restarted loop
+		 * re-requests an address.  */
+		addresses.add("address2");
+		quotations.add({Ln::Amount::sat(1000)});
+		swapsetups.add({"address2", true, "invoice2"
+			       , Sha256::Hash("ec8103d3f57a561fd213bf6bb45b2cd0e1b37738232c7d1fd13b1a7729bf0983")
+			       , 23456
+			       });
+		return bus.raise(Boss::Msg::Timer10Minutes{});
+	}).then([&]() {
+		return wait();
+	}).then([&]() {
+		assert(addresses.empty());
+		assert(quotations.empty());
+		assert(swapsetups.okay());
+
+		return onchain.listfunds({ { "address2"
+					   , Ln::Amount::sat(12100)
+					   }
+					 });
+	}).then([&]() {
+		return wait();
+	}).then([&, uuid]() {
+		requester.expect_finished(uuid, true);
+		return Ev::lift();
+	});
+}
+
 /* Swaps at their timeout.  One whose payment succeeded has its
  * preimage out and its claim still pushed: it is left alone at the
  * timeout, completes when the funds arrive, and is given up only
@@ -509,6 +568,8 @@ int main() {
 		return bus.raise(Boss::Msg::DbResource{db});
 	}).then([&]() {
 		return test_simple();
+	}).then([&]() {
+		return test_stall_recovery();
 	}).then([&]() {
 		return test_timeout_after_payment();
 	}).then([&]() {
