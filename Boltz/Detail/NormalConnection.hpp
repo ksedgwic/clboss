@@ -2,6 +2,7 @@
 #define BOLTZ_DETAIL_NORMALCONNECTION_HPP
 
 #include"Boltz/ConnectionIF.hpp"
+#include<cstdint>
 
 namespace Ev { class ThreadPool; }
 
@@ -27,9 +28,14 @@ public:
 	explicit
 	NormalConnection( Ev::ThreadPool& threadpool
 			/* Base address of the API endpoint.  */
-			, std::string api_base = "https://boltz.exchange/api"
+			, std::string api_base = "https://api.boltz.exchange"
 			/* SOCKS5 proxy to use.  Empty string means no proxy.  */
 			, std::string proxy = ""
+			/* Seconds a request may take in all.  A provider
+			 * that accepts the connection and never answers
+			 * fails the request after this instead of holding
+			 * it open forever.  Ten minutes allows for Tor.  */
+			, std::uint32_t request_timeout = 600
 			);
 
 	/* Send an API request.  */

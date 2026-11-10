@@ -20,6 +20,7 @@
 #include"Net/Fd.hpp"
 #include"Net/SocketFd.hpp"
 #include"S/Bus.hpp"
+#include"Secp256k1/KeyPair.hpp"
 #include"Secp256k1/PrivKey.hpp"
 #include"Secp256k1/PubKey.hpp"
 #include"Secp256k1/Signature.hpp"
@@ -30,6 +31,7 @@
 #include<cstdint>
 #include<fcntl.h>
 #include<sstream>
+#include<stdexcept>
 #include<string>
 #include<sys/socket.h>
 #include<sys/types.h>
@@ -94,6 +96,10 @@ public:
 		auto hash = Sha256::Hash();
 		hash.from_buffer(salt);
 		return hash;
+	}
+	Secp256k1::KeyPair
+	get_keypair_tweak(Secp256k1::PrivKey const&) override {
+		throw std::logic_error("Not expected to use.");
 	}
 };
 

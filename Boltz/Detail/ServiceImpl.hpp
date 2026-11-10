@@ -55,6 +55,7 @@ public:
 	    , std::string onchain_address
 	    , std::uint32_t current_blockheight
 	    ) override;
+	Ev::Io<std::vector<SwapStatus>> list_swaps() override;
 
 private:
 	/* Logging.  */
@@ -66,6 +67,11 @@ private:
 	Ev::Io<void> swap_on_block( std::uint32_t blockheight
 				  , std::string swapId
 				  );
+	/* Asks the provider for the swap's status and acts on it; for
+	 * swaps whose preimage is not yet revealed.  */
+	Ev::Io<void> swap_poll( std::uint32_t blockheight
+			      , std::shared_ptr<std::string> swapId
+			      );
 	/* Called when the server thinks the swap will no longer push
 	 * through.  */
 	Ev::Io<void> swap_errored(std::shared_ptr<std::string> swapId);

@@ -1,12 +1,15 @@
 #undef NDEBUG
+#include"Boltz/claim_blocks_past_timeout.hpp"
 #include"Boss/Mod/SwapManager.hpp"
 #include"Boss/Msg/AcceptSwapQuotation.hpp"
+#include"Boss/Msg/Block.hpp"
 #include"Boss/Msg/DbResource.hpp"
 #include"Boss/Msg/JsonCout.hpp"
 #include"Boss/Msg/ListfundsResult.hpp"
 #include"Boss/Msg/PayInvoice.hpp"
 #include"Boss/Msg/ProvideSwapQuotation.hpp"
 #include"Boss/Msg/RequestNewaddr.hpp"
+#include"Boss/Msg/ResponseListpays.hpp"
 #include"Boss/Msg/ResponseNewaddr.hpp"
 #include"Boss/Msg/SolicitSwapQuotation.hpp"
 #include"Boss/Msg/SwapCreation.hpp"
@@ -17,6 +20,7 @@
 #include"Ev/start.hpp"
 #include"Ev/yield.hpp"
 #include"Json/Out.hpp"
+#include"Ln/NodeId.hpp"
 #include"S/Bus.hpp"
 #include"Sqlite3.hpp"
 #include"Util/make_unique.hpp"
@@ -265,6 +269,10 @@ public:
 		assert(it != finished.end());
 		assert(it->second == expect_success);
 	}
+	void expect_pending(Uuid uuid) {
+		assert(pendings.find(uuid) != pendings.end());
+		assert(finished.find(uuid) == finished.end());
+	}
 };
 
 Ev::Io<void> wait() {
@@ -288,6 +296,25 @@ MockListfunds onchain(bus);
 MockRequester requester(bus);
 /* Object under test.  */
 Boss::Mod::SwapManager swapper(bus);
+
+/* Payment records on the given hash.  */
+Ev::Io<std::uint64_t> count_comp_pay(Sha256::Hash hash) {
+	return db.transact().then([hash](Sqlite3::Tx tx) {
+		auto fetch = tx.query(R"QRY(
+		SELECT COUNT(*)
+		  FROM "SwapManager_comp_pay"
+		 WHERE payment_hash = :hash
+		     ;
+		)QRY")
+			.bind(":hash", std::string(hash))
+			.execute();
+		auto count = std::uint64_t(0);
+		for (auto& r : fetch)
+			count = r.get<std::uint64_t>(0);
+		tx.commit();
+		return Ev::lift(count);
+	});
+}
 
 /*-----------------------------------------------------------------------------
 Tests
@@ -338,6 +365,139 @@ Ev::Io<void> test_simple() {
 	});
 }
 
+/* Swaps at their timeout.  One whose payment succeeded has its
+ * preimage out and its claim still pushed: it is left alone at the
+ * timeout, completes when the funds arrive, and is given up only
+ * past the claim horizon.  One not paid is retried at the timeout
+ * as before.  The quotation and setup mocks fail on any retry that
+ * is not queued, so a retry out of turn fails the test.  */
+Ev::Io<void> test_timeout_after_payment() {
+	/* Constants, so the lambdas below need not capture them.  */
+	auto constexpr horizon = Boltz::claim_blocks_past_timeout;
+	auto constexpr timeout = std::uint32_t(20000);
+	auto const hash_late = Sha256::Hash("1111111111111111111111111111111111111111111111111111111111111111");
+	auto const hash_lost = Sha256::Hash("2222222222222222222222222222222222222222222222222222222222222222");
+	auto const hash_unpaid = Sha256::Hash("3333333333333333333333333333333333333333333333333333333333333333");
+	auto const hash_retry = Sha256::Hash("4444444444444444444444444444444444444444444444444444444444444444");
+	auto const paid = [](Sha256::Hash hash) {
+		return bus.raise(Boss::Msg::ResponseListpays{
+			hash, Boss::Msg::StatusListpays_success, Ln::NodeId()
+		      , Ln::Amount::btc(0.012), Ln::Amount::btc(0.012)
+		});
+	};
+	Uuid paid_late = Uuid::random();
+	Uuid paid_lost = Uuid::random();
+	Uuid unpaid = Uuid::random();
+
+	return Ev::lift().then([paid_late, hash_late]() {
+		/* Paid, and the claim lands after the timeout.  */
+		addresses.add("address-late");
+		quotations.add({Ln::Amount::sat(100)});
+		swapsetups.add({ "address-late", true, "invoice-late"
+			       , hash_late, timeout
+			       });
+		return requester.start_swap( paid_late
+					   , Ln::Amount::btc(0.001)
+					   , Ln::Amount::btc(0.012)
+					   );
+	}).then([]() {
+		return wait();
+	}).then([paid, hash_late]() {
+		assert(swapsetups.okay());
+		return paid(hash_late);
+	}).then([]() {
+		return wait();
+	}).then([]() {
+		return bus.raise(Boss::Msg::Block{timeout});
+	}).then([]() {
+		return wait();
+	}).then([paid_late]() {
+		requester.expect_pending(paid_late);
+		return onchain.listfunds({ { "address-late"
+					   , Ln::Amount::sat(12100)
+					   }
+					 });
+	}).then([]() {
+		return wait();
+	}).then([paid_late, paid_lost, hash_lost]() {
+		requester.expect_finished(paid_late, true);
+
+		/* Paid, and the claim never lands.  */
+		addresses.add("address-lost");
+		quotations.add({Ln::Amount::sat(100)});
+		swapsetups.add({ "address-lost", true, "invoice-lost"
+			       , hash_lost, timeout
+			       });
+		return requester.start_swap( paid_lost
+					   , Ln::Amount::btc(0.001)
+					   , Ln::Amount::btc(0.012)
+					   );
+	}).then([]() {
+		return wait();
+	}).then([paid, hash_lost]() {
+		assert(swapsetups.okay());
+		return paid(hash_lost);
+	}).then([]() {
+		return wait();
+	}).then([]() {
+		return bus.raise(Boss::Msg::Block{timeout + horizon - 1});
+	}).then([]() {
+		return wait();
+	}).then([paid_lost]() {
+		requester.expect_pending(paid_lost);
+		return bus.raise(Boss::Msg::Block{timeout + horizon});
+	}).then([]() {
+		return wait();
+	}).then([paid_lost, hash_lost]() {
+		requester.expect_finished(paid_lost, false);
+		/* Its payment record went with it.  */
+		return count_comp_pay(hash_lost);
+	}).then([unpaid, hash_unpaid, hash_retry](std::uint64_t records) {
+		assert(records == 0);
+
+		/* Not paid at the timeout: retried on the same
+		 * address with the second queued setup.  The address
+		 * is a fresh one: the abandoned swap's stays out of
+		 * the pool, since its claim can still land there.  */
+		addresses.add("address-unpaid");
+		quotations.add({Ln::Amount::sat(100)});
+		swapsetups.add({ "address-unpaid", true, "invoice-unpaid"
+			       , hash_unpaid, timeout
+			       });
+		quotations.add({Ln::Amount::sat(100)});
+		swapsetups.add({ "address-unpaid", true, "invoice-retry"
+			       , hash_retry, timeout + 100
+			       });
+		return requester.start_swap( unpaid
+					   , Ln::Amount::btc(0.001)
+					   , Ln::Amount::btc(0.012)
+					   );
+	}).then([]() {
+		return wait();
+	}).then([]() {
+		return bus.raise(Boss::Msg::Block{timeout});
+	}).then([]() {
+		return wait();
+	}).then([unpaid]() {
+		assert(addresses.empty());
+		assert(quotations.empty());
+		assert(swapsetups.okay());
+		requester.expect_pending(unpaid);
+
+		/* The abandoned swap's claim lands after all: the
+		 * funds are ours, and no swap is credited.  */
+		return onchain.listfunds({ { "address-lost"
+					   , Ln::Amount::sat(12100)
+					   }
+					 });
+	}).then([]() {
+		return wait();
+	}).then([unpaid]() {
+		requester.expect_pending(unpaid);
+		return Ev::lift();
+	});
+}
+
 }
 
 /*-----------------------------------------------------------------------------
@@ -349,6 +509,8 @@ int main() {
 		return bus.raise(Boss::Msg::DbResource{db});
 	}).then([&]() {
 		return test_simple();
+	}).then([&]() {
+		return test_timeout_after_payment();
 	}).then([&]() {
 		return Ev::lift(0);
 	});
