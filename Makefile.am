@@ -619,6 +619,7 @@ TESTS = \
 	tests/bitcoin/test_sighash \
 	tests/bitcoin/test_tapscript_sighash \
 	tests/bitcoin/test_tx \
+	tests/boltz/test_boltz_connection \
 	tests/boltz/test_claimtxhandler_scoped_update \
 	tests/boltz/test_normalconnection_timeout \
 	tests/boltz/test_servicefactory_migration \
