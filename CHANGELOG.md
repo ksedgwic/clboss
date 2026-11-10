@@ -59,6 +59,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   advanced it sometimes never arrives.  The periodic tick now
   restarts a loop whose current request has had no answer for
   30 minutes; the previous remedy was restarting Core Lightning.
+- A swap invoice from the provider was paid as received.  The
+  payer now checks the decoded invoice against the swap: the
+  payment hash must be of the preimage CLBOSS generated and the
+  amount must be the one the provider was asked for; any other
+  invoice is logged and left unpaid.  Before this check, anyone
+  able to impersonate the provider's HTTPS endpoint, for example
+  with a certificate issued under a compromised certificate
+  authority, could have had CLBOSS pay an invoice of their
+  choosing for the swap amount (#329).
 
 ## [0.17.2] - 2026-10-19: "Lost in the Flow"
 
