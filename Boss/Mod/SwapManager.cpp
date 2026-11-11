@@ -4,6 +4,9 @@
 #include"Boss/Msg/Block.hpp"
 #include"Boss/Msg/DbResource.hpp"
 #include"Boss/Msg/ListfundsResult.hpp"
+#include"Boss/Msg/ManifestOption.hpp"
+#include"Boss/Msg/Manifestation.hpp"
+#include"Boss/Msg/Option.hpp"
 #include"Boss/Msg/PayInvoice.hpp"
 #include"Boss/Msg/ProvideStatus.hpp"
 #include"Boss/Msg/ProvideSwapQuotation.hpp"
@@ -77,6 +80,48 @@ private:
 	};
 
 	void start() {
+		bus.subscribe<Msg::Manifestation
+			     >([this](Msg::Manifestation const& _) {
+			return bus.raise(Msg::ManifestOption{
+				"clboss-swap-selection", Msg::OptionType_String,
+				Json::Out::direct(std::string("weighted")),
+				"How to choose among swap services that "
+				"quote for a swap: `best-rate` takes the "
+				"lowest fee, `random` takes any with equal "
+				"chance, `weighted` (the default) is random "
+				"but favors lower fees.  Dynamic: settable "
+				"at runtime via `lightning-cli setconfig`.",
+				/* dynamic = */ true
+			});
+		});
+		bus.subscribe<Msg::Option
+			     >([this](Msg::Option const& o) {
+			if (o.name != "clboss-swap-selection")
+				return Ev::lift();
+			auto svalue = o.value.is_string() ? std::string(o.value)
+							  : std::string();
+			if (svalue == "best-rate")
+				selection = Selection_BestRate;
+			else if (svalue == "random")
+				selection = Selection_Random;
+			else if (svalue == "weighted")
+				selection = Selection_Weighted;
+			else {
+				auto msg = std::string(
+					"clboss-swap-selection must be "
+					"best-rate, random, or weighted"
+				);
+				if (o.reject_reason)
+					*o.reject_reason = msg;
+				return Boss::log( bus, Error
+						, "SwapManager: %s; got '%s', "
+						  "keeping the current setting."
+						, msg.c_str()
+						, svalue.c_str()
+						);
+			}
+			return Ev::lift();
+		});
 		bus.subscribe<Msg::DbResource
 			     >([this](Msg::DbResource const& r) {
 			db = r.db;
@@ -452,6 +497,13 @@ private:
 			   { }
 	};
 
+	enum Selection
+	{ Selection_Weighted
+	, Selection_Random
+	, Selection_BestRate
+	};
+	Selection selection = Selection_Weighted;
+
 	std::vector<Quotation> quotations;
 	Ln::Amount amount;
 	std::string address;
@@ -496,19 +548,31 @@ private:
 					, std::string(amount).c_str()
 					);
 		}).then([this]() {
-			/* Randomize quotations.  */
-			for (auto& q : quotations) {
-				auto dist = std::uniform_int_distribution<std::uint64_t>(
-					0, q.score
-				);
-				q.score = dist(Boss::random_engine);
+			/* The last quotation is tried first.
+			 * Shuffle, so that equal scores below do not
+			 * always favor whichever quoted first.  */
+			std::shuffle( quotations.begin(), quotations.end()
+				    , Boss::random_engine
+				    );
+			/* best-rate keeps the fee as the score; random
+			 * keeps the shuffle; weighted draws a score up
+			 * to the fee.  */
+			if (selection == Selection_Random)
+				return loop_quotations();
+			if (selection == Selection_Weighted) {
+				for (auto& q : quotations) {
+					auto dist = std::uniform_int_distribution<std::uint64_t>(
+						0, q.score
+					);
+					q.score = dist(Boss::random_engine);
+				}
 			}
 
 			/* Sort quotations, from highest-fee to lowest-fee.  */
-			std::sort( quotations.begin(), quotations.end()
-				 , []( Quotation const& a
-				     , Quotation const& b
-				     ) {
+			std::stable_sort( quotations.begin(), quotations.end()
+					, []( Quotation const& a
+					    , Quotation const& b
+					    ) {
 				return a.score > b.score;
 			});
 
