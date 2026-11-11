@@ -493,9 +493,9 @@ def main():
                              "days at the present size (default 60); shrink "
                              "reads every day at the present size in the "
                              "window")
-    parser.add_argument("--size-min-days", type=float, default=14.0,
+    parser.add_argument("--size-min-days", type=float, default=3.0,
                         help="and needs this many sampled days there "
-                             "(default 14)")
+                             "(default 3)")
     parser.add_argument("--run-min", type=float, default=10.0,
                         help="a net move of our balance in one direction "
                              "is a run from this percent of capacity "
