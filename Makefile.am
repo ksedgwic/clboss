@@ -685,6 +685,7 @@ TESTS = \
 	tests/boss/test_rpc \
 	tests/boss/test_stringid \
 	tests/boss/test_boltzswapper_parse_instances \
+	tests/boss/test_boltzswapper_servicecreator_restart \
 	tests/boss/test_swapmanager \
 	tests/boss/test_unmanagedmanager \
 	tests/boss/test_version \
