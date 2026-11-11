@@ -34,8 +34,20 @@
 # tral from clboss-forwarding-stats: net earnings over the time-weighted
 # average of our balance, per operational day, annualized in basis
 # points, so young channels compare with old ones.
+#
+# Size.  A channel's balance is bounded, so what leaves it equals what
+# enters it, and its volume is set by its slower direction.  A larger
+# channel carries more only when that direction is itself stopped by an
+# empty side.  So the tool follows our balance forward by forward, splits
+# it into runs (net moves in one direction), and counts per direction
+# the runs that ended with the side they drew on empty.  The direction
+# with the smaller share decides a grow: a side that runs out alone
+# wants liquidity in one direction, which size does not supply.  A
+# shrink is read from the lowest our balance reached: what lies under
+# it never moved.
 
 import argparse
+from bisect import bisect_right
 import json
 import math
 import sys
@@ -86,6 +98,13 @@ def fmt_age(age_days, peer_age_days):
     if peer_age_days is None or f"{peer_age_days:.0f}" == age:
         return age
     return f"{age}/{peer_age_days:.0f}"
+
+
+def fmt_cut(ev, side):
+    """Cut-off runs over runs for one direction; - without a run."""
+    if not ev or not ev[f"{side}_runs"]:
+        return "-"
+    return f"{ev[f'{side}_cut']}/{ev[f'{side}_runs']}"
 
 
 def fmt_dep(value):
@@ -141,21 +160,6 @@ class Samples:
                 break
             start = ts
         return start
-
-    def day_swings(self, start):
-        """Per UTC day from `start`: the highest less the lowest sample
-        of our balance.  Days with under half their hourly samples are
-        left out."""
-        days = {}
-        for ts, our, _ in self.rows:
-            if ts >= start:
-                days.setdefault(ts // 86400, []).append(our)
-        return [max(v) - min(v) for v in days.values() if len(v) >= 12]
-
-    def span_range(self, start):
-        """Lowest and highest sample of our balance from `start`."""
-        ours = [our for ts, our, _ in self.rows if ts >= start]
-        return (min(ours), max(ours)) if ours else (None, None)
 
     def integrate(self, start, end, low, high):
         """Time-weighted sums over [start, end): seconds sampled, mean our
@@ -272,57 +276,163 @@ def close_action(r, args):
     return "+".join(steps)
 
 
-def resize_action(r, s, low, high, args):
-    """grow(+N) or shrink(-N), N in M sat, from one number: the size the
-    channel's own traffic calls for.  That is the larger of --size-factor
-    times the busy-day swing of our balance (the 90th percentile, over
-    the days at the present size, of the day's highest less its lowest)
-    and the whole range our balance covered over those days.  grow when
-    that size is at least --size-ratio times the present size, and only
-    for a channel self-fed on both sides (its traffic refills it); shrink
-    when it is at most the present size over --size-ratio, for a channel
-    with a side that moved (an idle channel is a close question).
-    Neither for a channel whose our side sat empty most of the time: it
-    sells what arrives, added stock sells once, and the capacity is the
-    peer's.  A size from --size-near of the way to the step counts, and
-    prints as the whole step (5M called to 9M prints grow(+5M)): a
-    resize costs the same at any size, so a near step is taken whole.
-    Changes under --size-min-change are not shown; N is rounded to
-    0.5M."""
-    start = s.size_span(args.size_days) if s else None
-    if start is None:
-        return ""
-    swings = sorted(s.day_swings(start))
-    if len(swings) < args.size_min_days:
-        return ""
-    swing = swings[min(len(swings) - 1, int(0.9 * len(swings)))]
-    lo, hi = s.span_range(start)
+def balance_path(s, events, start):
+    """Our balance from `start`, forward by forward: each sample, then
+    the settled forwards up to the next sample applied to it (one
+    arriving raises our side, one leaving lowers it), kept inside the
+    channel.  The next sample replaces the running figure, so whatever
+    else moved the balance (a rebalance, a payment of ours) shows there.
+    No forward is applied across a gap in the samples of over HOLD_MAX.
+    A list of (time, balance)."""
+    rows = [r for r in s.rows if r[0] >= start]
+    times = [t for t, _ in events]
+    path = []
+    for k, (ts, our, total) in enumerate(rows):
+        path.append((ts, our))
+        nxt = rows[k + 1][0] if k + 1 < len(rows) else s.before
+        if nxt - ts > HOLD_MAX:
+            continue
+        for t, delta in events[bisect_right(times, ts):
+                               bisect_right(times, nxt)]:
+            our = min(total, max(0, our + delta))
+            path.append((t, our))
+    return path
+
+
+def balance_runs(path, size, min_move, edge):
+    """The runs of a balance path: (direction, cut off, end time) for
+    each net move of at least `min_move` in one direction, ended by a
+    move of `min_move` the other way or by the end of the path.
+    Direction -1 is our balance falling (forwards leaving), +1 rising
+    (forwards arriving).  A run is cut off when it ends within `edge` of
+    capacity of the side it drew on: ours empty for a fall, the peer's
+    for a rise."""
+    def run(direction, end, when):
+        cut = end < edge * size if direction < 0 else end > (1 - edge) * size
+        return (direction, cut, when)
+
+    runs = []
+    if not path:
+        return runs
+    when, extreme = path[0]
+    lowest = highest = extreme
+    direction = 0
+    for t, b in path[1:]:
+        if direction == 0:
+            lowest, highest = min(lowest, b), max(highest, b)
+            if b - lowest >= min_move:
+                direction, extreme, when = 1, b, t
+            elif highest - b >= min_move:
+                direction, extreme, when = -1, b, t
+        elif (b - extreme) * direction > 0:
+            extreme, when = b, t
+        elif (extreme - b) * direction >= min_move:
+            runs.append(run(direction, extreme, when))
+            direction, extreme, when = -direction, b, t
+    if direction:
+        runs.append(run(direction, extreme, when))
+    return runs
+
+
+def size_evidence(s, events, start, low, high, args):
+    """What the samples at the present size from `start` say about the
+    size: the days sampled, the runs per direction and how many were cut
+    off, and the lowest our balance reached.  None without samples."""
+    span = s.integrate(start, s.before, low, high) if s else None
+    if not span:
+        return None
     size = s.rows[-1][2]
-    rule = max(args.size_factor * swing, hi - lo)
-    r["busy_day_swing"] = swing
-    r["rule_size"] = rule
-    span = s.integrate(start, s.before, low, high)
-    if not span or span["low"] > 0.5:
+    path = balance_path(s, events, start)
+    runs = balance_runs(path, size, args.run_min / 100.0 * size, low)
+    return {
+        "size": size,
+        "start": start,
+        "days": span["seconds"] / 86400.0,
+        "out_runs": sum(1 for d, _, _ in runs if d < 0),
+        "out_cut": sum(1 for d, cut, _ in runs if d < 0 and cut),
+        "in_runs": sum(1 for d, _, _ in runs if d > 0),
+        "in_cut": sum(1 for d, cut, _ in runs if d > 0 and cut),
+        # the end of the newest cut-off run each way; None without one
+        "out_cut_last": max((t for d, cut, t in runs if d < 0 and cut),
+                            default=None),
+        "in_cut_last": max((t for d, cut, t in runs if d > 0 and cut),
+                           default=None),
+        "lowest": min(b for _, b in path),
+    }
+
+
+def grow_action(ev, net_per_day, node_yield, now, args):
+    """grow(+N), N in M sat, for a channel that keeps running out on both
+    sides.  The direction with the smaller share of cut-off runs decides:
+    the other one alone is demand for liquidity in one direction, and
+    the channel sells what arrives at any size.  That direction needs
+    --size-min-runs cut-off runs, and each direction a cut-off run in
+    the last --grow-recent days: traffic that has stopped is no reason
+    to add sats.  The size multiple is ln(--grow-target) / ln(share):
+    the size at which the share falls to the target, if a run that has
+    got this far is as likely to go on as a new one.  Under --size-ratio
+    nothing is shown; over --grow-max that is the multiple.
+    Last, the sats added must earn at least --grow-min-yield times the
+    node's average, which is every channel's net per day over our
+    balance in them.  At most the share of the channel's net per day
+    comes back with the cut-off runs, so N is capped at the sats that
+    gain pays for at that rate; a cap under --size-ratio shows nothing.
+    Fills in ev: cut_share, multiple, grow_yield (the gain over the
+    uncapped N)."""
+    if not ev["out_runs"] or not ev["in_runs"]:
         return ""
-    o, i = r["out_state"], r["in_state"]
-    step = args.size_ratio * size
-    if rule >= args.size_near * step:
-        if (o, i) != ("S", "S") or "out starved" in r["state"]:
-            return ""
-        sampled = [b for b in r["buckets"] if b["out"]["state"] != "?"]
-        both = [b for b in sampled
-                if (b["out"]["state"], b["in"]["state"]) == ("S", "S")]
-        if not sampled or len(both) * 2 < len(sampled):
-            return ""
-        change = max(rule, step) - size
-        word = "grow(+"
-    elif rule * args.size_ratio * args.size_near <= size:
-        if o not in "PSD" and i not in "PSD":
-            return ""
-        change = size - min(rule, size / args.size_ratio)
-        word = "shrink(-"
+    share, cut = min((ev["out_cut"] / ev["out_runs"], ev["out_cut"]),
+                     (ev["in_cut"] / ev["in_runs"], ev["in_cut"]))
+    ev["cut_share"] = share
+    if cut < args.size_min_runs:
+        return ""
+    recent = now - args.grow_recent * 86400
+    if min(ev["out_cut_last"], ev["in_cut_last"]) < recent:
+        return ""
+    target = args.grow_target / 100.0
+    if share >= 1.0:
+        multiple = args.grow_max
+    elif share <= target:
+        return ""
     else:
+        multiple = min(math.log(target) / math.log(share), args.grow_max)
+    ev["multiple"] = multiple
+    if multiple < args.size_ratio:
         return ""
+    gain = share * net_per_day
+    added = (multiple - 1.0) * ev["size"]
+    ev["grow_yield"] = gain / added
+    if node_yield is None or gain <= 0:
+        return ""
+    if node_yield > 0:
+        added = min(added, gain / (args.grow_min_yield * node_yield))
+    if added < (args.size_ratio - 1.0) * ev["size"]:
+        return ""
+    return fmt_change("grow(+", added, args)
+
+
+def shrink_action(ev, low, args):
+    """shrink(-N), N in M sat: our sats that never moved.  N leaves the
+    lowest our balance reached at the present size at --edge of the
+    smaller channel.  Shown when the smaller channel is at most the
+    present size over --size-ratio, after --shrink-min-days at the
+    present size, and when our balance fell in --size-min-runs runs with
+    none cut off: the channel has shown what its traffic takes.  Fills
+    in ev: idle."""
+    idle = max(0.0, (ev["lowest"] - low * ev["size"]) / (1.0 - low))
+    ev["idle"] = idle
+    if ev["days"] < args.shrink_min_days:
+        return ""
+    if ev["out_runs"] < args.size_min_runs or ev["out_cut"]:
+        return ""
+    if ev["size"] - idle > ev["size"] / args.size_ratio:
+        return ""
+    return fmt_change("shrink(-", idle, args)
+
+
+def fmt_change(word, change, args):
+    """word and the change in M sat rounded to 0.5M; empty under
+    --size-min-change."""
     if change < args.size_min_change * 1e9:
         return ""
     return f"{word}{round(change / 0.5e9) * 0.5:g}M)"
@@ -372,25 +482,42 @@ def main():
     parser.add_argument("--fill-max-ppm", type=int, default=1000,
                         help="and its fee toward us is at most this, ppm "
                              "(default 1000)")
-    parser.add_argument("--size-days", type=float, default=30.0,
-                        help="Action reads grow or shrink from the samples "
-                             "of this many days at the present size "
-                             "(default 30)")
-    parser.add_argument("--size-min-days", type=int, default=14,
+    parser.add_argument("--size-days", type=float, default=60.0,
+                        help="Action reads grow from the last this many "
+                             "days at the present size (default 60); shrink "
+                             "reads every day at the present size in the "
+                             "window")
+    parser.add_argument("--size-min-days", type=float, default=14.0,
                         help="and needs this many sampled days there "
                              "(default 14)")
-    parser.add_argument("--size-factor", type=float, default=2.0,
-                        help="the size called for is this multiple of the "
-                             "busy-day swing of our balance, or the range "
-                             "it covered if larger (default 2)")
+    parser.add_argument("--run-min", type=float, default=10.0,
+                        help="a net move of our balance in one direction "
+                             "is a run from this percent of capacity "
+                             "(default 10)")
+    parser.add_argument("--size-min-runs", type=int, default=5,
+                        help="grow needs this many cut-off runs in the "
+                             "direction that decides, shrink this many runs "
+                             "of our balance falling (default 5)")
     parser.add_argument("--size-ratio", type=float, default=2.0,
-                        help="grow when the size called for is at least "
-                             "this times the present size, shrink when at "
-                             "most the present size over this (default 2)")
-    parser.add_argument("--size-near", type=float, default=0.8,
-                        help="a size this share of the way to the "
-                             "--size-ratio step counts, and prints as the "
-                             "whole step (default 0.8)")
+                        help="show a grow only from this multiple of the "
+                             "present size, a shrink only to the present "
+                             "size over this (default 2)")
+    parser.add_argument("--grow-recent", type=float, default=14.0,
+                        help="grow needs a cut-off run each way within "
+                             "this many days (default 14)")
+    parser.add_argument("--grow-target", type=float, default=20.0,
+                        help="a grow aims at this percent of runs cut off "
+                             "in the direction that decides (default 20)")
+    parser.add_argument("--grow-max", type=float, default=4.0,
+                        help="a grow is at most this multiple of the "
+                             "present size (default 4)")
+    parser.add_argument("--grow-min-yield", type=float, default=1.0,
+                        help="the sats a grow adds must earn at least this "
+                             "multiple of the node's average net per sat of "
+                             "ours per day (default 1)")
+    parser.add_argument("--shrink-min-days", type=float, default=30.0,
+                        help="shrink needs this many sampled days at the "
+                             "present size (default 30)")
     parser.add_argument("--size-min-change", type=float, default=1.0,
                         help="show no grow or shrink under this, M sat "
                              "(default 1)")
@@ -473,11 +600,16 @@ def main():
                    "out_expenditures", "in_rebalanced", "out_rebalanced")
     earn = {p: [{f: 0.0 for f in earn_fields} for _ in range(n)]
             for p in peers}
+    net_days = {p: [] for p in peers}  # (day start, earned less spent)
     for entry in nd.earnings_history_all(store):
         p = entry.get("node")
         bt = entry.get("bucket_time")
         if p not in earn or bt is None:
             continue
+        net_days[p].append((bt, entry.get("in_earnings", 0)
+                            + entry.get("out_earnings", 0)
+                            - entry.get("in_expenditures", 0)
+                            - entry.get("out_expenditures", 0)))
         for k in range(n):
             ov = min(bt + 86400, ends[k]) - max(bt, starts[k])
             if ov <= 0:
@@ -491,6 +623,7 @@ def main():
     acc = {p: [{f: 0.0 for f in fwd_fields} for _ in range(n)]
            for p in peers}
     last_fwd = {p: None for p in peers}
+    moves = {p: [] for p in peers}  # (time, change of our balance)
     for fwd in nd.forwards(store, "settled", since, before, args.page):
         t = fwd.get("received_time", 0)
         k = bucket_index(t, since, before, bucket_s, n)
@@ -503,10 +636,12 @@ def main():
             acc[o][k]["out_vol"] += nd.msat(fwd.get("out_msat"))
             acc[o][k]["out_fee"] += fee
             last_fwd[o] = max(last_fwd[o] or 0, t)
+            moves[o].append((t, -nd.msat(fwd.get("out_msat"))))
         if i in acc:
             acc[i][k]["in_vol"] += nd.msat(fwd.get("in_msat"))
             acc[i][k]["in_fee"] += fee
             last_fwd[i] = max(last_fwd[i] or 0, t)
+            moves[i].append((t, nd.msat(fwd.get("in_msat"))))
     for fwd in nd.forwards(store, "local_failed", since, before, args.page):
         if fwd.get("failcode") != 4103:  # WIRE_TEMPORARY_CHANNEL_FAILURE
             continue
@@ -655,10 +790,51 @@ def main():
             "buckets": buckets,
         })
 
+    def net_between(p, a, b):
+        """The peer's net earnings over [a, b), msat, from CLBOSS's day
+        rows by overlap."""
+        return sum(net * (min(bt + 86400, b) - max(bt, a)) / 86400.0
+                   for bt, net in net_days[p]
+                   if min(bt + 86400, b) > max(bt, a))
+
+    # the node's average over the grow span: every sampled channel's net
+    # per day over our balance in it
+    span_start = max(since, before - int(args.size_days * 86400))
+    node_net = node_stock = 0.0
+    for p in peers:
+        seg = samples[p].integrate(span_start, before, low, high) \
+            if samples[p] else None
+        if seg:
+            node_net += net_between(p, span_start, before)
+            node_stock += seg["our"] * seg["seconds"] / 86400.0
+    node_yield = node_net / node_stock if node_stock > 0 else None
+
     for r in rows:
-        r["busy_day_swing"] = r["rule_size"] = None
-        r["action"] = close_action(r, args) or resize_action(
-            r, samples[r["peer_id"]], low, high, args)
+        p = r["peer_id"]
+        s = samples[p]
+        moves[p].sort()
+        action = close_action(r, args)
+        # grow reads the last --size-days at the present size, shrink
+        # every sample at the present size
+        ev = size_evidence(s, moves[p], s.size_span(args.size_days),
+                           low, high, args) if s else None
+        if ev:
+            whole = size_evidence(
+                s, moves[p], s.size_span((before - since) / 86400.0),
+                low, high, args)
+            ev["node_yield"] = node_yield
+            ev["cut_share"] = ev["multiple"] = ev["grow_yield"] = None
+            grow = shrink = ""
+            if ev["days"] >= args.size_min_days:
+                per_day = net_between(p, ev["start"], before) / ev["days"]
+                grow = grow_action(ev, per_day, node_yield, before, args)
+                shrink = shrink_action(whole, low, args)
+            ev["days_at_size"] = whole["days"]
+            ev["lowest"] = whole["lowest"]
+            ev["idle"] = whole.get("idle")
+            action = action or grow or shrink
+        r["sizing"] = ev
+        r["action"] = action
     rows = [r for r in rows if r["sampled_days"] >= args.min_days]
 
     def paid_key(r):
@@ -697,7 +873,7 @@ def main():
                "OutStock", "OutTurn", "OutYield", "OutDep", "Refused",
                "OutTimeline",
                "InStock", "InTurn", "InYield", "InDep", "InTimeline",
-               "Action"]
+               "OutCut", "InCut", "Action"]
     table = []
     for r in rows:
         table.append([
@@ -729,6 +905,8 @@ def main():
             fmt_num(r["in"]["yield"], 0),
             fmt_dep(r["in"]["dep"]),
             r["in_timeline"],
+            fmt_cut(r["sizing"], "out"),
+            fmt_cut(r["sizing"], "in"),
             r["action"],
         ])
     text = {"Alias", "SCID", "Opn", "Up", "State", "OutTimeline",
@@ -774,14 +952,26 @@ Action   the steps to a close, in order: close alone when we opened it, it has -
          question); fill+ first when the peer holds at least --fill-min and its fee toward us is at most
          --fill-max-ppm, so a fill carries the inbound to another channel; online+ first when the peer is
          down or under 50% connected over 3 days, since a cooperative close needs it.
-         grow(+N), shrink(-N): add or take away N M sat, from the size the channel's own traffic calls for
-         over the last --size-days at its present size (--size-min-days or more): the larger of --size-factor
-         times the busy-day swing of our balance (90th percentile of the day's highest less its lowest) and
-         the whole range our balance covered.  grow when that is at least --size-ratio times the present
-         size, only for a channel self-fed on both sides now and in half its sampled buckets, with our side
-         not empty most of the time; shrink when it is at most the present size over --size-ratio, for a
-         channel with a side that moved and our side not empty most of the time.  A size --size-near of the
-         way to the step counts and prints as the whole step.  Changes under --size-min-change are not shown
+         grow(+N): add N M sat; the channel keeps running out on both sides.  Our balance over the last
+         --size-days at the present size is followed forward by forward and split into runs.  A run is a net
+         move in one direction of at least --run-min percent of capacity; it is cut off when it ends within
+         --edge of the side it drew on.  The direction with the smaller share of cut-off runs decides, since
+         one side running out alone is demand for liquidity in one direction, which size does not supply.
+         It needs --size-min-runs cut-off runs, and each direction one in the last --grow-recent days.
+         The size multiple is ln(--grow-target) / ln(share): where
+         the share falls to the target if a run that has got this far is as likely to go on as a new one.
+         Shown from --size-ratio times the present size, at most --grow-max times.  The sats added must
+         also earn at least --grow-min-yield times the node's average, all channels' net per day over our
+         balance in them: the cut-off runs bring back at most the share of the channel's net per day, and N
+         is capped at the sats that pays for
+         shrink(-N): take away N M sat of ours that never moved.  N leaves the lowest our balance reached
+         at the present size at --edge of the smaller channel.  Shown when the smaller channel is at most
+         the present size over --size-ratio, after --shrink-min-days at the present size and
+         --size-min-runs runs of our balance falling, none cut off.  Neither entry is shown under
+         --size-min-change or --size-min-days; a close entry comes first
+OutCut, InCut  runs cut off over runs, over the last --size-days at the present size: OutCut for our balance
+         falling (forwards leaving) and ending with our side empty, InCut for it rising (forwards arriving)
+         and ending with the peer's side empty; - = no run.  Rebalances move the balance too and count
 One row per peer: its open channels summed (SCID lists them); forwards through channels to the peer that
          have since closed count too, so a resize keeps its history.\
 """

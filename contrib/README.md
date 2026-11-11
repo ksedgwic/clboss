@@ -229,6 +229,18 @@ how many days of earnings history are considered when ranking channels.
   had `--close-min-days` of samples and earns at most `--close-max-tral`:
   `fill+` when the peer holds enough that a fill can carry the inbound
   elsewhere first, `online+` when the peer is down.
+  The same column reads `grow(+N)` or `shrink(-N)`, N in M sat.  The
+  tool follows our balance forward by forward over the last
+  `--size-days` at the present size and splits it into runs, net moves
+  in one direction of at least `--run-min` percent of capacity; a run
+  is cut off when it ends with the side it drew on empty.  `OutCut` and
+  `InCut` show cut-off runs over runs for each direction.  A channel's
+  volume is set by its slower direction, so the direction with the
+  smaller share of cut-off runs decides a grow: it is shown when that
+  share calls for at least twice the size and the sats added would
+  earn at least the node's average.  `shrink` is our balance that
+  never moved: shown when the lowest it reached at the present size
+  leaves room for half the size.
   `--view` sorts the same rows by tral (`net`), outbound or inbound
   yield (`out`, `in`), or paid sides first (`pair`).  `--record DIR`
   saves the data a live run used and `--replay DIR` reruns from it, so a
