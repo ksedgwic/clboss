@@ -225,8 +225,9 @@ how many days of earnings history are considered when ranking channels.
   over the time-weighted mean of our balance per operational day,
   annualized in basis points, so a young channel compares with an old
   one.  An `Action` column lists the steps to a close, `close`,
-  `fill+close` or `online+fill+close`, for a channel we opened that has
-  had `--close-min-days` of samples and earns at most `--close-max-tral`:
+  `fill+close` or `online+fill+close`, for a channel we opened that is
+  `--close-min-days` old, has had that many days of samples and earns
+  at most `--close-max-tral`:
   `fill+` when the peer holds enough that a fill can carry the inbound
   elsewhere first, `online+` when the peer is down.
   The same column reads `grow(+N)` or `shrink(-N)`, N in M sat.  The

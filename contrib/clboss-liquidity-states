@@ -258,9 +258,14 @@ def close_action(r, args):
     """The steps to a close, joined with +, for a channel we opened that
     has had the time and earns nothing on it: online (the peer is down),
     fill (its side is worth carrying elsewhere first), close.  Empty
-    otherwise.  A sold-out side that turned forwards away is a refill
-    question, not a close."""
+    otherwise.  The time is the peer's sampled days and the newest
+    channel's age, both: the samples of an earlier channel to the peer
+    count as days, and say nothing about a channel opened last week.  A
+    sold-out side that turned forwards away is a refill question, not a
+    close."""
     if r["opener"] != "local" or r["sampled_days"] < args.close_min_days:
+        return ""
+    if r["age_days"] is not None and r["age_days"] < args.close_min_days:
         return ""
     if r["tral_bps"] is None or r["tral_bps"] > args.close_max_tral:
         return ""
@@ -472,7 +477,8 @@ def main():
                              "dependence)")
     parser.add_argument("--close-min-days", type=float, default=28.0,
                         help="Action reads close only after this many "
-                             "sampled days (default 28)")
+                             "sampled days, on a channel at least that old "
+                             "(default 28)")
     parser.add_argument("--close-max-tral", type=float, default=10.0,
                         help="Action reads close when tral is at or under "
                              "this, basis points (default 10)")
@@ -947,23 +953,24 @@ Refused  outbound volume refused on this channel, M sat (retries inflate it)
 Timelines  one letter per bucket, oldest first: E exhausted, I idle, P paid, S self-fed, D draining (no refill
          and the stock fell by at least the edge over the bucket), ? no samples; buckets are aligned to the
          window's end, so the first may be short and the last is whole
-Action   the steps to a close, in order: close alone when we opened it, it has --close-min-days of samples,
-         tral at or under --close-max-tral, and no sold-out side turning forwards away (that is a refill
-         question); fill+ first when the peer holds at least --fill-min and its fee toward us is at most
-         --fill-max-ppm, so a fill carries the inbound to another channel; online+ first when the peer is
-         down or under 50% connected over 3 days, since a cooperative close needs it.
+Action   the steps to a close, in order: close alone when we opened it, it has --close-min-days of samples
+         and the newest channel is that old, tral at or under --close-max-tral, and no sold-out side
+         turning forwards away (that is a refill question); fill+ first when the peer holds at least
+         --fill-min and its fee toward us is at most --fill-max-ppm, so a fill carries the inbound to
+         another channel; online+ first when the peer is down or under 50% connected over 3 days, since a
+         cooperative close needs it.
          grow(+N): add N M sat; the channel keeps running out on both sides.  Our balance over the last
          --size-days at the present size is followed forward by forward and split into runs.  A run is a net
          move in one direction of at least --run-min percent of capacity; it is cut off when it ends within
          --edge of the side it drew on.  The direction with the smaller share of cut-off runs decides, since
          one side running out alone is demand for liquidity in one direction, which size does not supply.
          It needs --size-min-runs cut-off runs, and each direction one in the last --grow-recent days.
-         The size multiple is ln(--grow-target) / ln(share): where
-         the share falls to the target if a run that has got this far is as likely to go on as a new one.
-         Shown from --size-ratio times the present size, at most --grow-max times.  The sats added must
-         also earn at least --grow-min-yield times the node's average, all channels' net per day over our
-         balance in them: the cut-off runs bring back at most the share of the channel's net per day, and N
-         is capped at the sats that pays for
+         The size multiple is ln(--grow-target) / ln(share): where the share falls to the target if a
+         run that has got this far is as likely to go on as a new one.  Shown from --size-ratio times
+         the present size, at most --grow-max times.  The sats added must also earn at least
+         --grow-min-yield times the node's average, all channels' net per day over our balance in
+         them: the cut-off runs bring back at most the share of the channel's net per day, and N is
+         capped at the sats that pays for
          shrink(-N): take away N M sat of ours that never moved.  N leaves the lowest our balance reached
          at the present size at --edge of the smaller channel.  Shown when the smaller channel is at most
          the present size over --size-ratio, after --shrink-min-days at the present size and
