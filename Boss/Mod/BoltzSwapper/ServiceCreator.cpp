@@ -17,6 +17,7 @@
 #include"Ev/yield.hpp"
 #include"Json/Out.hpp"
 #include"S/Bus.hpp"
+#include"Sqlite3.hpp"
 #include"Util/make_unique.hpp"
 #include<queue>
 #include<set>
@@ -45,7 +46,7 @@ class ServiceCreator::Core : public std::enable_shared_from_this<Core> {
 private:
 	S::Bus& bus;
 	Boltz::ServiceFactory factory;
-	std::queue<Instance> instances;
+	std::queue<Planned> instances;
 	std::vector<std::unique_ptr<ServiceModule>>& services;
 
 	bool first;
@@ -53,7 +54,7 @@ private:
 
 	Core( S::Bus& bus_
 	    , Boltz::ServiceFactory factory_
-	    , std::queue<Instance> instances_
+	    , std::queue<Planned> instances_
 	    , std::vector<std::unique_ptr<ServiceModule>>& services_
 	    ) : bus(bus_)
 	      , factory(std::move(factory_))
@@ -65,7 +66,7 @@ public:
 	std::shared_ptr<Core>
 	create( S::Bus& bus
 	      , Boltz::ServiceFactory factory
-	      , std::queue<Instance> instances
+	      , std::queue<Planned> instances
 	      , std::vector<std::unique_ptr<ServiceModule>>& services
 	      ) {
 		return std::shared_ptr<Core>(
@@ -95,21 +96,26 @@ private:
 						);
 			}
 
-			auto instance = std::move(instances.front());
+			auto planned = std::move(instances.front());
 			instances.pop();
+			auto const& instance = planned.instance;
+			auto quoting = planned.quoting;
 			if (first)
 				first = false;
 			else
 				report << ", ";
 			report << "Boltz::Service(\"" << instance.label << "\")";
+			if (!quoting)
+				report << " (swaps in flight only)";
 
 			auto label = instance.label;
 
 			return factory.create_service_detailed(
 				instance.label, instance.clearnet, instance.onion
-			).then([this, label](std::unique_ptr<Boltz::Service> core) {
+			).then([this, label, quoting
+			       ](std::unique_ptr<Boltz::Service> core) {
 				auto wrapper = Util::make_unique<ServiceModule>
-					( bus, std::move(core), label );
+					( bus, std::move(core), label, quoting );
 				services.push_back(std::move(wrapper));
 				return core_run();
 			});
@@ -152,9 +158,9 @@ ServiceCreator::parse_instances(std::string const& value) {
 					"not an http:// or https:// URL: '"
 					+ entry + "'"
 				);
-			if (!labels.insert(rest).second)
+			if (!labels.insert(entry).second)
 				throw std::invalid_argument(
-					"listed twice: '" + rest + "'"
+					"listed twice: '" + entry + "'"
 				);
 			auto const tld = std::string(".onion");
 			auto onion = host.size() > tld.size()
@@ -163,7 +169,7 @@ ServiceCreator::parse_instances(std::string const& value) {
 						 ) == 0
 				   ;
 			rv.push_back(Instance{
-				rest,
+				entry,
 				onion ? std::string() : entry,
 				onion ? entry : std::string()
 			});
@@ -173,6 +179,66 @@ ServiceCreator::parse_instances(std::string const& value) {
 			break;
 		++pos;
 	}
+	return rv;
+}
+
+std::vector<ServiceCreator::Planned>
+ServiceCreator::plan( std::vector<Instance> const& builtin
+		    , bool has_configured
+		    , std::vector<Instance> const& configured
+		    , std::vector<std::string> const& pending
+		    , std::vector<std::string>& unknown
+		    ) {
+	auto rv = std::vector<Planned>();
+	auto labels = std::set<std::string>();
+	auto add = [&rv, &labels](Instance const& i, bool quoting) {
+		if (labels.insert(i.label).second)
+			rv.push_back(Planned{i, quoting});
+	};
+
+	if (!has_configured) {
+		for (auto const& b : builtin)
+			add(b, true);
+	} else {
+		for (auto const& c : configured) {
+			auto known = (Instance const*) nullptr;
+			for (auto const& b : builtin) {
+				if ( c.label == b.label
+				  || (c.clearnet != "" && c.clearnet == b.clearnet)
+				  || (c.onion != "" && c.onion == b.onion)
+				   ) {
+					known = &b;
+					break;
+				}
+			}
+			add(known ? *known : c, true);
+		}
+	}
+
+	for (auto const& p : pending) {
+		if (labels.count(p) != 0)
+			continue;
+		auto found = false;
+		for (auto const& b : builtin) {
+			if (b.label != p)
+				continue;
+			add(b, false);
+			found = true;
+			break;
+		}
+		if (found)
+			continue;
+		/* The label of a configured instance is its URL.  */
+		try {
+			auto parsed = parse_instances(p);
+			if (parsed.size() == 1 && parsed[0].label == p) {
+				add(parsed[0], false);
+				continue;
+			}
+		} catch (std::invalid_argument const&) { }
+		unknown.push_back(p);
+	}
+
 	return rv;
 }
 
@@ -206,7 +272,7 @@ void ServiceCreator::start() {
 			has_configured = true;
 			return Boss::log( bus, Error
 					, "BoltzSwapper: clboss-swap-providers: "
-					  "%s; no swap service will be used."
+					  "%s; no new swap will be started."
 					, e.what()
 					);
 		}
@@ -282,21 +348,12 @@ void ServiceCreator::start() {
 		});
 	});
 	bus.subscribe<Msg::Init>([this](Msg::Init const& init) {
-		auto const* chosen = (std::vector<Instance> const*) nullptr;
-		if (has_configured)
-			chosen = &configured;
-		else {
-			auto it = instances.find(init.network);
-			if (it != instances.end())
-				chosen = &it->second;
-		}
-		if (!chosen || chosen->empty())
-			return Boss::log( bus, Debug
-					, "BoltzSwapper: "
-					  "No instances for this network."
-					);
+		auto builtin = std::vector<Instance>();
+		auto it = instances.find(init.network);
+		if (it != instances.end())
+			builtin = it->second;
 
-		auto factory = Boltz::ServiceFactory
+		auto factory = std::make_shared<Boltz::ServiceFactory>
 			( threadpool
 			, init.db
 			, init.signer
@@ -304,15 +361,68 @@ void ServiceCreator::start() {
 			, init.proxy
 			, init.always_use_proxy
 			);
-		auto q = std::queue<Instance>();
-		for (auto const& instance : *chosen)
-			q.push(instance);
-		auto core = Core::create( bus
-					, std::move(factory)
-					, std::move(q)
-					, services
-					);
-		return Boss::concurrent(core->run());
+		auto db = init.db;
+		return db.transact().then([ this, builtin, factory
+					  ](Sqlite3::Tx tx) {
+			/* The services we have swaps in flight with.
+			 * A row is deleted when its swap is over.  */
+			auto pending = std::vector<std::string>();
+			auto have_table = false;
+			auto check = tx.query(R"QRY(
+			SELECT name FROM sqlite_master
+			 WHERE type = 'table'
+			   AND name = 'BoltzServiceFactory_rsub'
+			     ;
+			)QRY").execute();
+			for (auto& r : check) {
+				(void) r;
+				have_table = true;
+			}
+			if (have_table) {
+				auto fetch = tx.query(R"QRY(
+				SELECT DISTINCT apiAccess
+				  FROM "BoltzServiceFactory_rsub"
+				     ;
+				)QRY").execute();
+				for (auto& r : fetch)
+					pending.push_back(r.get<std::string>(0));
+			}
+			tx.commit();
+
+			auto unknown = std::vector<std::string>();
+			auto planned = plan( builtin
+					   , has_configured, configured
+					   , pending, unknown
+					   );
+
+			auto act = Ev::lift();
+			for (auto const& u : unknown)
+				act += Boss::log( bus, Error
+						, "BoltzSwapper: swaps in flight "
+						  "with \"%s\", which is neither "
+						  "a built-in swap service nor a "
+						  "URL; they cannot be seen "
+						  "through."
+						, u.c_str()
+						);
+			if (planned.empty())
+				return std::move(act)
+				     + Boss::log( bus, Debug
+						, "BoltzSwapper: "
+						  "No instances for this network."
+						);
+
+			auto q = std::queue<Planned>();
+			for (auto const& p : planned)
+				q.push(p);
+			auto core = Core::create( bus
+						, std::move(*factory)
+						, std::move(q)
+						, services
+						);
+			return std::move(act)
+			     + Boss::concurrent(core->run());
+		});
 	});
 }
 

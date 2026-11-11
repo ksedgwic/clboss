@@ -788,11 +788,16 @@ Each must serve the Boltz API v2 for reverse swaps (CLBOSS appends
 `/v2/swap/reverse` and so on to the root).
 A `.onion` root is reached through the proxy `lightningd` is
 configured with, and is skipped if there is none.
-The root, less its scheme, is the name the service is recorded
-under in the database and in `clboss-status`.
+The root is the name the service is recorded under in the database
+and in `clboss-status`; a root that is an endpoint of a built-in
+service names that service, which keeps its own name.
 
-If the list does not parse, CLBOSS logs the error and uses no swap
-service at all, rather than fall back to services you did not list.
+A service you take off the list, or a built-in one the list
+replaces, is still run while it has swaps in flight, only to see
+those through: it is offered no new swap.
+
+If the list does not parse, CLBOSS logs the error and starts no new
+swap at all, rather than fall back to services you did not list.
 Empty or absent, the built-in list for the network is used.
 
 ### `--clboss-swap-selection=<weighted|random|best-rate>`

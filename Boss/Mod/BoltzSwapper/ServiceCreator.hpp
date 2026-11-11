@@ -58,11 +58,34 @@ private:
 public:
 	/* Parse the value of `clboss-swap-providers`: API roots
 	 * separated by commas, each `http://` or `https://`.
-	 * An entry is its own database label, less the scheme and
-	 * any trailing `/`; a `.onion` host is reached by proxy.
+	 * An entry is its own database label, less any trailing
+	 * `/`, so that the label alone says how to reach the
+	 * service; a `.onion` host is reached by proxy.
 	 * Throws `std::invalid_argument` naming the bad entry.  */
 	static
 	std::vector<Instance> parse_instances(std::string const&);
+
+	/* An instance to run, and whether it takes new swaps.  */
+	struct Planned {
+		Instance instance;
+		bool quoting;
+	};
+	/* The instances to run.
+	 * Those configured, or the built-in ones when none are, take
+	 * new swaps.  A configured entry that names an endpoint of a
+	 * built-in instance is that instance, under its own label, so
+	 * that its swaps in flight stay with it.
+	 * `pending` gives the labels the database has swaps in flight
+	 * under.  The instance of each, when it is not among the
+	 * above, is run too, only to see those swaps through; a label
+	 * that names no instance we can reach is put in `unknown`.  */
+	static
+	std::vector<Planned> plan( std::vector<Instance> const& builtin
+				 , bool has_configured
+				 , std::vector<Instance> const& configured
+				 , std::vector<std::string> const& pending
+				 , std::vector<std::string>& unknown
+				 );
 
 	ServiceCreator() =delete;
 	ServiceCreator(ServiceCreator&&) =delete;
