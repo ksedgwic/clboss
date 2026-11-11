@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   node.  The `Boltz::Service` log lines show one in flight.  Earlier
   releases still run on the upgraded database.
 
+### Added
+
+- `clboss-swap-providers` lists the swap services to use in place of
+  the built-in ones, as comma-separated API roots; each must serve the
+  Boltz API v2 for reverse swaps.  A list that does not parse leaves
+  CLBOSS with no swap service rather than the built-in ones. (#160)
+- `clboss-swap-selection` chooses among the services that quote for a
+  swap: `best-rate` takes the lowest fee, `random` any with equal
+  chance, and `weighted`, the default and the behavior until now,
+  is random but favors lower fees.  It can be changed with `setconfig`.
+
 ### Changed
 
 - Boltz swaps use the provider's API v2 with taproot lockups: the swap

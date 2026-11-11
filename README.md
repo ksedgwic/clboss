@@ -777,6 +777,40 @@ All of the following are *dynamic* (`setconfig`) options:
   costing up to gain times the measured rate, below `1` only routes
   cheaper than it.  Default `1` (strict).
 
+### `--clboss-swap-providers=<url>[,<url>...]`
+
+The swap services CLBOSS may use, as a comma-separated list of
+API roots, replacing the built-in list:
+
+    --clboss-swap-providers=https://swap.example.com,http://exampleonionaddress.onion/api
+
+Each must serve the Boltz API v2 for reverse swaps (CLBOSS appends
+`/v2/swap/reverse` and so on to the root).
+A `.onion` root is reached through the proxy `lightningd` is
+configured with, and is skipped if there is none.
+The root, less its scheme, is the name the service is recorded
+under in the database and in `clboss-status`.
+
+If the list does not parse, CLBOSS logs the error and uses no swap
+service at all, rather than fall back to services you did not list.
+Empty or absent, the built-in list for the network is used.
+
+### `--clboss-swap-selection=<weighted|random|best-rate>`
+
+How CLBOSS chooses when more than one swap service quotes for a
+swap:
+
+* `best-rate`: the service charging the lowest fee for that amount.
+* `random`: any of them, with equal chance.
+* `weighted` (default): random, but favoring lower fees.
+
+If creating the swap with the chosen service fails, the next one
+in that order is tried.
+
+This option can be set at runtime:
+
+    lightning-cli setconfig clboss-swap-selection best-rate
+
 ### `--clboss-min-nodes-to-process=<number>`
 
 Sets the minimum number of nodes that CLBOSS must know about before it

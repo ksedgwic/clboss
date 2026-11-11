@@ -4,6 +4,9 @@
 #include"Boss/Mod/BoltzSwapper/ServiceCreator.hpp"
 #include"Boss/Mod/BoltzSwapper/ServiceModule.hpp"
 #include"Boss/Msg/Init.hpp"
+#include"Boss/Msg/ManifestOption.hpp"
+#include"Boss/Msg/Manifestation.hpp"
+#include"Boss/Msg/Option.hpp"
 #include"Boss/Msg/Network.hpp"
 #include"Boss/Msg/ProvideStatus.hpp"
 #include"Boss/Msg/SolicitStatus.hpp"
@@ -16,7 +19,9 @@
 #include"S/Bus.hpp"
 #include"Util/make_unique.hpp"
 #include<queue>
+#include<set>
 #include<sstream>
+#include<stdexcept>
 
 namespace {
 
@@ -112,7 +117,101 @@ private:
 	}
 };
 
+std::vector<Instance>
+ServiceCreator::parse_instances(std::string const& value) {
+	auto rv = std::vector<Instance>();
+	auto labels = std::set<std::string>();
+	auto const ws = " \t\r\n";
+	auto pos = std::size_t(0);
+	for (;;) {
+		auto end = value.find(',', pos);
+		auto entry = value.substr( pos
+					 , end == std::string::npos ?
+						end : end - pos
+					 );
+		pos = end;
+
+		auto b = entry.find_first_not_of(ws);
+		auto e = entry.find_last_not_of(ws);
+		entry = (b == std::string::npos) ?
+			std::string() : entry.substr(b, e - b + 1);
+		while (!entry.empty() && entry.back() == '/')
+			entry.pop_back();
+
+		if (!entry.empty()) {
+			auto rest = std::string();
+			if (entry.rfind("https://", 0) == 0)
+				rest = entry.substr(8);
+			else if (entry.rfind("http://", 0) == 0)
+				rest = entry.substr(7);
+			auto host = rest.substr(0, rest.find_first_of("/:"));
+			if ( host.empty()
+			  || entry.find_first_of(ws) != std::string::npos
+			   )
+				throw std::invalid_argument(
+					"not an http:// or https:// URL: '"
+					+ entry + "'"
+				);
+			if (!labels.insert(rest).second)
+				throw std::invalid_argument(
+					"listed twice: '" + rest + "'"
+				);
+			auto const tld = std::string(".onion");
+			auto onion = host.size() > tld.size()
+				  && host.compare( host.size() - tld.size()
+						 , tld.size(), tld
+						 ) == 0
+				   ;
+			rv.push_back(Instance{
+				rest,
+				onion ? std::string() : entry,
+				onion ? entry : std::string()
+			});
+		}
+
+		if (pos == std::string::npos)
+			break;
+		++pos;
+	}
+	return rv;
+}
+
 void ServiceCreator::start() {
+	bus.subscribe<Msg::Manifestation
+		     >([this](Msg::Manifestation const& _) {
+		return bus.raise(Msg::ManifestOption{
+			"clboss-swap-providers", Msg::OptionType_String,
+			Json::Out::direct(std::string("")),
+			"Comma-separated API roots of the Boltz-API-v2 swap "
+			"services to use instead of the built-in ones, e.g. "
+			"`https://swap.example.com,http://example.onion/api`.  "
+			"Empty (the default) uses the built-in list.",
+			/* dynamic = */ false
+		});
+	});
+	bus.subscribe<Msg::Option
+		     >([this](Msg::Option const& o) {
+		if (o.name != "clboss-swap-providers")
+			return Ev::lift();
+		auto value = o.value.is_string() ? std::string(o.value)
+						 : std::string();
+		try {
+			auto parsed = parse_instances(value);
+			configured = std::move(parsed);
+			has_configured = !configured.empty();
+		} catch (std::invalid_argument const& e) {
+			/* Swapping through nobody is safer than through
+			 * a list the operator did not write.  */
+			configured.clear();
+			has_configured = true;
+			return Boss::log( bus, Error
+					, "BoltzSwapper: clboss-swap-providers: "
+					  "%s; no swap service will be used."
+					, e.what()
+					);
+		}
+		return Ev::lift();
+	});
 	/* `clboss-status`: every service's swaps in flight, keyed
 	 * by the service label.  */
 	bus.subscribe<Msg::SolicitStatus
@@ -183,8 +282,15 @@ void ServiceCreator::start() {
 		});
 	});
 	bus.subscribe<Msg::Init>([this](Msg::Init const& init) {
-		auto it = instances.find(init.network);
-		if (it == instances.end())
+		auto const* chosen = (std::vector<Instance> const*) nullptr;
+		if (has_configured)
+			chosen = &configured;
+		else {
+			auto it = instances.find(init.network);
+			if (it != instances.end())
+				chosen = &it->second;
+		}
+		if (!chosen || chosen->empty())
 			return Boss::log( bus, Debug
 					, "BoltzSwapper: "
 					  "No instances for this network."
@@ -199,7 +305,7 @@ void ServiceCreator::start() {
 			, init.always_use_proxy
 			);
 		auto q = std::queue<Instance>();
-		for (auto const& instance : it->second)
+		for (auto const& instance : *chosen)
 			q.push(instance);
 		auto core = Core::create( bus
 					, std::move(factory)

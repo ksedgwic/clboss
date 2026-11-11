@@ -42,6 +42,11 @@ private:
 	std::map<Boss::Msg::Network, std::vector<Instance>> const&
 	instances;
 
+	/* Instances from `clboss-swap-providers`; when the option
+	 * is given these replace the built-in ones, on any network.  */
+	bool has_configured;
+	std::vector<Instance> configured;
+
 	/* The actual services we are maintaining.  */
 	std::vector<std::unique_ptr<Boss::Mod::BoltzSwapper::ServiceModule>>
 	services;
@@ -51,6 +56,14 @@ private:
 	void start();
 
 public:
+	/* Parse the value of `clboss-swap-providers`: API roots
+	 * separated by commas, each `http://` or `https://`.
+	 * An entry is its own database label, less the scheme and
+	 * any trailing `/`; a `.onion` host is reached by proxy.
+	 * Throws `std::invalid_argument` naming the bad entry.  */
+	static
+	std::vector<Instance> parse_instances(std::string const&);
+
 	ServiceCreator() =delete;
 	ServiceCreator(ServiceCreator&&) =delete;
 	ServiceCreator(ServiceCreator const&) =delete;
@@ -63,6 +76,8 @@ public:
 			, threadpool(threadpool_)
 			, env(env_)
 			, instances(instances_)
+			, has_configured(false)
+			, configured()
 			, services()
 			{ start(); }
 };
