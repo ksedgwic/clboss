@@ -19,8 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - `clboss-swap-providers` lists the swap services to use in place of
   the built-in ones, as comma-separated API roots; each must serve the
-  Boltz API v2 for reverse swaps.  A list that does not parse leaves
-  CLBOSS with no swap service rather than the built-in ones. (#160)
+  Boltz API v2 for reverse swaps.  A service no longer listed is
+  still run until its swaps in flight are over, and takes no new
+  one.  A list that does not parse starts no new swap rather than
+  use the built-in services. (#160)
 - `clboss-swap-selection` chooses among the services that quote for a
   swap: `best-rate` takes the lowest fee, `random` any with equal
   chance, and `weighted`, the default and the behavior until now,
