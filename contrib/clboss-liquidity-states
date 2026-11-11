@@ -508,9 +508,9 @@ def main():
                         help="show a grow only from this multiple of the "
                              "present size, a shrink only to the present "
                              "size over this (default 2)")
-    parser.add_argument("--grow-recent", type=float, default=14.0,
+    parser.add_argument("--grow-recent", type=float, default=30.0,
                         help="grow needs a cut-off run each way within "
-                             "this many days (default 14)")
+                             "this many days (default 30)")
     parser.add_argument("--grow-target", type=float, default=20.0,
                         help="a grow aims at this percent of runs cut off "
                              "in the direction that decides (default 20)")
