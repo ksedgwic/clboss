@@ -23,6 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   still run until its swaps in flight are over, and takes no new
   one.  A list that does not parse starts no new swap rather than
   use the built-in services. (#160)
+- `clboss-swap-max-fee-ppm` limits what a swap may cost, in parts per
+  million of the amount sent; a quotation above it is not taken.
+  Nothing limited it before, and by default nothing does now.
 - `clboss-swap-selection` chooses among the services that quote for a
   swap: `best-rate` takes the lowest fee, `random` any with equal
   chance, and `weighted`, the default and the behavior until now,

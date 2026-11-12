@@ -657,6 +657,102 @@ Ev::Io<void> test_selection() {
 	});
 }
 
+/* `clboss-swap-max-fee-ppm`.  A quotation is taken when its fee is
+ * at most that many parts per million of the amount; when none is,
+ * the swap fails rather than go to whoever asks least.  The swaps
+ * here are of exactly 1000000 sat, so the limit in ppm is the fee in
+ * sat.  */
+Ev::Io<void> test_max_fee() {
+	auto const amount = Ln::Amount::btc(0.01);
+	Uuid within = Uuid::random();
+	Uuid none = Uuid::random();
+	Uuid unlimited = Uuid::random();
+
+	return Ev::lift().then([]() {
+		/* As at startup: a JSON number.  */
+		return bus.raise(Boss::Msg::Option{
+			"clboss-swap-max-fee-ppm",
+			Jsmn::Object::parse_json("{\"v\": 1000}")["v"],
+			nullptr
+		});
+	}).then([amount, within]() {
+		swapsetups.accepted.clear();
+		addresses.add("address-within");
+		quotations.add({ Ln::Amount::sat(2000)
+			       , Ln::Amount::sat(1000)
+			       , Ln::Amount::sat(1001)
+			       });
+		/* Only the one at the limit may be tried.  */
+		swapsetups.add({ "address-within", true, "invoice-within"
+			       , Sha256::Hash("9999999999999999999999999999999999999999999999999999999999999999")
+			       , 30000
+			       });
+		return requester.start_swap(within, amount, amount);
+	}).then([]() {
+		return wait();
+	}).then([amount, within, none]() {
+		assert(quotations.empty());
+		assert(swapsetups.okay());
+		assert(swapsetups.accepted.size() == 1);
+		assert(swapsetups.accepted[0] == providers[1].get());
+		requester.expect_pending(within);
+
+		/* Every quotation above the limit: the swap cannot
+		 * shrink, so it fails, and no provider is asked.  */
+		swapsetups.accepted.clear();
+		addresses.add("address-none");
+		quotations.add({ Ln::Amount::sat(2000)
+			       , Ln::Amount::sat(3000)
+			       });
+		return requester.start_swap(none, amount, amount);
+	}).then([]() {
+		return wait();
+	}).then([none]() {
+		assert(quotations.empty());
+		assert(swapsetups.accepted.empty());
+		requester.expect_finished(none, false);
+
+		/* Not a number: refused, and the limit stays.  */
+		auto reason = std::make_shared<std::string>();
+		return bus.raise(Boss::Msg::Option{
+			"clboss-swap-max-fee-ppm",
+			Jsmn::Object::parse_json("\"1%\""),
+			reason
+		}).then([reason]() {
+			assert(!reason->empty());
+			return Ev::lift();
+		});
+	}).then([]() {
+		/* As from setconfig: a string.  Negative lifts it.  */
+		auto reason = std::make_shared<std::string>();
+		return bus.raise(Boss::Msg::Option{
+			"clboss-swap-max-fee-ppm",
+			Jsmn::Object::parse_json("\"-1\""),
+			reason
+		}).then([reason]() {
+			assert(reason->empty());
+			return Ev::lift();
+		});
+	}).then([amount, unlimited]() {
+		/* The address of the failed swap was never paid to,
+		 * and is used again.  */
+		swapsetups.accepted.clear();
+		quotations.add({Ln::Amount::sat(3000)});
+		swapsetups.add({ "address-none", true, "invoice-unlimited"
+			       , Sha256::Hash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+			       , 30000
+			       });
+		return requester.start_swap(unlimited, amount, amount);
+	}).then([]() {
+		return wait();
+	}).then([unlimited]() {
+		assert(swapsetups.okay());
+		assert(swapsetups.accepted.size() == 1);
+		requester.expect_pending(unlimited);
+		return Ev::lift();
+	});
+}
+
 }
 
 /*-----------------------------------------------------------------------------
@@ -674,6 +770,8 @@ int main() {
 		return test_timeout_after_payment();
 	}).then([&]() {
 		return test_selection();
+	}).then([&]() {
+		return test_max_fee();
 	}).then([&]() {
 		return Ev::lift(0);
 	});

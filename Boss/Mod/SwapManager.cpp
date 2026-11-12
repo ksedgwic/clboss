@@ -34,9 +34,12 @@
 #include"Uuid.hpp"
 #include<algorithm>
 #include<assert.h>
+#include<cctype>
+#include<inttypes.h>
 #include<queue>
 #include<random>
 #include<sstream>
+#include<stdexcept>
 
 namespace Boss { namespace Mod {
 
@@ -93,6 +96,71 @@ private:
 				"at runtime via `lightning-cli setconfig`.",
 				/* dynamic = */ true
 			});
+		});
+		bus.subscribe<Msg::Manifestation
+			     >([this](Msg::Manifestation const& _) {
+			return bus.raise(Msg::ManifestOption{
+				"clboss-swap-max-fee-ppm", Msg::OptionType_Int,
+				Json::Out::direct(std::int64_t(-1)),
+				"The most a swap may cost, in parts per "
+				"million of the amount sent, the service's "
+				"percentage and its mining fees together; a "
+				"quotation above it is not taken.  Negative "
+				"(the default) is no limit.  Dynamic: "
+				"settable at runtime via `lightning-cli "
+				"setconfig`.",
+				/* dynamic = */ true
+			});
+		});
+		bus.subscribe<Msg::Option
+			     >([this](Msg::Option const& o) {
+			if (o.name != "clboss-swap-max-fee-ppm")
+				return Ev::lift();
+			/* A number at startup, a string via setconfig.  */
+			auto v = std::int64_t(0);
+			try {
+				if (o.value.is_number())
+					v = std::int64_t(double(o.value));
+				else if (o.value.is_string()) {
+					/* std::stoll stops at the first
+					 * non-digit without complaint.  */
+					auto s = std::string(o.value);
+					auto pos = std::size_t(0);
+					v = std::stoll(s, &pos);
+					while ( pos < s.size()
+					     && std::isspace((unsigned char) s[pos])
+					      )
+						++pos;
+					if (pos != s.size())
+						throw std::invalid_argument(
+							"trailing text"
+						);
+				} else
+					throw std::invalid_argument(
+						"unsupported value type"
+					);
+			} catch (std::exception const&) {
+				o.reject( "clboss-swap-max-fee-ppm: "
+					  "not a valid number"
+					);
+				return Boss::log( bus, Warn
+						, "SwapManager: "
+						  "clboss-swap-max-fee-ppm: not a "
+						  "valid number; keeping the "
+						  "current setting."
+						);
+			}
+			max_fee_ppm = v;
+			if (v < 0)
+				return Boss::log( bus, Info
+						, "SwapManager: no limit on "
+						  "the fee of a swap."
+						);
+			return Boss::log( bus, Info
+					, "SwapManager: a swap may cost at "
+					  "most %" PRIi64 " ppm."
+					, v
+					);
 		});
 		bus.subscribe<Msg::Option
 			     >([this](Msg::Option const& o) {
@@ -503,6 +571,8 @@ private:
 	, Selection_BestRate
 	};
 	Selection selection = Selection_Weighted;
+	/* `clboss-swap-max-fee-ppm`; negative is no limit.  */
+	std::int64_t max_fee_ppm = -1;
 
 	std::vector<Quotation> quotations;
 	Ln::Amount amount;
@@ -584,6 +654,22 @@ private:
 					      , void* provider
 					      , std::string provider_name
 					      ) {
+		/* fee / amount > limit / 1000000, without dividing.  */
+		if ( max_fee_ppm >= 0
+		  && double(fee.to_msat()) * 1000000.0
+		   > double(amount.to_msat()) * double(max_fee_ppm)
+		   ) {
+			return Boss::log( bus, Info
+					, "SwapManager: %s asks %s to swap "
+					  "%s, above the %" PRIi64 " ppm of "
+					  "clboss-swap-max-fee-ppm; "
+					  "not taken."
+					, provider_name.c_str()
+					, std::string(fee).c_str()
+					, std::string(amount).c_str()
+					, max_fee_ppm
+					);
+		}
 		quotations.emplace_back( fee.to_msat()
 				       , provider
 				       , std::move(provider_name)
