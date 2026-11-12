@@ -34,6 +34,9 @@ public:
 		     , bool quoting = true
 		     );
 
+	/* Whether the module takes new swaps from now on.  */
+	void set_quoting(bool);
+
 	/* For the status report: the service's label, the last
 	 * block height seen (0 before the first), and its swaps
 	 * in flight.  */

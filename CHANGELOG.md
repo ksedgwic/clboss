@@ -22,7 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   Boltz API v2 for reverse swaps.  A service no longer listed is
   still run until its swaps in flight are over, and takes no new
   one.  A list that does not parse starts no new swap rather than
-  use the built-in services. (#160)
+  use the built-in services.  It can be changed with `setconfig`.
+  (#160)
 - `clboss-swap-max-fee-ppm` limits what a swap may cost, in parts per
   million of the amount sent; a quotation above it is not taken.
   Nothing limited it before, and by default nothing does now.

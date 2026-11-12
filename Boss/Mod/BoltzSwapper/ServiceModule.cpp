@@ -109,6 +109,7 @@ public:
 	      , quoting(quoting_)
 	      { start(); }
 
+	void set_quoting(bool quoting_) { quoting = quoting_; }
 	std::string const& get_label() const { return raw_label; }
 	std::uint32_t get_blockheight() const {
 		return blockheight ? *blockheight : 0;
@@ -118,6 +119,9 @@ public:
 	}
 };
 
+void ServiceModule::set_quoting(bool quoting) {
+	pimpl->set_quoting(quoting);
+}
 std::string const& ServiceModule::label() const {
 	return pimpl->get_label();
 }

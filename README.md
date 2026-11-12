@@ -802,8 +802,19 @@ A service you take off the list, or a built-in one the list
 replaces, is still run while it has swaps in flight, only to see
 those through: it is offered no new swap.
 
-If the list does not parse, CLBOSS logs the error and starts no new
-swap at all, rather than fall back to services you did not list.
+If the list does not parse at startup, CLBOSS logs the error and
+starts no new swap at all, rather than fall back to services you
+did not list.
+
+This option can be set at runtime:
+
+    lightning-cli setconfig clboss-swap-providers https://swap.example.com
+
+A service added this way is run at once, and one taken off the
+list goes on only with its swaps in flight, as above.  A list that
+does not parse is refused and the list in use stays.  A service
+that already runs stays on the endpoint it was started with: to
+move it to another of its endpoints, restart.
 Empty or absent, the built-in list for the network is used.
 
 ### `--clboss-swap-selection=<weighted|random|best-rate>`

@@ -3,12 +3,15 @@
 
 #include"Boss/Mod/BoltzSwapper/ServiceModule.hpp"
 #include"Boss/Msg/Network.hpp"
+#include"Sqlite3/Db.hpp"
 #include<map>
 #include<memory>
 #include<string>
 #include<vector>
 
 namespace Boltz { class EnvIF; }
+namespace Boltz { class ServiceFactory; }
+namespace Ev { template<typename a> class Io; }
 namespace Ev { class ThreadPool; }
 namespace S { class Bus; }
 
@@ -46,6 +49,24 @@ private:
 	 * is given these replace the built-in ones, on any network.  */
 	bool has_configured;
 	std::vector<Instance> configured;
+
+	/* From Msg::Init, kept for a change of the list at runtime:
+	 * the built-in instances of our network, the database, and
+	 * what makes services.  */
+	bool initted;
+	std::vector<Instance> builtin;
+	Sqlite3::Db db;
+	std::shared_ptr<Boltz::ServiceFactory> factory;
+
+	/* The instances that run or are being made to, by label,
+	 * and whether each takes new swaps.  One that runs is never
+	 * stopped: off the list, it only stops taking new swaps.  */
+	std::map<std::string, Instance> running;
+	std::map<std::string, bool> quoting;
+
+	/* Run the instances `plan` gives that do not run yet, and
+	 * tell each that does whether it takes new swaps.  */
+	Ev::Io<void> apply(bool at_runtime);
 
 	/* The actual services we are maintaining.  */
 	std::vector<std::unique_ptr<Boss::Mod::BoltzSwapper::ServiceModule>>
@@ -102,6 +123,7 @@ public:
 			, instances(instances_)
 			, has_configured(false)
 			, configured()
+			, initted(false)
 			, services()
 			{ start(); }
 };
