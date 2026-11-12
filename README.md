@@ -788,9 +788,15 @@ Each must serve the Boltz API v2 for reverse swaps (CLBOSS appends
 `/v2/swap/reverse` and so on to the root).
 A `.onion` root is reached through the proxy `lightningd` is
 configured with, and is skipped if there is none.
+Use `https://` for a public host: over plain `http://`, anyone on
+the path can read your swaps, the addresses they pay to, and the
+preimage you send for a claim, and can change what the service
+answers.  Plain `http://` is for a `.onion` root, which Tor already
+protects, or a service on your own machine or network.
 The root is the name the service is recorded under in the database
 and in `clboss-status`; a root that is an endpoint of a built-in
-service names that service, which keeps its own name.
+service names that service, which keeps its own name and is reached
+by the endpoint you listed alone.
 
 A service you take off the list, or a built-in one the list
 replaces, is still run while it has swaps in flight, only to see
