@@ -3,6 +3,7 @@
 #include"Boltz/EnvIF.hpp"
 #include"Boss/Mod/BoltzSwapper/ServiceCreator.hpp"
 #include"Boss/Mod/Rpc.hpp"
+#include"Boss/Msg/Block.hpp"
 #include"Boss/Msg/Init.hpp"
 #include"Boss/Msg/Network.hpp"
 #include"Boss/Msg/Option.hpp"
@@ -48,8 +49,12 @@
  * longer listed: that service must still run, and list its swap.
  * The newly listed service runs with no swap.
  *
+ * Then the block at which both swaps time out arrives.  Neither has
+ * its preimage revealed, so each service drops its swap: the one that
+ * left the list is still given blocks.
+ *
  * The swaps are read through `clboss-status`, the way an operator
- * sees them.  Nothing here reaches a service: no block arrives.
+ * sees them.  Nothing here reaches a service.
  */
 
 namespace {
@@ -179,6 +184,24 @@ Ev::Io<void> await_status(S::Bus& bus, std::size_t tries) {
 	});
 }
 
+/* A block is handled in the background too: ask until no service
+ * lists a swap, or give up.  */
+Ev::Io<void> await_empty(S::Bus& bus, std::size_t tries) {
+	return yields(50).then([&bus]() {
+		status.clear();
+		return bus.raise(Boss::Msg::SolicitStatus{});
+	}).then([]() {
+		return yields(50);
+	}).then([&bus, tries]() {
+		auto swaps = std::size_t(0);
+		for (auto const& e : status)
+			swaps += e.second.size();
+		if ((status.size() >= 3 && swaps == 0) || tries == 0)
+			return Ev::lift();
+		return await_empty(bus, tries - 1);
+	});
+}
+
 }
 
 int main() {
@@ -251,6 +274,19 @@ int main() {
 		       == std::vector<std::string>{"swapGone"});
 
 		assert(status["https://new.example.com"].empty());
+
+		/* Both swaps time out at height 1000 with no preimage
+		 * revealed, so a service that is given that block
+		 * drops its swap without reaching anyone.  */
+		return bus.raise(Boss::Msg::Block{1000});
+	}).then([&]() {
+		return await_empty(bus, 200);
+	}).then([&]() {
+		/* The service that left the list still gets blocks:
+		 * its swap is gone, as the built-in one's is.  */
+		assert(status.size() == 3);
+		assert(status["built-in label"].empty());
+		assert(status["https://gone.example.net"].empty());
 
 		/* Stop the Rpc watchers so Ev::start can return.  */
 		return bus.raise(Boss::Shutdown());
