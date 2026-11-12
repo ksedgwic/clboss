@@ -75,14 +75,30 @@ int main() {
 	       == "old-label+ second+ ");
 
 	/* A configured entry naming an endpoint of a built-in
-	 * instance is that instance: its label and both of its
-	 * endpoints.  */
+	 * instance is that instance by its label, reached by the
+	 * endpoint listed and not by its other one.  */
 	auto same = SC::plan( builtin, true
 			    , SC::parse_instances("https://api.example.org")
 			    , {}, unknown
 			    );
 	assert(labels(same) == "old-label+ ");
-	assert(same[0].instance.onion == "http://exampleorg.onion/api");
+	assert(same[0].instance.clearnet == "https://api.example.org");
+	assert(same[0].instance.onion == "");
+	auto by_onion = SC::plan( builtin, true
+				, SC::parse_instances("http://exampleorg.onion/api")
+				, {}, unknown
+				);
+	assert(labels(by_onion) == "old-label+ ");
+	assert(by_onion[0].instance.clearnet == "");
+	assert(by_onion[0].instance.onion == "http://exampleorg.onion/api");
+	/* Both endpoints listed are the one instance with both.  */
+	auto both = SC::plan( builtin, true
+			    , SC::parse_instances("http://exampleorg.onion/api,https://api.example.org")
+			    , {}, unknown
+			    );
+	assert(labels(both) == "old-label+ ");
+	assert(both[0].instance.clearnet == "https://api.example.org");
+	assert(both[0].instance.onion == "http://exampleorg.onion/api");
 	assert(labels(SC::plan( builtin, true
 			      , SC::parse_instances("http://second.onion,http://exampleorg.onion/api")
 			      , {}, unknown
