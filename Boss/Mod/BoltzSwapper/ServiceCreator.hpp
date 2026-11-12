@@ -74,7 +74,8 @@ public:
 	 * Those configured, or the built-in ones when none are, take
 	 * new swaps.  A configured entry that names an endpoint of a
 	 * built-in instance is that instance, under its own label, so
-	 * that its swaps in flight stay with it.
+	 * that its swaps in flight stay with it; it is reached by the
+	 * endpoint listed alone.
 	 * `pending` gives the labels the database has swaps in flight
 	 * under.  The instance of each, when it is not among the
 	 * above, is run too, only to see those swaps through; a label

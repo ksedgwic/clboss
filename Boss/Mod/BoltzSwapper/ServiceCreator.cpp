@@ -211,7 +211,32 @@ ServiceCreator::plan( std::vector<Instance> const& builtin
 					break;
 				}
 			}
-			add(known ? *known : c, true);
+			if (!known) {
+				add(c, true);
+				continue;
+			}
+			/* The built-in instance, by its label, so that
+			 * its swaps in flight stay with it; reached only
+			 * by the endpoint the operator listed, who may
+			 * have left the other out on purpose.  */
+			auto listed = Instance{
+				known->label, c.clearnet, c.onion
+			};
+			/* Both of its endpoints may be listed, as two
+			 * entries: they are the one instance.  */
+			auto merged = false;
+			for (auto& p : rv) {
+				if (p.instance.label != listed.label)
+					continue;
+				if (p.instance.clearnet == "")
+					p.instance.clearnet = listed.clearnet;
+				if (p.instance.onion == "")
+					p.instance.onion = listed.onion;
+				merged = true;
+				break;
+			}
+			if (!merged)
+				add(listed, true);
 		}
 	}
 
