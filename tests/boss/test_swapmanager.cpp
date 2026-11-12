@@ -7,6 +7,7 @@
 #include"Boss/Msg/JsonCout.hpp"
 #include"Boss/Msg/ListfundsResult.hpp"
 #include"Boss/Msg/PayInvoice.hpp"
+#include"Boss/Msg/Option.hpp"
 #include"Boss/Msg/ProvideSwapQuotation.hpp"
 #include"Boss/Msg/RequestNewaddr.hpp"
 #include"Boss/Msg/ResponseListpays.hpp"
@@ -20,12 +21,15 @@
 #include"Ev/foreach.hpp"
 #include"Ev/start.hpp"
 #include"Ev/yield.hpp"
+#include"Jsmn/Object.hpp"
 #include"Json/Out.hpp"
+#include"Ln/Amount.hpp"
 #include"Ln/NodeId.hpp"
 #include"S/Bus.hpp"
 #include"Sqlite3.hpp"
 #include"Util/make_unique.hpp"
 #include"Uuid.hpp"
+#include<algorithm>
 #include<assert.h>
 #include<iostream>
 #include<memory>
@@ -34,6 +38,7 @@
 #include<sstream>
 #include<unordered_map>
 #include<unordered_set>
+#include<vector>
 
 namespace {
 
@@ -145,6 +150,9 @@ private:
 	std::queue<Entry> entries;
 	std::set<std::string> invoices;
 public:
+	/* The providers whose quotations were accepted, in order.  */
+	std::vector<void*> accepted;
+
 	MockSwapCreation(S::Bus& bus) {
 		using Boss::Msg::AcceptSwapQuotation;
 		using Boss::Msg::PayInvoice;
@@ -167,6 +175,7 @@ public:
 				}
 			}
 			assert(found);
+			accepted.push_back(q.provider);
 
 			/* If success, add invoice to set of invoices
 			 * we expect.  */
@@ -557,6 +566,193 @@ Ev::Io<void> test_timeout_after_payment() {
 	});
 }
 
+/* Set `clboss-swap-selection`; gives the reason if rejected.  */
+Ev::Io<std::string> set_selection(char const* json) {
+	auto reason = std::make_shared<std::string>();
+	return bus.raise(Boss::Msg::Option{
+		"clboss-swap-selection", Jsmn::Object::parse_json(json), reason
+	}).then([reason]() {
+		return Ev::lift(*reason);
+	});
+}
+
+/* Start a swap that three providers quote 300, 100 and 200 sat for,
+ * the first two tried failing to create it, and give the providers
+ * in the order they were tried.  */
+Ev::Io<std::vector<std::size_t>> tried_order( std::string address
+					    , Sha256::Hash hash
+					    ) {
+	return Ev::lift().then([address, hash]() {
+		swapsetups.accepted.clear();
+		addresses.add(address);
+		quotations.add({ Ln::Amount::sat(300)
+			       , Ln::Amount::sat(100)
+			       , Ln::Amount::sat(200)
+			       });
+		swapsetups.add({address, false, "", Sha256::Hash(), 0});
+		swapsetups.add({address, false, "", Sha256::Hash(), 0});
+		swapsetups.add({ address, true, "invoice-" + address
+			       , hash, 30000
+			       });
+		return requester.start_swap( Uuid::random()
+					   , Ln::Amount::btc(0.001)
+					   , Ln::Amount::btc(0.012)
+					   );
+	}).then([]() {
+		return wait();
+	}).then([]() {
+		assert(addresses.empty());
+		assert(quotations.empty());
+		assert(swapsetups.okay());
+		auto rv = std::vector<std::size_t>();
+		for (auto p : swapsetups.accepted)
+			for (auto i = std::size_t(0); i < providers.size(); ++i)
+				if (providers[i].get() == p)
+					rv.push_back(i);
+		assert(rv.size() == 3);
+		return Ev::lift(rv);
+	});
+}
+
+/* `clboss-swap-selection`.  best-rate tries the providers from the
+ * lowest fee up.  random and weighted draw the order, so all that
+ * holds for them is that each provider is tried once.  A value that
+ * is none of the three is rejected and changes nothing.  */
+Ev::Io<void> test_selection() {
+	auto const each_once = [](std::vector<std::size_t> order) {
+		std::sort(order.begin(), order.end());
+		return order == std::vector<std::size_t>{0, 1, 2};
+	};
+	auto const cheapest_first = std::vector<std::size_t>{1, 2, 0};
+
+	return Ev::lift().then([]() {
+		return set_selection("\"best-rate\"");
+	}).then([](std::string reason) {
+		assert(reason.empty());
+		return tried_order("address-best", Sha256::Hash("5555555555555555555555555555555555555555555555555555555555555555"));
+	}).then([cheapest_first](std::vector<std::size_t> order) {
+		assert(order == cheapest_first);
+
+		return set_selection("\"cheapest\"");
+	}).then([](std::string reason) {
+		assert(!reason.empty());
+		return tried_order("address-kept", Sha256::Hash("6666666666666666666666666666666666666666666666666666666666666666"));
+	}).then([cheapest_first](std::vector<std::size_t> order) {
+		assert(order == cheapest_first);
+
+		return set_selection("\"random\"");
+	}).then([](std::string reason) {
+		assert(reason.empty());
+		return tried_order("address-random", Sha256::Hash("7777777777777777777777777777777777777777777777777777777777777777"));
+	}).then([each_once](std::vector<std::size_t> order) {
+		assert(each_once(order));
+
+		return set_selection("\"weighted\"");
+	}).then([](std::string reason) {
+		assert(reason.empty());
+		return tried_order("address-weighted", Sha256::Hash("8888888888888888888888888888888888888888888888888888888888888888"));
+	}).then([each_once](std::vector<std::size_t> order) {
+		assert(each_once(order));
+		return Ev::lift();
+	});
+}
+
+/* `clboss-swap-max-fee-ppm`.  A quotation is taken when its fee is
+ * at most that many parts per million of the amount; when none is,
+ * the swap fails rather than go to whoever asks least.  The swaps
+ * here are of exactly 1000000 sat, so the limit in ppm is the fee in
+ * sat.  */
+Ev::Io<void> test_max_fee() {
+	auto const amount = Ln::Amount::btc(0.01);
+	Uuid within = Uuid::random();
+	Uuid none = Uuid::random();
+	Uuid unlimited = Uuid::random();
+
+	return Ev::lift().then([]() {
+		/* As at startup: a JSON number.  */
+		return bus.raise(Boss::Msg::Option{
+			"clboss-swap-max-fee-ppm",
+			Jsmn::Object::parse_json("{\"v\": 1000}")["v"],
+			nullptr
+		});
+	}).then([amount, within]() {
+		swapsetups.accepted.clear();
+		addresses.add("address-within");
+		quotations.add({ Ln::Amount::sat(2000)
+			       , Ln::Amount::sat(1000)
+			       , Ln::Amount::sat(1001)
+			       });
+		/* Only the one at the limit may be tried.  */
+		swapsetups.add({ "address-within", true, "invoice-within"
+			       , Sha256::Hash("9999999999999999999999999999999999999999999999999999999999999999")
+			       , 30000
+			       });
+		return requester.start_swap(within, amount, amount);
+	}).then([]() {
+		return wait();
+	}).then([amount, within, none]() {
+		assert(quotations.empty());
+		assert(swapsetups.okay());
+		assert(swapsetups.accepted.size() == 1);
+		assert(swapsetups.accepted[0] == providers[1].get());
+		requester.expect_pending(within);
+
+		/* Every quotation above the limit: the swap cannot
+		 * shrink, so it fails, and no provider is asked.  */
+		swapsetups.accepted.clear();
+		addresses.add("address-none");
+		quotations.add({ Ln::Amount::sat(2000)
+			       , Ln::Amount::sat(3000)
+			       });
+		return requester.start_swap(none, amount, amount);
+	}).then([]() {
+		return wait();
+	}).then([none]() {
+		assert(quotations.empty());
+		assert(swapsetups.accepted.empty());
+		requester.expect_finished(none, false);
+
+		/* Not a number: refused, and the limit stays.  */
+		auto reason = std::make_shared<std::string>();
+		return bus.raise(Boss::Msg::Option{
+			"clboss-swap-max-fee-ppm",
+			Jsmn::Object::parse_json("\"1%\""),
+			reason
+		}).then([reason]() {
+			assert(!reason->empty());
+			return Ev::lift();
+		});
+	}).then([]() {
+		/* As from setconfig: a string.  Negative lifts it.  */
+		auto reason = std::make_shared<std::string>();
+		return bus.raise(Boss::Msg::Option{
+			"clboss-swap-max-fee-ppm",
+			Jsmn::Object::parse_json("\"-1\""),
+			reason
+		}).then([reason]() {
+			assert(reason->empty());
+			return Ev::lift();
+		});
+	}).then([amount, unlimited]() {
+		/* The address of the failed swap was never paid to,
+		 * and is used again.  */
+		swapsetups.accepted.clear();
+		quotations.add({Ln::Amount::sat(3000)});
+		swapsetups.add({ "address-none", true, "invoice-unlimited"
+			       , Sha256::Hash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+			       , 30000
+			       });
+		return requester.start_swap(unlimited, amount, amount);
+	}).then([]() {
+		return wait();
+	}).then([unlimited]() {
+		assert(swapsetups.okay());
+		assert(swapsetups.accepted.size() == 1);
+		requester.expect_pending(unlimited);
+		return Ev::lift();
+	});
+}
+
 }
 
 /*-----------------------------------------------------------------------------
@@ -572,6 +768,10 @@ int main() {
 		return test_stall_recovery();
 	}).then([&]() {
 		return test_timeout_after_payment();
+	}).then([&]() {
+		return test_selection();
+	}).then([&]() {
+		return test_max_fee();
 	}).then([&]() {
 		return Ev::lift(0);
 	});

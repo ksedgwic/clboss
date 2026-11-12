@@ -777,6 +777,69 @@ All of the following are *dynamic* (`setconfig`) options:
   costing up to gain times the measured rate, below `1` only routes
   cheaper than it.  Default `1` (strict).
 
+### `--clboss-swap-providers=<url>[,<url>...]`
+
+The swap services CLBOSS may use, as a comma-separated list of
+API roots, replacing the built-in list:
+
+    --clboss-swap-providers=https://swap.example.com,http://exampleonionaddress.onion/api
+
+Each must serve the Boltz API v2 for reverse swaps (CLBOSS appends
+`/v2/swap/reverse` and so on to the root).
+A `.onion` root is reached through the proxy `lightningd` is
+configured with, and is skipped if there is none.
+Use `https://` for a public host: over plain `http://`, anyone on
+the path can read your swaps, the addresses they pay to, and the
+preimage you send for a claim, and can change what the service
+answers.  Plain `http://` is for a `.onion` root, which Tor already
+protects, or a service on your own machine or network.
+The root is the name the service is recorded under in the database
+and in `clboss-status`; a root that is an endpoint of a built-in
+service names that service, which keeps its own name and is reached
+by the endpoint you listed alone.
+
+A service you take off the list, or a built-in one the list
+replaces, is still run while it has swaps in flight, only to see
+those through: it is offered no new swap.
+
+If the list does not parse, CLBOSS logs the error and starts no new
+swap at all, rather than fall back to services you did not list.
+Empty or absent, the built-in list for the network is used.
+
+### `--clboss-swap-selection=<weighted|random|best-rate>`
+
+How CLBOSS chooses when more than one swap service quotes for a
+swap:
+
+* `best-rate`: the service charging the lowest fee for that amount.
+* `random`: any of them, with equal chance.
+* `weighted` (default): random, but favoring lower fees.
+
+If creating the swap with the chosen service fails, the next one
+in that order is tried.
+
+This option can be set at runtime:
+
+    lightning-cli setconfig clboss-swap-selection best-rate
+
+### `--clboss-swap-max-fee-ppm=<ppm>`
+
+The most a swap may cost, in parts per million of the amount sent
+over Lightning: 10000 is 1%.
+The cost is everything the swap takes, the service's percentage and
+the mining fees it charges together, so a small swap costs more
+parts per million than a large one through the same service.
+
+A service that quotes above the limit is not used for that swap.
+If every service does, the swap is tried at a smaller amount, as
+when no service quotes at all, and given up when it cannot shrink.
+
+Negative, the default, sets no limit.
+
+This option can be set at runtime:
+
+    lightning-cli setconfig clboss-swap-max-fee-ppm 10000
+
 ### `--clboss-min-nodes-to-process=<number>`
 
 Sets the minimum number of nodes that CLBOSS must know about before it

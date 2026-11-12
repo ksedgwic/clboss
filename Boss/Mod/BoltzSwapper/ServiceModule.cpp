@@ -20,6 +20,7 @@ private:
 	std::unique_ptr<Boltz::Service> service;
 	std::string raw_label;
 	std::string label;
+	bool quoting;
 
 	std::unique_ptr<std::uint32_t> blockheight;
 
@@ -35,7 +36,7 @@ private:
 
 		bus.subscribe<Msg::SolicitSwapQuotation
 			     >([this](Msg::SolicitSwapQuotation const& q) {
-			if (!blockheight)
+			if (!quoting || !blockheight)
 				return Ev::lift();
 
 			auto solicitor = q.solicitor;
@@ -100,10 +101,12 @@ public:
 	Impl( S::Bus& bus_
 	    , std::unique_ptr<Boltz::Service> service_
 	    , std::string label_
+	    , bool quoting_
 	    ) : bus(bus_)
 	      , service(std::move(service_))
 	      , raw_label(label_)
 	      , label(std::string("Boltz::Service(\"") + label_ + "\")")
+	      , quoting(quoting_)
 	      { start(); }
 
 	std::string const& get_label() const { return raw_label; }
@@ -133,9 +136,11 @@ ServiceModule::ServiceModule
 	( S::Bus& bus
 	, std::unique_ptr<Boltz::Service> service
 	, std::string label
+	, bool quoting
 	) : pimpl(Util::make_unique<Impl>( bus
 					 , std::move(service)
 					 , std::move(label)
+					 , quoting
 					 ))
 	  { }
 
