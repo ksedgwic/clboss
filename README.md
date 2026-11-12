@@ -822,6 +822,24 @@ This option can be set at runtime:
 
     lightning-cli setconfig clboss-swap-selection best-rate
 
+### `--clboss-swap-max-fee-ppm=<ppm>`
+
+The most a swap may cost, in parts per million of the amount sent
+over Lightning: 10000 is 1%.
+The cost is everything the swap takes, the service's percentage and
+the mining fees it charges together, so a small swap costs more
+parts per million than a large one through the same service.
+
+A service that quotes above the limit is not used for that swap.
+If every service does, the swap is tried at a smaller amount, as
+when no service quotes at all, and given up when it cannot shrink.
+
+Negative, the default, sets no limit.
+
+This option can be set at runtime:
+
+    lightning-cli setconfig clboss-swap-max-fee-ppm 10000
+
 ### `--clboss-min-nodes-to-process=<number>`
 
 Sets the minimum number of nodes that CLBOSS must know about before it
