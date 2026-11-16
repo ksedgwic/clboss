@@ -13,6 +13,7 @@
 #include"Boss/Msg/ResponseNewaddr.hpp"
 #include"Boss/Msg/SolicitSwapQuotation.hpp"
 #include"Boss/Msg/SwapCreation.hpp"
+#include"Boss/Msg/SwapPreimageRevealed.hpp"
 #include"Boss/Msg/SwapRequest.hpp"
 #include"Boss/Msg/SwapResponse.hpp"
 #include"Boss/Msg/Timer10Minutes.hpp"
@@ -325,6 +326,40 @@ Ev::Io<std::uint64_t> count_comp_pay(Sha256::Hash hash) {
 	});
 }
 
+/* Reveal records on the given hash.  */
+Ev::Io<std::uint64_t> count_comp_reveal(Sha256::Hash hash) {
+	return db.transact().then([hash](Sqlite3::Tx tx) {
+		auto fetch = tx.query(R"QRY(
+		SELECT COUNT(*)
+		  FROM "SwapManager_comp_reveal"
+		 WHERE payment_hash = :hash
+		     ;
+		)QRY")
+			.bind(":hash", std::string(hash))
+			.execute();
+		auto count = std::uint64_t(0);
+		for (auto& r : fetch)
+			count = r.get<std::uint64_t>(0);
+		tx.commit();
+		return Ev::lift(count);
+	});
+}
+
+/* What the provider does at the reveal: raise the message in its
+ * own transaction, then commit it.  */
+Ev::Io<void> reveal(Sha256::Hash hash) {
+	return db.transact().then([hash](Sqlite3::Tx tx) {
+		auto sh_tx = std::make_shared<Sqlite3::Tx>(std::move(tx));
+		return bus.raise(Boss::Msg::SwapPreimageRevealed{
+			sh_tx, hash
+		}).then([sh_tx]() {
+			if (*sh_tx)
+				sh_tx->commit();
+			return Ev::lift();
+		});
+	});
+}
+
 /*-----------------------------------------------------------------------------
 Tests
 -----------------------------------------------------------------------------*/
@@ -557,6 +592,95 @@ Ev::Io<void> test_timeout_after_payment() {
 	});
 }
 
+/* Swaps whose preimage is out but whose payment `listpays` has not
+ * seen complete.  The provider can settle the payment from the
+ * reveal on, so each counts as paid: one still pending at the
+ * timeout is left alone and given up at the claim horizon, and one
+ * whose payment fails is not retried.  No retry is queued, so the
+ * quotation and setup mocks fail the test on any retry.  The
+ * timeouts stay below the swap left pending by the test above.  */
+Ev::Io<void> test_timeout_after_reveal() {
+	auto constexpr horizon = Boltz::claim_blocks_past_timeout;
+	auto constexpr timeout = std::uint32_t(19000);
+	auto const hash_pending = Sha256::Hash("5555555555555555555555555555555555555555555555555555555555555555");
+	auto const hash_failed = Sha256::Hash("6666666666666666666666666666666666666666666666666666666666666666");
+	Uuid pending = Uuid::random();
+	Uuid failed = Uuid::random();
+
+	return Ev::lift().then([pending, failed, hash_pending, hash_failed]() {
+		addresses.add("address-pending");
+		quotations.add({Ln::Amount::sat(100)});
+		swapsetups.add({ "address-pending", true, "invoice-pending"
+			       , hash_pending, timeout
+			       });
+		addresses.add("address-failed");
+		quotations.add({Ln::Amount::sat(100)});
+		swapsetups.add({ "address-failed", true, "invoice-failed"
+			       , hash_failed, timeout
+			       });
+		return requester.start_swap( pending
+					   , Ln::Amount::btc(0.001)
+					   , Ln::Amount::btc(0.012)
+					   ).then([failed]() {
+			return requester.start_swap( failed
+						   , Ln::Amount::btc(0.001)
+						   , Ln::Amount::btc(0.012)
+						   );
+		});
+	}).then([]() {
+		return wait();
+	}).then([hash_pending, hash_failed]() {
+		assert(addresses.empty());
+		assert(quotations.empty());
+		assert(swapsetups.okay());
+		return reveal(hash_pending).then([hash_failed]() {
+			return reveal(hash_failed);
+		});
+	}).then([hash_failed]() {
+		/* The payment fails after the reveal.  */
+		return bus.raise(Boss::Msg::ResponseListpays{
+			hash_failed, Boss::Msg::StatusListpays_failed
+		      , Ln::NodeId(), Ln::Amount(), Ln::Amount()
+		});
+	}).then([]() {
+		return wait();
+	}).then([pending, failed]() {
+		requester.expect_pending(pending);
+		requester.expect_pending(failed);
+		/* At the timeout, still pending: left alone.  */
+		return bus.raise(Boss::Msg::Block{timeout});
+	}).then([]() {
+		return wait();
+	}).then([pending, failed]() {
+		requester.expect_pending(pending);
+		requester.expect_pending(failed);
+		return bus.raise(Boss::Msg::Block{timeout + horizon - 1});
+	}).then([]() {
+		return wait();
+	}).then([pending, failed]() {
+		requester.expect_pending(pending);
+		requester.expect_pending(failed);
+		return bus.raise(Boss::Msg::Block{timeout + horizon});
+	}).then([]() {
+		return wait();
+	}).then([pending, failed, hash_pending]() {
+		requester.expect_finished(pending, false);
+		requester.expect_finished(failed, false);
+		/* Nothing was retried.  */
+		assert(addresses.empty());
+		assert(quotations.empty());
+		assert(swapsetups.okay());
+		return count_comp_reveal(hash_pending);
+	}).then([hash_failed](std::uint64_t records) {
+		/* The reveal records went with the swaps.  */
+		assert(records == 0);
+		return count_comp_reveal(hash_failed);
+	}).then([](std::uint64_t records) {
+		assert(records == 0);
+		return Ev::lift();
+	});
+}
+
 }
 
 /*-----------------------------------------------------------------------------
@@ -572,6 +696,8 @@ int main() {
 		return test_stall_recovery();
 	}).then([&]() {
 		return test_timeout_after_payment();
+	}).then([&]() {
+		return test_timeout_after_reveal();
 	}).then([&]() {
 		return Ev::lift(0);
 	});

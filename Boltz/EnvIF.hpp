@@ -2,11 +2,14 @@
 #define BOLTZ_ENVIF_HPP
 
 #include"Bitcoin/TxId.hpp"
+#include"Ev/Io.hpp"
+#include"Sha256/Hash.hpp"
 #include<cstdint>
+#include<memory>
 #include<string>
 
 namespace Bitcoin { class Tx; }
-namespace Ev { template<typename a> class Io; }
+namespace Sqlite3 { class Tx; }
 
 namespace Boltz {
 
@@ -61,6 +64,20 @@ public:
 	 */
 	virtual
 	bool cooperative_claims() { return true; }
+
+	/** Boltz::EnvIF::preimage_revealed
+	 *
+	 * @brief called when the preimage of the swap with
+	 * the given payment hash is recorded as revealed,
+	 * with the database transaction recording it, before
+	 * that transaction is committed.  Whatever the
+	 * environment writes to it lands with the reveal.
+	 */
+	virtual
+	Ev::Io<void>
+	preimage_revealed( std::shared_ptr<Sqlite3::Tx>
+			 , Sha256::Hash
+			 ) { return Ev::lift(); }
 
 	/** Boltz::EnvIF::broadcast_tx
 	 *

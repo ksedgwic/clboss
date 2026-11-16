@@ -393,6 +393,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/StatusListpays.hpp \
 	Boss/Msg/SwapCompleted.hpp \
 	Boss/Msg/SwapCreation.hpp \
+	Boss/Msg/SwapPreimageRevealed.hpp \
 	Boss/Msg/SwapRequest.hpp \
 	Boss/Msg/SwapResponse.hpp \
 	Boss/Msg/TaskCompletion.hpp \

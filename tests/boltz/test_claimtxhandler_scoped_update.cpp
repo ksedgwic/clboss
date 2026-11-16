@@ -101,6 +101,16 @@ public:
 	bool cooperative_claims() override {
 		return cooperative;
 	}
+	/* Payment hashes reported as revealed, each with the reveal's
+	 * transaction still open.  */
+	std::vector<Sha256::Hash> revealed;
+	Ev::Io<void> preimage_revealed( std::shared_ptr<Sqlite3::Tx> tx
+				      , Sha256::Hash hash
+				      ) override {
+		assert(tx && *tx);
+		revealed.push_back(hash);
+		return Ev::lift();
+	}
 	Ev::Io<std::string> get_block(std::uint32_t height) override {
 		auto it = blocks.find(height);
 		if (it == blocks.end())
@@ -688,6 +698,11 @@ int main() {
 		 * real preimage.  */
 		assert(provider.path_seen == "/v2/swap/reverse/swapA/claim");
 		assert(provider.preimage_seen == std::string(real_preimage));
+
+		/* The environment heard of the reveal once, for this
+		 * swap's payment hash, inside the reveal's transaction.  */
+		assert(env.revealed.size() == 1);
+		assert(env.revealed[0] == real_preimage.sha256());
 
 		/* Replaceable, and valid from the block after the one
 		 * it was built at.  */

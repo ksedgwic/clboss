@@ -38,6 +38,9 @@ public:
 					 , std::uint32_t outnum
 					 ) override;
 	Ev::Io<bool> broadcast_tx(Bitcoin::Tx) override;
+	Ev::Io<void> preimage_revealed( std::shared_ptr<Sqlite3::Tx>
+				      , Sha256::Hash
+				      ) override;
 	Ev::Io<void> logd(std::string) override;
 	Ev::Io<void> logi(std::string) override;
 	Ev::Io<void> loge(std::string) override;
