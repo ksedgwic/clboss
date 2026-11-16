@@ -839,7 +839,7 @@ coverage-report:
 		'*/basicsecure.c' \
 		'/usr/*' \
 		'/nix/store/*' \
-		--ignore-errors unused \
+		--ignore-errors unused,inconsistent \
 		--output-file coverage.info \
 	|| $(LCOV) --remove coverage.info \
 		'*/external/*' \
