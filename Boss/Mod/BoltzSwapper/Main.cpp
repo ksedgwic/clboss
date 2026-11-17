@@ -23,6 +23,11 @@ namespace {
           { "AutonomousOrganization@github.com",
               "",
               "http://jsyqqszgfrya6nj7nhi4hu4tdpuvfursl7dyxeiukzit5mvckqbzxpad.onion"
+            },
+          /* SATS Routing serves the Boltz API v2 at the site root.  */
+          { "satsrouting.exchange",
+              "https://satsrouting.exchange",
+              "http://w2mqd2fcbgiop7oyxoes2ozmdnvgon22oipj7vzh2rquepf7cxauauad.onion"
             }
       }
     },

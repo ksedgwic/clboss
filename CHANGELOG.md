@@ -22,6 +22,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   swap: `best-rate` takes the lowest fee, `random` any with equal
   chance, and `weighted`, the default and the behavior until now,
   is random but favors lower fees.  It can be changed with `setconfig`.
+- SATS Routing (`satsrouting.exchange`) is a built-in swap service on
+  mainnet, next to `boltz.exchange`, by its clearnet and its Tor
+  endpoint.
 
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
