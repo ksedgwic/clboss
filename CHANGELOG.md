@@ -4,16 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.17.3] - 2026-11-17: "Swapping in the Dark"
-
-### Upgrading from 0.17.2
-
-- Finish or wait out any swap in flight before upgrading, and before
-  downgrading again.  The swap table gains ten columns on first
-  use, and a swap created by one version cannot be claimed by the
-  other, so it ends at its timeout and the payment fails back to the
-  node.  The `Boltz::Service` log lines show one in flight.  Earlier
-  releases still run on the upgraded database.
+## [0.17.4] - Unreleased
 
 ### Added
 
@@ -31,6 +22,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   swap: `best-rate` takes the lowest fee, `random` any with equal
   chance, and `weighted`, the default and the behavior until now,
   is random but favors lower fees.  It can be changed with `setconfig`.
+
+## [0.17.3] - 2026-11-17: "Swapping in the Dark"
+
+### Upgrading from 0.17.2
+
+- Finish or wait out any swap in flight before upgrading, and before
+  downgrading again.  The swap table gains ten columns on first
+  use, and a swap created by one version cannot be claimed by the
+  other, so it ends at its timeout and the payment fails back to the
+  node.  The `Boltz::Service` log lines show one in flight.  Earlier
+  releases still run on the upgraded database.
 
 ### Changed
 
