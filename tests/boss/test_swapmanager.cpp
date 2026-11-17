@@ -42,12 +42,20 @@ namespace {
 Mocks
 -----------------------------------------------------------------------------*/
 
+/* Warn lines about a payment that failed after the reveal.  */
+std::size_t warns_failed_after_reveal = 0;
+
 class MockLog {
 public:
 	MockLog(S::Bus& bus) {
 		bus.subscribe<Boss::Msg::JsonCout
 			     >([](Boss::Msg::JsonCout const& j) {
-			std::cout << j.obj.output() << std::endl;
+			auto out = j.obj.output();
+			std::cout << out << std::endl;
+			if (out.find("\"level\": \"warn\"") != std::string::npos
+			 && out.find("failed after the preimage was revealed")
+			    != std::string::npos)
+				++warns_failed_after_reveal;
 			return Ev::lift();
 		});
 	}
@@ -644,7 +652,17 @@ Ev::Io<void> test_timeout_after_reveal() {
 		});
 	}).then([]() {
 		return wait();
+	}).then([hash_failed]() {
+		/* And is reported again at the next check.  */
+		return bus.raise(Boss::Msg::ResponseListpays{
+			hash_failed, Boss::Msg::StatusListpays_failed
+		      , Ln::NodeId(), Ln::Amount(), Ln::Amount()
+		});
+	}).then([]() {
+		return wait();
 	}).then([pending, failed]() {
+		/* Warned about once.  */
+		assert(warns_failed_after_reveal == 1);
 		requester.expect_pending(pending);
 		requester.expect_pending(failed);
 		/* At the timeout, still pending: left alone.  */

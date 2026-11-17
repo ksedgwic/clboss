@@ -219,8 +219,11 @@ private:
 			-- payment from then on, so the swap counts as
 			-- paid even while `listpays` still says
 			-- pending, or says the payment failed.
+			-- failure_logged is 1 once a failed payment
+			-- of the swap has been logged at Warn.
 			CREATE TABLE IF NOT EXISTS "SwapManager_comp_reveal"
 			     ( payment_hash TEXT UNIQUE
+			     , failure_logged INTEGER NOT NULL DEFAULT 0
 			     );
 
 			-- Sanity check to remove erroneous blank addresses
@@ -856,6 +859,10 @@ private:
 				uuid = Uuid(r.get<std::string>(0));
 			}
 			auto revealed = found && is_revealed(tx, hash);
+			/* `listpays` reports the failure again at
+			 * every check, so warn only the first time.  */
+			auto first_failure = revealed
+					  && mark_failure_logged(tx, hash);
 			tx.commit();
 
 			/* Not in our table.  */
@@ -868,7 +875,8 @@ private:
 			 * given up at the claim horizon if it never
 			 * lands.  */
 			if (revealed)
-				return Boss::log( bus, Warn
+				return Boss::log( bus
+						, first_failure ? Warn : Debug
 						, "SwapManager: Swap %s: "
 						  "payment failed after the "
 						  "preimage was revealed; "
@@ -1075,7 +1083,7 @@ private:
 				 , Sha256::Hash const& hash
 				 ) {
 		tx.query(R"QRY(
-		INSERT OR IGNORE INTO "SwapManager_comp_reveal"
+		INSERT OR IGNORE INTO "SwapManager_comp_reveal"(payment_hash)
 		VALUES(:hash);
 		)QRY")
 			.bind(":hash", std::string(hash))
@@ -1095,6 +1103,32 @@ private:
 			return true;
 		}
 		return false;
+	}
+	/* Whether this is the first failed payment logged for the
+	 * revealed swap paying `hash`; marks it logged.  */
+	bool mark_failure_logged(Sqlite3::Tx& tx, Sha256::Hash const& hash) {
+		auto fetch = tx.query(R"QRY(
+		SELECT failure_logged
+		  FROM "SwapManager_comp_reveal"
+		 WHERE payment_hash = :hash
+		     ;
+		)QRY")
+			.bind(":hash", std::string(hash))
+			.execute();
+		auto logged = true;
+		for (auto& r : fetch)
+			logged = r.get<std::uint64_t>(0) != 0;
+		if (logged)
+			return false;
+		tx.query(R"QRY(
+		UPDATE "SwapManager_comp_reveal"
+		   SET failure_logged = 1
+		 WHERE payment_hash = :hash
+		     ;
+		)QRY")
+			.bind(":hash", std::string(hash))
+			.execute();
+		return true;
 	}
 
 	Ev::Io<void> on_block(std::uint32_t height) {
