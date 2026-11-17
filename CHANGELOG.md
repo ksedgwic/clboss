@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.4] - Unreleased
+
+### Added
+
+- SATS Routing (`satsrouting.exchange`) is a built-in swap service on
+  mainnet, next to `boltz.exchange`, by its clearnet and its Tor
+  endpoint.
+
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
 ### Upgrading from 0.17.2
