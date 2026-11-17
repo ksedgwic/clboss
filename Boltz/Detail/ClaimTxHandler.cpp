@@ -470,7 +470,16 @@ Ev::Io<void> ClaimTxHandler::persist_reveal() {
 		.bind(":apiAccess", api_endpoint)
 		.bind(":swapId", swapId)
 		.execute();
-	tx.commit();
+	/* The swap manager records the reveal in the same
+	 * transaction, so after a restart it still counts
+	 * the swap as paid.  The payment hash is that of the
+	 * real preimage; only its hash leaves here.  */
+	auto sh_tx = std::make_shared<Sqlite3::Tx>(std::move(tx));
+	auto payment_hash = Detail::compute_preimage(signer, preimage)
+		.sha256();
+	co_await env.preimage_revealed(sh_tx, payment_hash);
+	if (*sh_tx)
+		sh_tx->commit();
 	preimageRevealed = true;
 }
 

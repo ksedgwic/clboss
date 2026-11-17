@@ -2,6 +2,7 @@
 #include"Boss/Mod/BoltzSwapper/Env.hpp"
 #include"Boss/Mod/Rpc.hpp"
 #include"Boss/Msg/Init.hpp"
+#include"Boss/Msg/SwapPreimageRevealed.hpp"
 #include"Boss/log.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/yield.hpp"
@@ -111,6 +112,14 @@ Ev::Io<bool> Env::has_confirmed_output( Bitcoin::TxId txid
 		}).catching<RpcError>([](RpcError const& _) {
 			return Ev::lift(false);
 		});
+	});
+}
+
+Ev::Io<void> Env::preimage_revealed( std::shared_ptr<Sqlite3::Tx> tx
+				   , Sha256::Hash payment_hash
+				   ) {
+	return bus.raise(Msg::SwapPreimageRevealed{
+		std::move(tx), std::move(payment_hash)
 	});
 }
 

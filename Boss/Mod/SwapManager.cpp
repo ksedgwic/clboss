@@ -14,6 +14,7 @@
 #include"Boss/Msg/SolicitStatus.hpp"
 #include"Boss/Msg/SolicitSwapQuotation.hpp"
 #include"Boss/Msg/SwapCompleted.hpp"
+#include"Boss/Msg/SwapPreimageRevealed.hpp"
 #include"Boss/Msg/SwapCreation.hpp"
 #include"Boss/Msg/SwapRequest.hpp"
 #include"Boss/Msg/SwapResponse.hpp"
@@ -112,6 +113,13 @@ private:
 				on_swap_creation(s)
 			);
 		});
+		bus.subscribe<Msg::SwapPreimageRevealed
+			     >([this](Msg::SwapPreimageRevealed const& r) {
+			/* Synchronous: the provider commits the
+			 * transaction right after this.  */
+			on_preimage_revealed(*r.dbtx, r.payment_hash);
+			return Ev::lift();
+		});
 		bus.subscribe<Msg::ResponseListpays
 			     >([this](Msg::ResponseListpays const& r) {
 			return Boss::concurrent(
@@ -204,6 +212,18 @@ private:
 			CREATE TABLE IF NOT EXISTS "SwapManager_comp_pay"
 			     ( payment_hash TEXT UNIQUE
 			     , amount_sent INTEGER NOT NULL
+			     );
+			-- Swaps whose preimage the provider has.
+			-- Written in the provider's transaction at
+			-- the reveal.  The provider can settle the
+			-- payment from then on, so the swap counts as
+			-- paid even while `listpays` still says
+			-- pending, or says the payment failed.
+			-- failure_logged is 1 once a failed payment
+			-- of the swap has been logged at Warn.
+			CREATE TABLE IF NOT EXISTS "SwapManager_comp_reveal"
+			     ( payment_hash TEXT UNIQUE
+			     , failure_logged INTEGER NOT NULL DEFAULT 0
 			     );
 
 			-- Sanity check to remove erroneous blank addresses
@@ -739,6 +759,16 @@ private:
 		)QRY")
 			.bind(":uuid", std::string(uuid))
 			.execute();
+		tx.query(R"QRY(
+		DELETE FROM "SwapManager_comp_reveal"
+		 WHERE payment_hash = ( SELECT payment_hash
+					  FROM "SwapManager"
+					 WHERE uuid = :uuid
+				      )
+		     ;
+		)QRY")
+			.bind(":uuid", std::string(uuid))
+			.execute();
 
 		return finish_abandon(std::move(tx), uuid);
 	}
@@ -828,11 +858,31 @@ private:
 				found = true;
 				uuid = Uuid(r.get<std::string>(0));
 			}
+			auto revealed = found && is_revealed(tx, hash);
+			/* `listpays` reports the failure again at
+			 * every check, so warn only the first time.  */
+			auto first_failure = revealed
+					  && mark_failure_logged(tx, hash);
 			tx.commit();
 
 			/* Not in our table.  */
 			if (!found)
 				return Ev::lift();
+
+			/* The provider has the preimage: a smaller
+			 * amount would pay for the same need again.
+			 * The claim is still pushed, and the swap is
+			 * given up at the claim horizon if it never
+			 * lands.  */
+			if (revealed)
+				return Boss::log( bus
+						, first_failure ? Warn : Debug
+						, "SwapManager: Swap %s: "
+						  "payment failed after the "
+						  "preimage was revealed; "
+						  "not retried."
+						, std::string(uuid).c_str()
+						);
 
 			/* Lower it or fail!  */
 			return shrink_or_abandon(uuid);
@@ -917,6 +967,13 @@ private:
 				     ;
 				)QRY")
 					.bind(":uuid", std::string(uuid))
+					.execute();
+				tx.query(R"QRY(
+				DELETE FROM "SwapManager_comp_reveal"
+				 WHERE payment_hash = :hash
+				     ;
+				)QRY")
+					.bind(":hash", std::string(hash))
 					.execute();
 
 				/* Construct action to log it
@@ -1020,10 +1077,65 @@ private:
 	}
 
 
+	/* Records that the preimage of the swap paying `hash`
+	 * is out, in the provider's own transaction.  */
+	void on_preimage_revealed( Sqlite3::Tx& tx
+				 , Sha256::Hash const& hash
+				 ) {
+		tx.query(R"QRY(
+		INSERT OR IGNORE INTO "SwapManager_comp_reveal"(payment_hash)
+		VALUES(:hash);
+		)QRY")
+			.bind(":hash", std::string(hash))
+			.execute();
+	}
+	bool is_revealed(Sqlite3::Tx& tx, Sha256::Hash const& hash) {
+		auto fetch = tx.query(R"QRY(
+		SELECT 1
+		  FROM "SwapManager_comp_reveal"
+		 WHERE payment_hash = :hash
+		     ;
+		)QRY")
+			.bind(":hash", std::string(hash))
+			.execute();
+		for (auto& r : fetch) {
+			(void) r;
+			return true;
+		}
+		return false;
+	}
+	/* Whether this is the first failed payment logged for the
+	 * revealed swap paying `hash`; marks it logged.  */
+	bool mark_failure_logged(Sqlite3::Tx& tx, Sha256::Hash const& hash) {
+		auto fetch = tx.query(R"QRY(
+		SELECT failure_logged
+		  FROM "SwapManager_comp_reveal"
+		 WHERE payment_hash = :hash
+		     ;
+		)QRY")
+			.bind(":hash", std::string(hash))
+			.execute();
+		auto logged = true;
+		for (auto& r : fetch)
+			logged = r.get<std::uint64_t>(0) != 0;
+		if (logged)
+			return false;
+		tx.query(R"QRY(
+		UPDATE "SwapManager_comp_reveal"
+		   SET failure_logged = 1
+		 WHERE payment_hash = :hash
+		     ;
+		)QRY")
+			.bind(":hash", std::string(hash))
+			.execute();
+		return true;
+	}
+
 	Ev::Io<void> on_block(std::uint32_t height) {
 		return db.transact().then([this, height](Sqlite3::Tx tx) {
-			/* Swaps past their timeout.  One whose payment
-			 * succeeded has its preimage out and its claim
+			/* Swaps past their timeout.  One whose preimage
+			 * is out, whether `listpays` has seen the
+			 * payment complete yet or not, has its claim
 			 * still pushed past the timeout, for as long as
 			 * the claim handler keeps at it; it is left alone
 			 * until then, and after that abandoned, not
@@ -1033,12 +1145,17 @@ private:
 			auto to_abandon = std::vector<Uuid>();
 			auto fetch = tx.query(R"QRY(
 			SELECT S.uuid
-			     , P.payment_hash IS NOT NULL
+			     , ( P.payment_hash IS NOT NULL
+			      OR R.payment_hash IS NOT NULL
+			       )
 			  FROM "SwapManager" AS S
 			  LEFT JOIN "SwapManager_comp_pay" AS P
 			    ON P.payment_hash = S.payment_hash
+			  LEFT JOIN "SwapManager_comp_reveal" AS R
+			    ON R.payment_hash = S.payment_hash
 			 WHERE S.state = :state
 			   AND ( ( P.payment_hash IS NULL
+			       AND R.payment_hash IS NULL
 			       AND S.timeout <= :height
 			         )
 			      OR S.timeout + :horizon <= :height
