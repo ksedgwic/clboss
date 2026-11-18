@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.4] - Unreleased
+
+### Added
+
+- `clboss-swap-providers` lists the swap services to use in place of
+  the built-in ones, as comma-separated API roots; each must serve the
+  Boltz API v2 for reverse swaps.  A service no longer listed is
+  still run until its swaps in flight are over, and takes no new
+  one.  A list that does not parse starts no new swap rather than
+  use the built-in services.  It can be changed with `setconfig`.
+  (#160)
+- `clboss-swap-max-fee-ppm` limits what a swap may cost, in parts per
+  million of the amount sent; a quotation above it is not taken.
+  Nothing limited it before, and by default nothing does now.
+- `clboss-swap-selection` chooses among the services that quote for a
+  swap: `best-rate` takes the lowest fee, `random` any with equal
+  chance, and `weighted`, the default and the behavior until now,
+  is random but favors lower fees.  It can be changed with `setconfig`.
+
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
 ### Upgrading from 0.17.2

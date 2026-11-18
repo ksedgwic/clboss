@@ -25,11 +25,17 @@ public:
 	ServiceModule& operator=(ServiceModule&&);
 	~ServiceModule();
 
+	/* A module that is not `quoting` takes no new swap: it
+	 * only sees the swaps the service has in flight through.  */
 	explicit
 	ServiceModule( S::Bus& bus
 		     , std::unique_ptr<Boltz::Service>
 		     , std::string label
+		     , bool quoting = true
 		     );
+
+	/* Whether the module takes new swaps from now on.  */
+	void set_quoting(bool);
 
 	/* For the status report: the service's label, the last
 	 * block height seen (0 before the first), and its swaps
