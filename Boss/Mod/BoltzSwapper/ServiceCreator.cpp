@@ -279,6 +279,15 @@ ServiceCreator::plan( std::vector<Instance> const& builtin
 	return rv;
 }
 
+bool ServiceCreator::uses_same_endpoints( Instance const& a
+					, Instance const& b
+					, bool has_proxy
+					) {
+	if (a.clearnet != b.clearnet)
+		return false;
+	return !has_proxy || a.onion == b.onion;
+}
+
 void ServiceCreator::start() {
 	bus.subscribe<Msg::Manifestation
 		     >([this](Msg::Manifestation const& _) {
@@ -422,6 +431,7 @@ void ServiceCreator::start() {
 			, init.always_use_proxy
 			);
 		db = init.db;
+		has_proxy = init.proxy != "";
 		initted = true;
 		return apply(/* at_runtime = */ false);
 	});
@@ -482,9 +492,10 @@ Ev::Io<void> ServiceCreator::apply(bool at_runtime) {
 			if (it == running.end()) {
 				running[label] = p.instance;
 				q.push(p.instance);
-			} else if ( it->second.clearnet != p.instance.clearnet
-				 || it->second.onion != p.instance.onion
-				  ) {
+			} else if (!uses_same_endpoints( it->second
+						       , p.instance
+						       , has_proxy
+						       )) {
 				/* It may be in the middle of a swap by the
 				 * endpoint it has.  */
 				act += Boss::log( bus, Warn

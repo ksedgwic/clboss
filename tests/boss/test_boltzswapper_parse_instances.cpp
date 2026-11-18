@@ -137,5 +137,19 @@ int main() {
 	assert(unknown.size() == 2);
 	assert(unknown[0] == "somewhere");
 
+	/* A built-in service started with both of its endpoints,
+	 * then listed by one of them.  Without a proxy the onion
+	 * endpoint is not used: listed by its clearnet root it is
+	 * reached as before, by its onion root it is not.  With a
+	 * proxy both count.  */
+	auto const& started = builtin[0];
+	auto const& by_clearnet = same[0].instance;
+	assert(SC::uses_same_endpoints(started, both[0].instance, false));
+	assert(SC::uses_same_endpoints(started, both[0].instance, true));
+	assert(SC::uses_same_endpoints(started, by_clearnet, false));
+	assert(!SC::uses_same_endpoints(started, by_clearnet, true));
+	assert(!SC::uses_same_endpoints(started, by_onion[0].instance, false));
+	assert(!SC::uses_same_endpoints(started, by_onion[0].instance, true));
+
 	return 0;
 }

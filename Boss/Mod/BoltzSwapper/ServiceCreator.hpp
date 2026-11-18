@@ -51,9 +51,11 @@ private:
 	std::vector<Instance> configured;
 
 	/* From Msg::Init, kept for a change of the list at runtime:
-	 * the built-in instances of our network, the database, and
-	 * what makes services.  */
+	 * the built-in instances of our network, the database, what
+	 * makes services, and whether there is a proxy to reach an
+	 * onion endpoint by.  */
 	bool initted;
+	bool has_proxy;
 	std::vector<Instance> builtin;
 	Sqlite3::Db db;
 	std::shared_ptr<Boltz::ServiceFactory> factory;
@@ -109,6 +111,15 @@ public:
 				 , std::vector<std::string>& unknown
 				 );
 
+	/* Whether two instances are reached by the same endpoints.
+	 * Without a proxy an onion endpoint is not used, so one that
+	 * differs changes nothing.  */
+	static
+	bool uses_same_endpoints( Instance const& a
+				, Instance const& b
+				, bool has_proxy
+				);
+
 	ServiceCreator() =delete;
 	ServiceCreator(ServiceCreator&&) =delete;
 	ServiceCreator(ServiceCreator const&) =delete;
@@ -124,6 +135,7 @@ public:
 			, has_configured(false)
 			, configured()
 			, initted(false)
+			, has_proxy(false)
 			, services()
 			{ start(); }
 };
