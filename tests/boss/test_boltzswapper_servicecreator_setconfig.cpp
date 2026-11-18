@@ -45,7 +45,8 @@
  * leaves the list keeps running, for its swaps in flight alone; an
  * empty list gives the built-in services back; a list that does not
  * parse is refused and changes nothing; a built-in service listed
- * by another endpoint stays on the one it was started with.
+ * by another endpoint stays on the one it was started with, and one
+ * listed by the endpoint it uses already is left as it is.
  *
  * Which services take new swaps is read from the log line each
  * change writes, the services that run from `clboss-status`.
@@ -297,6 +298,15 @@ int main() {
 			      "for swaps in flight only: "
 			      "https://gone.example.net, "
 			      "https://new.example.com."));
+
+		/* Listed by its clearnet root: there is no proxy, so
+		 * that is the endpoint it uses already, and nothing
+		 * is said of endpoints.  */
+		return setconfig("https://api.example.org");
+	}).then([&](std::string reason) {
+		assert(reason.empty());
+		assert(!logged("stays on the endpoint"));
+		assert(logged("new swaps go to: built-in label; "));
 
 		/* Listed by its onion root: still the built-in
 		 * service, on the endpoints it was started with.  */
