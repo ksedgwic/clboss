@@ -5,6 +5,7 @@
 #include"Boss/Msg/PeerMedianChannelFee.hpp"
 #include"Boss/Msg/ProvideChannelFeeModifier.hpp"
 #include"Boss/Msg/ProvideStatus.hpp"
+#include"Boss/Msg/RecomputeChannelFee.hpp"
 #include"Boss/Msg/SetChannelFee.hpp"
 #include"Boss/Msg/SolicitChannelFeeModifier.hpp"
 #include"Boss/Msg/SolicitStatus.hpp"
@@ -78,6 +79,20 @@ void ChannelFeeManager::start() {
 		return Boss::concurrent(
 			perform(m.node, m.base, m.proportional)
 		);
+	});
+	bus.subscribe<Msg::RecomputeChannelFee
+		     >([this](Msg::RecomputeChannelFee const& m) {
+		/* The median last received for the peer; the
+		 * modifiers are asked again.  */
+		auto it = infos.find(m.node);
+		if (m.recomputed)
+			*m.recomputed = (it != infos.end());
+		if (it == infos.end())
+			return Ev::lift();
+		return perform( m.node
+			      , it->second.median_base
+			      , it->second.median_proportional
+			      );
 	});
 	bus.subscribe<Msg::ProvideChannelFeeModifier
 		     >([this](Msg::ProvideChannelFeeModifier const& m) {
