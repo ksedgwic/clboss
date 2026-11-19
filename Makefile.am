@@ -657,6 +657,7 @@ TESTS = \
 	tests/boss/test_earningstracker \
 	tests/boss/test_feemon_history \
 	tests/boss/test_feemodderbypricetheory \
+	tests/boss/test_feemodderbypricetheory_setlevel \
 	tests/boss/test_forwardfeemonitor \
 	tests/boss/test_getmanifest \
 	tests/boss/test_getroutesfirsthop \
