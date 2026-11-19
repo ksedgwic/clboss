@@ -338,6 +338,7 @@ libclboss_la_SOURCES = \
 	Boss/Msg/PreinvestigateChannelCandidates.hpp \
 	Boss/Msg/ProbeActively.hpp \
 	Boss/Msg/ProposeChannelCandidates.hpp \
+	Boss/Msg/RecomputeChannelFee.hpp \
 	Boss/Msg/ProposeConnectCandidates.hpp \
 	Boss/Msg/ProposePatronlessChannelCandidate.hpp \
 	Boss/Msg/ProvideChannelFeeModifier.hpp \
@@ -648,6 +649,7 @@ TESTS = \
 	tests/boss/test_channelcreator_rearrangerbysize \
 	tests/boss/test_channelcreator_reprioritizer \
 	tests/boss/test_channeledpeers \
+	tests/boss/test_channelfeemanager_recompute \
 	tests/boss/test_channelfeemanager_zerobasefee \
 	tests/boss/test_channelfinderbypopularity_option \
 	tests/boss/test_dowser_floor \
