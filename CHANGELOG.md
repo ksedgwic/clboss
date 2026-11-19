@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.4] - Unreleased
+
+### Fixed
+
+- On Core Lightning v26.12 a channel candidate could be measured as
+  having no capacity at all.  `getroutes` there answers with code 215
+  or 220, not 205, when the channels of the source or of the
+  destination hold less in total than the amount asked for.  The
+  capacity estimate took those codes for a failed call: it logged an
+  error and reported zero, where it should have gone on to try smaller
+  amounts.  It now reads them as it reads 205 (#387).
+
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
 ### Upgrading from 0.17.2

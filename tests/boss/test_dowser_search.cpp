@@ -106,9 +106,10 @@ public:
 /* A scripted JSON-RPC server for the socketpair's other end.
  * Requests are newline-delimited (Boss::Mod::Rpc appends "\n\n").
  * getroutes is answered from the configured scenario:
- *  - capacity mode: amount > capacity -> error -205 (the askrene
- *    "no flow at this amount" answer); otherwise a single route
- *    delivering the full requested amount;
+ *  - capacity mode: amount > capacity -> error no_flow_code (an
+ *    askrene "no flow at this amount" answer, -205 unless the test
+ *    sets another); otherwise a single route delivering the full
+ *    requested amount;
  *  - error mode: every getroutes fails with the given code.  */
 class GetroutesServer {
 private:
@@ -190,7 +191,7 @@ private:
 					  , "Unexpected error for the test"
 					  );
 		if (amount_msat > capacity_msat)
-			return send_error( id, -205
+			return send_error( id, no_flow_code
 					  , "Unable to find a route"
 					  );
 		/* Partial-delivery mode: a successful probe delivers only
@@ -213,6 +214,8 @@ private:
 
 public:
 	std::uint64_t capacity_msat;
+	/* The code an amount above the capacity is answered with.  */
+	std::int64_t no_flow_code;
 	/* Nonzero: every getroutes fails with this code instead of
 	 * the capacity rule.  */
 	std::int64_t error_code;
@@ -227,6 +230,7 @@ public:
 	GetroutesServer(Net::Fd socket_)
 		: socket(std::move(socket_))
 		, capacity_msat(0)
+		, no_flow_code(-205)
 		, error_code(0)
 		, delivery_num(10)
 		, delivery_den(10)
@@ -493,6 +497,34 @@ int main() {
 	}).then([&](Boss::Msg::ResponseDowser r) {
 		assert(server.getroutes_calls == 2);
 		assert(r.amount == La::sat(0));
+
+		/* 215: the source's channels hold less in total than
+		 * the amount (v26.12).  A smaller amount may flow, so
+		 * the search goes on as after a 205.  */
+		server.error_code = 0;
+		server.no_flow_code = 215;
+		server.capacity_msat = 600000000;
+		server.getroutes_calls = 0;
+		server.getroutes_amounts.clear();
+		return dowse(probe_target);
+	}).then([&](Boss::Msg::ResponseDowser r) {
+		assert(server.getroutes_calls > 2);
+		auto expected = expected_delivered(
+			probe_amount, La::msat(600000000), 10, 10
+		) * 0.985;
+		assert(r.amount == expected);
+
+		/* 220: the same for the destination's channels.  */
+		server.no_flow_code = 220;
+		server.getroutes_calls = 0;
+		server.getroutes_amounts.clear();
+		return dowse(probe_target);
+	}).then([&](Boss::Msg::ResponseDowser r) {
+		assert(server.getroutes_calls > 2);
+		auto expected = expected_delivered(
+			probe_amount, La::msat(600000000), 10, 10
+		) * 0.985;
+		assert(r.amount == expected);
 
 		/* Log discrimination: exactly one narrowed Error line
 		 * (the -1 abort in the earlier scenario) and at least
