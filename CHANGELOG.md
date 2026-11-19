@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.4] - Unreleased
+
+### Added
+
+- `clboss-set-price-level nodeid level` sets the center of a peer's
+  price level, the factor on its channel fee that CLBOSS finds by
+  trial.  A round of trials that earned nothing leaves the center
+  where it is, so a center that had risen until nothing was
+  forwarded stayed there.  The command starts a new round around the
+  level given, with that level in effect first, and sets the channel
+  fee at once.  The level is a whole number from -50 to 50.
+
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
 ### Upgrading from 0.17.2
