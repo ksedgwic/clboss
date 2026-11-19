@@ -78,12 +78,15 @@ auto const probe_final_cltv = std::uint32_t(14);
  */
 auto const reserve_factor = double(0.985);
 
-/* Is this RpcError the askrene "no flow at this amount" answer
- * (codes 205 "Unable to find a route" and 206 "Route too
- * expensive")?  These are answers, not failures: both the fixed
- * probe before this search and the search itself read them as zero
- * flow.  lightningd reports the codes as positive numbers; the
- * negated form is accepted as well.  */
+/* Is this RpcError the askrene "no flow at this amount" answer?
+ * The codes are 205 "Unable to find a route" and 206 "Route too
+ * expensive", and from v26.12 also 215 and 220: the channels of
+ * the source, or those of the destination, hold less in total than
+ * the amount.  A smaller amount may still flow.  These are answers,
+ * not failures: both the fixed probe before this search and the
+ * search itself read them as zero flow.  lightningd reports the
+ * codes as positive numbers; the negated form is accepted as
+ * well.  */
 bool is_no_flow_error(Boss::Mod::RpcError const& e) {
 	auto const& err = e.error;
 	if (!err.is_object() || !err.has("code"))
@@ -92,8 +95,10 @@ bool is_no_flow_error(Boss::Mod::RpcError const& e) {
 	if (!code_j.is_number())
 		return false;
 	auto code = std::int64_t(double(code_j));
-	return code == -205 || code == -206
-	    || code == 205 || code == 206
+	if (code < 0)
+		code = -code;
+	return code == 205 || code == 206
+	    || code == 215 || code == 220
 	    ;
 }
 
@@ -253,9 +258,9 @@ private:
 			return Ev::lift(delivered);
 		}).catching<RpcError>([](RpcError const& e) {
 			/* getroutes reports "no flow at this amount" as
-			 * a failed RPC (205 "Unable to find a route",
-			 * 206 "Route too expensive"): an answer, not a
-			 * failure -- map exactly those to zero flow.
+			 * a failed RPC (the codes is_no_flow_error
+			 * lists): an answer, not a failure -- map
+			 * exactly those to zero flow.
 			 * Any other RpcError (daemon, request, or
 			 * askrene failure) propagates so the dowse
 			 * aborts, instead of being misread as "no flow
