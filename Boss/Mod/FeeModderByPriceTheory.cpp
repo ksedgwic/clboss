@@ -609,10 +609,31 @@ private:
 
 		/* Have the fee set now.  Otherwise the level applies
 		 * from the next survey of the peer's competitors, up
-		 * to an hour away.  */
+		 * to an hour away.
+		 * The center is stored by now.  Computing the fee can
+		 * fail (the fee modifiers make RPC calls); the command
+		 * still answers then, and the next survey sets the
+		 * fee.  */
 		auto recomputed = std::make_shared<bool>(false);
+		auto recompute_failed = false;
+		auto recompute_error = std::string();
 		Msg::RecomputeChannelFee recompute{node, recomputed};
-		co_await bus.raise(std::move(recompute));
+		try {
+			co_await bus.raise(std::move(recompute));
+		} catch (std::exception const& e) {
+			recompute_failed = true;
+			recompute_error = e.what();
+		}
+		if (recompute_failed) {
+			*recomputed = false;
+			co_await Boss::log( bus, Warn
+					  , "FeeModderByPriceTheory: %s: "
+					    "the fee was not computed again "
+					    "after clboss-set-price-level: %s"
+					  , std::string(node).c_str()
+					  , recompute_error.c_str()
+					  );
+		}
 
 		auto out = Json::Out()
 			.start_object()

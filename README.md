@@ -570,8 +570,9 @@ A new round starts around the level given, and that level is the
 first to be in effect.
 CLBOSS sets the channel fee at once, from the median it last saw
 for the peer.
-If it has none yet, `fee_recomputed` in the result is `false` and
-the fee follows at the next hourly survey.
+If it has none yet, or if computing the fee fails, `fee_recomputed`
+in the result is `false` and the fee follows at the next hourly
+survey; the center is set in both cases.
 For a peer unmanaged with the `lnfee` tag CLBOSS computes the fee
 and does not set it.
 

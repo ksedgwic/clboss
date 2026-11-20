@@ -25,6 +25,7 @@
 #include<functional>
 #include<math.h>
 #include<set>
+#include<stdexcept>
 #include<string>
 #include<vector>
 
@@ -165,14 +166,21 @@ int main() {
 	});
 
 	/* Stands in for the fee manager: says whether it has a median
-	 * for the peer.  */
+	 * for the peer, and can fail while it computes the fee, as
+	 * the fee manager does when an RPC call of a modifier
+	 * fails.  */
 	auto has_median = true;
+	auto fail_recompute = false;
 	auto recompute_requests = std::vector<Ln::NodeId>();
 	bus.subscribe<Boss::Msg::RecomputeChannelFee
 		     >([&](Boss::Msg::RecomputeChannelFee const& m) {
 		recompute_requests.push_back(m.node);
 		if (m.recomputed)
 			*m.recomputed = has_median;
+		if (fail_recompute)
+			return Ev::lift().then([]() -> Ev::Io<void> {
+				throw std::runtime_error("listpeerchannels failed");
+			});
 		return Ev::lift();
 	});
 
@@ -382,6 +390,25 @@ int main() {
 	}).then([&](double) {
 		assert(monitored.center == 3);
 		assert(monitored.cards_left && *monitored.cards_left == 4);
+
+		/* The fee computation fails after the center is
+		 * stored: the command still answers, and says that no
+		 * fee was computed.  */
+		fail_recompute = true;
+		return command("[\"" + A_hex + "\", 5]");
+	}).then([&]() {
+		fail_recompute = false;
+		assert(answered && !failed);
+		assert(double(answer["old_center"]) == 3.0);
+		assert(double(answer["new_center"]) == 5.0);
+		assert(!bool(answer["fee_recomputed"]));
+		assert(recompute_requests == std::vector<Ln::NodeId>{A});
+		return centers_of(db, A);
+	}).then([&](std::vector<std::int64_t> centers) {
+		assert(centers == std::vector<std::int64_t>{5});
+		return cards_of(db, A);
+	}).then([&](std::vector<Card> cards) {
+		assert(is_new_round(cards, 5));
 
 		/* A node never seen, and no median for it: its center
 		 * and round are set, and the answer says no fee was
