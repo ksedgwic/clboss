@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+
+- Swap providers can authenticate our requests by our node's signature
+  instead of an API secret.  For a provider marked for it, every
+  request carries our node ID, a timestamp and a `signmessage`
+  signature of the method, path and body; that provider learns our
+  node ID, while requests to every other provider stay unsigned.
+
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
 ### Upgrading from 0.17.2

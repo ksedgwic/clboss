@@ -15,6 +15,7 @@ create_connection( Ev::ThreadPool& threadpool
 		 /* Can be "" if no Tor proxy.  */
 		 , std::string tor_proxy
 		 , bool always_use_proxy
+		 , Boltz::EnvIF* signer
 		 ) {
 	if (tor_proxy == "")
 		/* Pointless anyway.  */
@@ -26,12 +27,16 @@ create_connection( Ev::ThreadPool& threadpool
 		return Util::make_unique<NormalConnection>( threadpool
 							  , tor_endpoint
 							  , tor_proxy
+							  , 600
+							  , signer
 							  );
 	} else {
 		auto first = Util::make_unique<NormalConnection>( threadpool
 								, clearnet_endpoint
 								, always_use_proxy ?
 									tor_proxy : ""
+								, 600
+								, signer
 								);
 
 		auto rv = std::unique_ptr<Boltz::ConnectionIF>(std::move(first));
@@ -40,6 +45,8 @@ create_connection( Ev::ThreadPool& threadpool
 			auto second = Util::make_unique<NormalConnection>( threadpool
 									 , tor_endpoint
 									 , tor_proxy
+									 , 600
+									 , signer
 									 );
 			auto combin = Util::make_unique<FallbackConnection>(
 				std::move(rv), std::move(second)

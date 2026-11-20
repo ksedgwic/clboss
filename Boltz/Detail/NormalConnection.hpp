@@ -4,6 +4,7 @@
 #include"Boltz/ConnectionIF.hpp"
 #include<cstdint>
 
+namespace Boltz { class EnvIF; }
 namespace Ev { class ThreadPool; }
 
 namespace Boltz { namespace Detail {
@@ -36,6 +37,11 @@ public:
 			 * fails the request after this instead of holding
 			 * it open forever.  Ten minutes allows for Tor.  */
 			, std::uint32_t request_timeout = 600
+			/* Signs each request with our node key, for a
+			 * provider that authenticates nodes.  nullptr
+			 * sends requests unsigned, which keeps our node
+			 * ID from every other provider.  */
+			, Boltz::EnvIF* signer = nullptr
 			);
 
 	/* Send an API request.  */
