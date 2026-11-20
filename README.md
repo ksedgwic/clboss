@@ -542,6 +542,54 @@ The possible unmanagement tags are:
 * `balance` - Do not automatically move funds (rebalance) to or
   from this node.
 
+### `clboss-set-price-level`
+
+CLBOSS sets the fee of the channels with a peer as a multiple of
+the median fee that other nodes charge on their channels to that
+peer.
+One factor of that multiple is found by trial.
+Each peer has a *price level*, a whole number: one step up
+multiplies the fee by 1.2, one step down by 0.8.
+CLBOSS tries the five levels around the peer's current center,
+each for two days of connected time, and then moves the center
+to the level that earned the most.
+
+A round in which no level earned anything leaves the center
+where it is.
+A center that has risen so far that nothing is forwarded any
+more therefore does not come down by itself.
+`clboss-set-price-level` sets the center, with the node id and
+the level as parameters:
+
+    lightning-cli clboss-set-price-level ${NODEID} 0
+
+The level is a whole number from -50 to 50; 0 is the level a new
+peer starts at.
+The peer's current round is dropped, with what it earned.
+A new round starts around the level given, and that level is the
+first to be in effect.
+CLBOSS sets the channel fee at once, from the median it last saw
+for the peer.
+If it has none yet, or if computing the fee fails, `fee_recomputed`
+in the result is `false` and the fee follows at the next hourly
+survey; the center is set in both cases.
+For a peer unmanaged with the `lnfee` tag CLBOSS computes the fee
+and does not set it.
+
+The center is kept per node id, also after the channel has
+closed, so the command can be used on a peer before a channel to
+it is opened again.
+
+`lightning-cli` reads a leading `-` as one of its own options, so
+give a negative level by keyword:
+
+    lightning-cli -k clboss-set-price-level nodeid=${NODEID} level=-3
+
+The center and the level in effect are in `clboss-feemon-history`
+as `price_center` and `price_level`.
+The cards of the round are in `clboss-status` under
+`price_theory_investigating`.
+
 ### `clboss-swaps`
 
 CLBOSS will sometimes swap Lightning funds for onchain funds,

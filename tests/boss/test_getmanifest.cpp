@@ -23,6 +23,7 @@ auto const expected_commands = std::vector<std::string>
 , "clboss-unmanage"
 , "clboss-swaps"
 , "clboss-feerates"
+, "clboss-set-price-level"
 };
 auto const expected_options = std::vector<std::string>
 { "clboss-min-onchain"

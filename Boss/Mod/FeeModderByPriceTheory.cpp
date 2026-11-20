@@ -1,10 +1,16 @@
 #include"Boss/Mod/FeeModderByPriceTheory.hpp"
+#include"Boss/Msg/CommandFail.hpp"
+#include"Boss/Msg/CommandRequest.hpp"
+#include"Boss/Msg/CommandResponse.hpp"
 #include"Boss/Msg/DbResource.hpp"
 #include"Boss/Msg/MonitorFeeByTheory.hpp"
 #include"Boss/Msg/ForwardFee.hpp"
 #include"Boss/Msg/ListpeersAnalyzedResult.hpp"
+#include"Boss/Msg/ManifestCommand.hpp"
+#include"Boss/Msg/Manifestation.hpp"
 #include"Boss/Msg/ProvideChannelFeeModifier.hpp"
 #include"Boss/Msg/ProvideStatus.hpp"
+#include"Boss/Msg/RecomputeChannelFee.hpp"
 #include"Boss/Msg/SolicitChannelFeeModifier.hpp"
 #include"Boss/Msg/SolicitStatus.hpp"
 #include"Boss/log.hpp"
@@ -12,6 +18,9 @@
 #include"Ev/Io.hpp"
 #include"Ev/coroutine.hpp"
 #include"Ev/yield.hpp"
+#include"Jsmn/Object.hpp"
+#include"Json/Out.hpp"
+#include"Ln/CommandId.hpp"
 #include"Ln/NodeId.hpp"
 #include"S/Bus.hpp"
 #include"Sqlite3.hpp"
@@ -21,7 +30,10 @@
 #include<inttypes.h>
 #include<map>
 #include<math.h>
+#include<memory>
 #include<sstream>
+#include<stdexcept>
+#include<string>
 #include<vector>
 
 /*
@@ -78,6 +90,36 @@ auto constexpr initial_lifetime = std::uint64_t(288);
  * the center.
  */
 auto constexpr max_step = std::size_t(2);
+
+/* The levels `clboss-set-price-level` accepts.
+ * The levels the algorithm reaches by itself are not limited.
+ * This refuses a slip, such as a fee in ppm given as a level.
+ */
+auto constexpr min_settable_price = std::int64_t(-50);
+auto constexpr max_settable_price = std::int64_t(50);
+
+/* The level given to `clboss-set-price-level`: a JSON number, or
+ * a string holding one, which is how `lightning-cli` passes a
+ * negative number.  Throws std::invalid_argument if it is not a
+ * whole number.  */
+std::int64_t parse_price_level(Jsmn::Object const& j) {
+	if (j.is_number()) {
+		auto d = double(j);
+		if (d != floor(d) || fabs(d) > 1000000.0)
+			throw std::invalid_argument("level");
+		return std::int64_t(d);
+	}
+	if (!j.is_string())
+		throw std::invalid_argument("level");
+	auto s = std::string(j);
+	auto digits = s.find_first_not_of('-');
+	if ( digits == std::string::npos || digits > 1
+	  || s.size() - digits > 6
+	  || s.find_first_not_of("0123456789", digits) != std::string::npos
+	   )
+		throw std::invalid_argument("level");
+	return std::int64_t(std::stoll(s));
+}
 
 /* The hardcoded numbers below cannot be changed.  */
 double price_to_multiplier(std::int64_t price) {
@@ -156,6 +198,23 @@ private:
 		bus.subscribe<Msg::SolicitStatus
 			     >([this](Msg::SolicitStatus const& _) {
 			return solicit_status();
+		});
+
+		bus.subscribe<Msg::Manifestation
+			     >([this](Msg::Manifestation const& _) {
+			return bus.raise(Msg::ManifestCommand{
+				"clboss-set-price-level", "nodeid level",
+				"Set the price level of the peer {nodeid} "
+				"to {level} and start a new measurement "
+				"round around it.",
+				false
+			});
+		});
+		bus.subscribe<Msg::CommandRequest
+			     >([this](Msg::CommandRequest const& m) {
+			if (m.command != "clboss-set-price-level")
+				return Ev::lift();
+			return set_price_level(m.params, m.id);
 		});
 	}
 
@@ -392,6 +451,11 @@ private:
 		msg << "measuring around new level "
 		    << new_price << " for new mesurement round; "
 		    ;
+		set_center_price(tx, node, new_price);
+	}
+	void set_center_price( Sqlite3::Tx& tx, Ln::NodeId const& node
+			     , std::int64_t new_price
+			     ) {
 		tx.query(R"QRY(
 		INSERT OR REPLACE INTO "FeeModderByPriceTheory_centerprice"
 		VALUES( :node
@@ -458,6 +522,131 @@ private:
 				.execute()
 				;
 		}
+	}
+
+	/* `clboss-set-price-level nodeid level`: the operator sets
+	 * the center, where the measurement rounds would not get
+	 * there (a round that earned nothing leaves the center where
+	 * it is).
+	 */
+	Ev::Io<void> set_price_level(Jsmn::Object params, Ln::CommandId id) {
+		auto node = Ln::NodeId();
+		auto level = std::int64_t();
+		auto error = std::string();
+		try {
+			auto node_j = Jsmn::Object();
+			auto level_j = Jsmn::Object();
+			if ( params.is_object() && params.size() == 2
+			  && params.has("nodeid") && params.has("level")
+			   ) {
+				node_j = params["nodeid"];
+				level_j = params["level"];
+			} else if (params.is_array() && params.size() == 2) {
+				node_j = params[0];
+				level_j = params[1];
+			} else
+				throw std::invalid_argument("params");
+			node = Ln::NodeId(std::string(node_j));
+			level = parse_price_level(level_j);
+		} catch (std::exception const&) {
+			error = "Parameter error: expected a node id and "
+				"a whole number";
+		}
+		if ( error.empty()
+		  && (level < min_settable_price || level > max_settable_price)
+		   ) {
+			auto os = std::ostringstream();
+			os << "level " << level << " is not between "
+			   << min_settable_price << " and "
+			   << max_settable_price
+			    ;
+			error = os.str();
+		}
+		if (!error.empty()) {
+			// Don't use aggregate temporaries in a `co_await`, see docs/COROUTINE.md
+			Msg::CommandFail fail{ id, -32602, error
+					     , Json::Out::empty_object()
+					     };
+			co_await bus.raise(std::move(fail));
+			co_return;
+		}
+
+		/* A new round around the level given.  The cards of the
+		 * round before are removed with what they earned, so
+		 * neither an old card is played nor do old earnings
+		 * decide the next center.  */
+		auto tx = co_await db_transact();
+		auto old_center = get_center_price(tx, node);
+		set_center_price(tx, node, level);
+		reshuffle_deck(tx, node);
+		/* The level asked for is the one in effect first, not
+		 * whichever card of the round is on top; the other
+		 * cards follow in their shuffled order.  */
+		tx.query(R"QRY(
+		UPDATE "FeeModderByPriceTheory_cards"
+		   SET pos = :CardPos_InPlay
+		 WHERE node = :node
+		   AND price = :price
+		     ;
+		)QRY")
+			.bind(":CardPos_InPlay", int(CardPos_InPlay))
+			.bind(":node", std::string(node))
+			.bind(":price", level)
+			.execute()
+			;
+		tx.commit();
+
+		co_await Boss::log( bus, Info
+				  , "FeeModderByPriceTheory: %s: "
+				    "center moved from %" PRIi64
+				    " to %" PRIi64
+				    " by clboss-set-price-level; "
+				    "new measurement round."
+				  , std::string(node).c_str()
+				  , old_center
+				  , level
+				  );
+
+		/* Have the fee set now.  Otherwise the level applies
+		 * from the next survey of the peer's competitors, up
+		 * to an hour away.
+		 * The center is stored by now.  Computing the fee can
+		 * fail (the fee modifiers make RPC calls); the command
+		 * still answers then, and the next survey sets the
+		 * fee.  */
+		auto recomputed = std::make_shared<bool>(false);
+		auto recompute_failed = false;
+		auto recompute_error = std::string();
+		Msg::RecomputeChannelFee recompute{node, recomputed};
+		try {
+			co_await bus.raise(std::move(recompute));
+		} catch (std::exception const& e) {
+			recompute_failed = true;
+			recompute_error = e.what();
+		}
+		if (recompute_failed) {
+			*recomputed = false;
+			co_await Boss::log( bus, Warn
+					  , "FeeModderByPriceTheory: %s: "
+					    "the fee was not computed again "
+					    "after clboss-set-price-level: %s"
+					  , std::string(node).c_str()
+					  , recompute_error.c_str()
+					  );
+		}
+
+		auto out = Json::Out()
+			.start_object()
+				.field("nodeid", std::string(node))
+				.field("old_center", old_center)
+				.field("new_center", level)
+				.field("multiplier", price_to_multiplier(level))
+				.field("fee_recomputed", *recomputed)
+			.end_object()
+			;
+		Msg::CommandResponse resp{id, std::move(out)};
+		co_await bus.raise(std::move(resp));
+		co_return;
 	}
 
 	Ev::Io<void> update_10_minutes(std::set<Ln::NodeId> const& connected) {
