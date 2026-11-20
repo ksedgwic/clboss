@@ -56,11 +56,16 @@ public:
 	 * @brief creates a service from a particular
 	 * Boltz implementation, which can have both a
 	 * clearnet and a Tor endpoint.
+	 *
+	 * @desc `sign_requests` signs every request with
+	 * our node key, for a provider that authenticates
+	 * nodes; it reveals our node ID to that provider.
 	 */
 	Ev::Io<std::unique_ptr<Service>>
 	create_service_detailed( std::string const& label
 			       , std::string const& clearnet
 			       , std::string const& onion
+			       , bool sign_requests = false
 			       );
 
 	/** Boltz::ServiceFactory::create_service

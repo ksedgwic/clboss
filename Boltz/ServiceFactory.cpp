@@ -207,8 +207,11 @@ public:
 	create_service_detailed( std::string const& label
 			       , std::string const& clearnet
 			       , std::string const& onion
+			       , bool sign_requests
 			       ) {
-		return try_initialize().then([this, label, clearnet, onion]() {
+		return try_initialize().then([ this, label, clearnet, onion
+					     , sign_requests
+					     ]() {
 			auto ptr = std::unique_ptr<Service>();
 			ptr = Util::make_unique<Detail::ServiceImpl>
 				( db
@@ -220,6 +223,7 @@ public:
 							   , onion
 							   , proxy
 							   , always_use_proxy
+							   , sign_requests ? &env : nullptr
 							   )
 				);
 			return Ev::lift(std::move(ptr));
@@ -250,8 +254,11 @@ Ev::Io<std::unique_ptr<Service>>
 ServiceFactory::create_service_detailed( std::string const& label
 				       , std::string const& clearnet
 				       , std::string const& onion
+				       , bool sign_requests
 				       ) {
-	return pimpl->create_service_detailed(label, clearnet, onion);
+	return pimpl->create_service_detailed( label, clearnet, onion
+					     , sign_requests
+					     );
 }
 
 }

@@ -2,6 +2,7 @@
 #define BOSS_MOD_BOLTZSWAPPER_ENV_HPP
 
 #include<cstdint>
+#include<string>
 #include"Boltz/EnvIF.hpp"
 
 namespace Boss { namespace Mod { class Rpc; }}
@@ -18,6 +19,8 @@ class Env : public Boltz::EnvIF {
 private:
 	S::Bus& bus;
 	Boss::Mod::Rpc* rpc;
+	/* Our node ID, once `getinfo` gave it.  */
+	std::string node_id;
 
 	void start();
 
@@ -38,6 +41,8 @@ public:
 					 , std::uint32_t outnum
 					 ) override;
 	Ev::Io<bool> broadcast_tx(Bitcoin::Tx) override;
+	Ev::Io<Boltz::NodeSignature>
+	sign_message(std::string message) override;
 	Ev::Io<void> logd(std::string) override;
 	Ev::Io<void> logi(std::string) override;
 	Ev::Io<void> loge(std::string) override;

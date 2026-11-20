@@ -102,6 +102,7 @@ private:
 
 			return factory.create_service_detailed(
 				instance.label, instance.clearnet, instance.onion
+			      , instance.sign_requests
 			).then([this, label](std::unique_ptr<Boltz::Service> core) {
 				auto wrapper = Util::make_unique<ServiceModule>
 					( bus, std::move(core), label );
