@@ -23,6 +23,13 @@ namespace {
           { "AutonomousOrganization@github.com",
               "",
               "http://jsyqqszgfrya6nj7nhi4hu4tdpuvfursl7dyxeiukzit5mvckqbzxpad.onion"
+            },
+          /* Lets nodes in by their signature instead of an API
+           * secret, so this one learns our node ID.  */
+          { "middle-way.space",
+              "https://api.middle-way.space",
+              "http://middlwayksj5gak7pgaag32kcslzkjrpois57qtquiydpaqpy5fhzhqd.onion",
+              true
             }
       }
     },
