@@ -59,10 +59,13 @@ libclboss_la_SOURCES = \
 	Boltz/Detail/find_lockup_outnum.hpp \
 	Boltz/Detail/initial_claim_tx.cpp \
 	Boltz/Detail/initial_claim_tx.hpp \
+	Boltz/Detail/node_auth_message.cpp \
+	Boltz/Detail/node_auth_message.hpp \
 	Boltz/Detail/reverse_terms.cpp \
 	Boltz/Detail/reverse_terms.hpp \
 	Boltz/Detail/swaptree.cpp \
 	Boltz/Detail/swaptree.hpp \
+	Boltz/EnvIF.cpp \
 	Boltz/EnvIF.hpp \
 	Boltz/Service.hpp \
 	Boltz/ServiceFactory.cpp \
@@ -623,6 +626,8 @@ TESTS = \
 	tests/bitcoin/test_tx \
 	tests/boltz/test_boltz_connection \
 	tests/boltz/test_claimtxhandler_scoped_update \
+	tests/boltz/test_node_auth_message \
+	tests/boltz/test_normalconnection_signing \
 	tests/boltz/test_normalconnection_timeout \
 	tests/boltz/test_servicefactory_migration \
 	tests/boltz/test_serviceimpl_revealed \

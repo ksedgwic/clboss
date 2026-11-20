@@ -10,6 +10,12 @@ namespace Ev { template<typename a> class Io; }
 
 namespace Boltz {
 
+/* Who signed a message, and the zbase32 signature.  */
+struct NodeSignature {
+	std::string node_id;
+	std::string zbase;
+};
+
 /** class Boltz::EnvIF
  *
  * @brief abstract interface to the local
@@ -61,6 +67,19 @@ public:
 	 */
 	virtual
 	bool cooperative_claims() { return true; }
+
+	/** Boltz::EnvIF::sign_message
+	 *
+	 * @brief signs the message with our Lightning node's
+	 * key, as `signmessage` does, for providers that
+	 * authenticate requests by node.
+	 *
+	 * @return the node ID and the zbase32 signature, or
+	 * two empty strings if the message could not be
+	 * signed; the request then goes out unsigned.
+	 */
+	virtual
+	Ev::Io<NodeSignature> sign_message(std::string message);
 
 	/** Boltz::EnvIF::broadcast_tx
 	 *

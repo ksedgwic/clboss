@@ -5,6 +5,7 @@
 #include<string>
 
 namespace Boltz { class ConnectionIF; }
+namespace Boltz { class EnvIF; }
 namespace Ev { class ThreadPool; }
 
 namespace Boltz { namespace Detail {
@@ -23,6 +24,9 @@ create_connection( Ev::ThreadPool& threadpool
 		 /* Can be "" if no Tor proxy.  */
 		 , std::string tor_proxy
 		 , bool always_use_proxy
+		 /* Signs requests with our node key; nullptr
+		  * sends them unsigned.  */
+		 , Boltz::EnvIF* signer = nullptr
 		 );
 
 }}

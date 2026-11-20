@@ -25,6 +25,9 @@ struct Instance {
 	std::string clearnet;
 	/* Tor API endpoint; can be "" if no onion.  */
 	std::string onion;
+	/* Whether the provider authenticates our requests by
+	 * our node's signature; reveals our node ID to it.  */
+	bool sign_requests = false;
 };
 
 /** class Boss::Mod::BoltzSwapper::ServiceCreator

@@ -9,6 +9,7 @@
 #include"Json/Out.hpp"
 #include"S/Bus.hpp"
 #include"Util/stringify.hpp"
+#include<memory>
 
 namespace Boss { namespace Mod { namespace BoltzSwapper {
 
@@ -135,6 +136,42 @@ Ev::Io<bool> Env::broadcast_tx(Bitcoin::Tx n_tx) {
 			return Ev::lift(true);
 		}).catching<RpcError>([](RpcError const& _) {
 			return Ev::lift(false);
+		});
+	});
+}
+
+Ev::Io<Boltz::NodeSignature> Env::sign_message(std::string message) {
+	auto pmessage = std::make_shared<std::string>(std::move(message));
+	return Ev::yield().then([this]() {
+		/* Should not happen.  */
+		if (!rpc || node_id != "")
+			return Ev::lift();
+
+		return rpc->command("getinfo", Json::Out::empty_object()
+		).then([this](Jsmn::Object res) {
+			if (res.has("id") && res["id"].is_string())
+				node_id = std::string(res["id"]);
+			return Ev::lift();
+		}).catching<RpcError>([](RpcError const& _) {
+			return Ev::lift();
+		});
+	}).then([this, pmessage]() {
+		if (!rpc || node_id == "")
+			return Ev::lift(Boltz::NodeSignature());
+
+		return rpc->command( "signmessage"
+				   , Json::Out()
+					.start_object()
+						.field("message", *pmessage)
+					.end_object()
+		).then([this](Jsmn::Object res) {
+			if (!res.has("zbase") || !res["zbase"].is_string())
+				return Ev::lift(Boltz::NodeSignature());
+			return Ev::lift(Boltz::NodeSignature{
+				node_id, std::string(res["zbase"])
+			});
+		}).catching<RpcError>([](RpcError const& _) {
+			return Ev::lift(Boltz::NodeSignature());
 		});
 	});
 }
