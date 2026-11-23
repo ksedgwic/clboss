@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.4] - Unreleased
+
+### Fixed
+
+- CLBOSS built with GCC 12.2, the compiler of Debian 12, crashed right
+  after it broadcast the cooperative claim of a swap.  The claim was
+  already broadcast and recorded.  That compiler, like GCC 11.3,
+  mishandles a `co_await` in the condition of an `if` when the
+  function declares no local variable (GCC PR 106713).  The claim
+  code now takes the result into a local first (#392).
+
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
 ### Upgrading from 0.17.2
