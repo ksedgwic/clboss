@@ -42,6 +42,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   capacity estimate took those codes for a failed call: it logged an
   error and reported zero, where it should have gone on to try smaller
   amounts.  It now reads them as it reads 205 (#387).
+- CLBOSS built with GCC 12.2, the compiler of Debian 12, crashed right
+  after it broadcast the cooperative claim of a swap.  The claim was
+  already broadcast and recorded.  That compiler, like GCC 11.3,
+  mishandles a `co_await` in the condition of an `if` when the
+  function declares no local variable (GCC PR 106713).  The claim
+  code now takes the result into a local first (#392).
 
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 

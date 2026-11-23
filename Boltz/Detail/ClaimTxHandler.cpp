@@ -487,7 +487,8 @@ Ev::Io<void> ClaimTxHandler::claim( Sha256::Hash keypath_sighash
 		co_await script_path_claim(feerate);
 		co_return;
 	}
-	if (co_await cooperative_claim(keypath_sighash))
+	auto claimed = co_await cooperative_claim(keypath_sighash);
+	if (claimed)
 		co_return;
 	co_await script_path_claim(feerate);
 }
@@ -716,7 +717,8 @@ Ev::Io<void> ClaimTxHandler::track_claim() {
 		 * transaction id: the provider learns the destination
 		 * address from the claim request, and a payment of its
 		 * own to that address must not pass for the claim.  */
-		if (co_await env.has_confirmed_output(claim_txid, 0)) {
+		auto confirmed = co_await env.has_confirmed_output(claim_txid, 0);
+		if (confirmed) {
 			co_await logi( "Claim " + std::string(claim_txid)
 				     + " confirmed; swap done."
 				     );
@@ -794,8 +796,11 @@ Ev::Io<void> ClaimTxHandler::track_claim() {
 	 * mempools until it confirms.  A rejection of the rebroadcast
 	 * is usual: the node already has it.  */
 	auto feerate = co_await env.get_feerate();
-	if (feerate > claimFeerate && co_await bump_claim(feerate))
-		co_return;
+	if (feerate > claimFeerate) {
+		auto bumped = co_await bump_claim(feerate);
+		if (bumped)
+			co_return;
+	}
 	auto accepted = co_await env.broadcast_tx(claim);
 	co_await logd( std::string("Claim ") + std::string(claim_txid)
 		     + " not yet confirmed; rebroadcast "
