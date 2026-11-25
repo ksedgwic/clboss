@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.4] - Unreleased
+
+### Fixed
+
+- The channel candidate preinvestigation hands the outcome of one
+  connect to every batch waiting on the node, and did so one batch
+  after another: a batch moving on to its next candidate held up the
+  batches after it until its own next connect was done, and an error
+  in one dropped the rest.  Each batch now runs on its own.  A
+  follow-up from #341.
+
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
 ### Upgrading from 0.17.2
