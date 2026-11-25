@@ -2,6 +2,7 @@
 #define BOSS_MSG_PROVIDESWAPQUOTATION_HPP
 
 #include"Ln/Amount.hpp"
+#include<cstdint>
 #include<string>
 
 namespace Boss { namespace Msg {
@@ -30,6 +31,9 @@ struct ProvideSwapQuotation {
 	void* provider;
 	/* String identifier of the swap service.  */
 	std::string provider_name;
+	/* The round of the `Boss::Msg::SolicitSwapQuotation`,
+	 * as given.  */
+	std::uint64_t round;
 };
 
 }}

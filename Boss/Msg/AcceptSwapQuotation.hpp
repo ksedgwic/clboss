@@ -2,6 +2,7 @@
 #define BOSS_MSG_ACCEPTSWAPQUOTATION_HPP
 
 #include"Ln/Amount.hpp"
+#include<cstdint>
 #include<string>
 
 namespace Boss { namespace Msg {
@@ -24,6 +25,9 @@ struct AcceptSwapQuotation {
 	void* solicitor;
 	/* Identify the module that we want to perform the swap.  */
 	void* provider;
+	/* The solicitor's round, to be replicated in the
+	 * `Boss::Msg::SwapCreation`.  */
+	std::uint64_t round;
 };
 
 }}

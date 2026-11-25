@@ -2,6 +2,7 @@
 #define BOSS_MSG_SOLICITSWAPQUOTATION_HPP
 
 #include"Ln/Amount.hpp"
+#include<cstdint>
 
 namespace Boss { namespace Msg {
 
@@ -22,6 +23,11 @@ struct SolicitSwapQuotation {
 	 * is being responded to.
 	 */
 	void* solicitor;
+	/* The solicitor's round, replicated in the
+	 * `Boss::Msg::ProvideSwapQuotation` messages and in the
+	 * `Boss::Msg::AcceptSwapQuotation` that follows, and from
+	 * there in the `Boss::Msg::SwapCreation`.  */
+	std::uint64_t round;
 };
 
 }}

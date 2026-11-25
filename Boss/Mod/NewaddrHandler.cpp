@@ -16,22 +16,23 @@ void NewaddrHandler::start() {
 	bus.subscribe<Msg::Init
 		     >([this](Msg::Init const& init) {
 		rpc = &init.rpc;
-		auto f = [this](void* r) { return newaddr(r); };
+		auto f = [this](Msg::RequestNewaddr r) {
+			return newaddr(r);
+		};
 		return Boss::concurrent(
 			Ev::foreach(f, std::move(pending))
 		);
 	});
 	bus.subscribe<Msg::RequestNewaddr
 		     >([this](Msg::RequestNewaddr const& r) {
-		auto requester = r.requester;
 		if (!rpc) {
-			pending.push_back(requester);
+			pending.push_back(r);
 			return Ev::lift();
 		}
-		return Boss::concurrent(newaddr(requester));
+		return Boss::concurrent(newaddr(r));
 	});
 }
-Ev::Io<void> NewaddrHandler::newaddr(void* requester) {
+Ev::Io<void> NewaddrHandler::newaddr(Msg::RequestNewaddr r) {
 	/** BREAKING CHANGE:
 	 * Requesting addresstype=p2tr is NOT compatible with CLN v23.05
 	 * and older, which did not accept the p2tr addresstype. */
@@ -42,10 +43,10 @@ Ev::Io<void> NewaddrHandler::newaddr(void* requester) {
 		;
 	return rpc->command( "newaddr"
 			   , std::move(params)
-			   ).then([this, requester](Jsmn::Object res) {
+			   ).then([this, r](Jsmn::Object res) {
 		auto addr = std::string(res["p2tr"]);
 		return bus.raise(Msg::ResponseNewaddr{
-			std::move(addr), requester
+			std::move(addr), r.requester, r.round
 		});
 	});
 }
