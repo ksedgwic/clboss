@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.4] - Unreleased
+
+### Fixed
+
+- `contrib/clboss-channel-sizing` no longer prints a peer's figures on
+  each of the peer's channels.  Balance samples and the earnings
+  record are per peer, so a peer with two channels showed the same
+  MinLoc, NetEarn, Fill and Drain on both rows, and the Shrink rule
+  compared the peer's MinLoc with one channel's capacity: a 1M
+  channel holding 280k sat on our side read a MinLoc of 1.4M and was
+  put in Shrink to be closed.  MinLoc is now the least the summed
+  samples prove the channel held, the peer's lowest sum less the
+  other channels' capacity, which never exceeds the channel's own
+  capacity.  NetEarn, Fill and Drain are split over the peer's
+  channels by each one's share of the peer's forwarded volume and
+  marked `~`.  A peer with one channel reads as before (#382).
+
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
 ### Upgrading from 0.17.2

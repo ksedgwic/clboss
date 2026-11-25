@@ -115,10 +115,15 @@
 # without a close.
 #
 # Balance samples are per peer, so a peer with several channels shares one
-# state across them.  Samples recorded before CLBOSS 0.17.3 describe only
-# the peer's first channel: while the newest sample's total matches one
-# channel's capacity rather than the peer's sum, that channel alone reads
-# the samples and the peer's other channels are Young.
+# state across them.  Its MinLoc is the least the summed samples prove
+# the channel held: the peer's lowest sum less the capacity of the
+# peer's other channels, and never more than its own capacity.  A large
+# idle channel beside a small one still shows the capital it never
+# moved; two channels that could each have held the whole low show 0.
+# Samples recorded before CLBOSS 0.17.3 describe only the peer's first
+# channel: while the newest sample's total matches one channel's
+# capacity rather than the peer's sum, that channel alone reads the
+# samples and the peer's other channels are Young.
 #
 # A splice keeps the channel and its history.  Forwards recorded under the
 # pre-splice short channel id are attributed through CLN's own lookup of
@@ -136,7 +141,10 @@
 # (the day buckets of clboss-earnings-history that start inside the
 # window), which counts every channel the peer had in the window, closed
 # ones included; over the default window it is the figure
-# clboss-forwarding-stats prints.  The rate and Gain columns rest on the
+# clboss-forwarding-stats prints.  For a peer with several channels the
+# record is split over them by each channel's share of the peer's
+# forwarded volume in the window (by capacity when there was none), and
+# the split figures are marked ~.  The rate and Gain columns rest on the
 # forwards attributed above.
 
 import argparse
@@ -932,10 +940,30 @@ def main():
         if f is not None and f < low:
             acc[o]["ref_low_msat"] += amt
 
+    # The earnings record is per peer.  A peer with several channels has
+    # it split over them by each channel's share of the peer's forwarded
+    # volume in the window (by capacity when the peer forwarded nothing),
+    # so the rows of one peer add up to the peer's figures.
+    peer_gross = {}
+    for scid, ch in channels.items():
+        a = acc[scid]
+        peer_gross[ch["peer_id"]] = (peer_gross.get(ch["peer_id"], 0.0)
+                                     + a["in_fwd"] + a["out_fwd"])
+
+    def peer_share(scid):
+        ch = channels[scid]
+        if len(peer_channels[ch["peer_id"]]) < 2:
+            return 1.0
+        gross = peer_gross[ch["peer_id"]]
+        if gross > 0:
+            return (acc[scid]["in_fwd"] + acc[scid]["out_fwd"]) / gross
+        return ch["cap"] / peer_cap[ch["peer_id"]]
+
     rows = []
     for scid, ch in channels.items():
         peer_id = ch["peer_id"]
         bal = chan_bal[scid]
+        share = peer_share(scid)
         # the capacity the channel had over the window: the mean sampled
         # capacity, apportioned by this channel's share of the capacity
         # the samples cover now (they may lag a splice by an hour; the
@@ -973,9 +1001,23 @@ def main():
         age_days = (tip - block_of(scid)) / 144.0 if tip else None
         peer_age_days = ((tip - peer_first_block[peer_id]) / 144.0
                          if tip and peer_id in peer_first_block else None)
-        earned = rec.get("in_earnings", 0) + rec.get("out_earnings", 0)
-        spent = rec.get("in_expenditures", 0) + rec.get("out_expenditures", 0)
+        earned = share * (rec.get("in_earnings", 0)
+                          + rec.get("out_earnings", 0))
+        spent = share * (rec.get("in_expenditures", 0)
+                         + rec.get("out_expenditures", 0))
         net_earned = earned - spent
+        # Samples shared with sibling channels give the peer's sum, and
+        # the siblings hold at most their own capacity, so at every
+        # sample this channel held at least the sum less theirs: the
+        # least it is proven to have held, never more than its capacity.
+        # A channel whose samples are its own has no siblings to take off.
+        if sampled:
+            siblings = sampled_cap[scid] - ch["cap"]
+            min_local = max(bal.min_our_msat - siblings, 0)
+        else:
+            # without samples the lowest our side is known to have been
+            # is where it is now
+            min_local = ch["cap"] - ch["inbound"]
         row = {
             "peer_id": peer_id,
             "alias": aliases.get(peer_id, peer_id),
@@ -1009,16 +1051,15 @@ def main():
             "fwd_in": a["in_fwd"] / 1000.0,
             "fwd_out": a["out_fwd"] / 1000.0,
             "net": (a["out_fwd"] - a["in_fwd"]) / gross if gross else 0.0,
-            "fill": rec.get("out_rebalanced", 0) / 1000.0,
-            "drain": rec.get("in_rebalanced", 0) / 1000.0,
+            "peer_share": share,
+            "split": len(peer_channels[peer_id]) > 1,
+            "fill": share * rec.get("out_rebalanced", 0) / 1000.0,
+            "drain": share * rec.get("in_rebalanced", 0) / 1000.0,
             "refused_out": a["ref_msat"] / 1000.0,
             "refused_low_pct": (a["ref_low_msat"] / a["ref_msat"] * 100.0
                                 if a["ref_msat"] else 0.0),
             "range_pct": (bal.hi - bal.lo) * 100.0 if sampled else 0.0,
-            # without samples the lowest our side is known to have been
-            # is where it is now
-            "min_local_sat": (bal.min_our_msat if sampled
-                              else ch["cap"] - ch["inbound"]) / 1000.0,
+            "min_local_sat": min_local / 1000.0,
             "resized_days": ((before - bal.resized_at) / 86400.0
                              if sampled and bal.resized_at is not None
                              else None),
@@ -1125,6 +1166,10 @@ def main():
         text = f"{r['change_sat'] / 1e6:+.1f}"
         return f"({text})" if r["consider_close"] else text
 
+    def split(r, text):
+        """a peer's figure split over its channels is marked ~"""
+        return "~" + text if r["split"] else text
+
     def per_day(value, hours):
         """a rate over a state the channel was never in has no value"""
         return "-" if hours <= 0 else f"{value:.0f}"
@@ -1174,11 +1219,11 @@ def main():
         ("InHigh", lambda r: per_day(r["in_high"], r["high_h"]), True, False,
          None),
         ("GainIn", lambda r: f"{r['gain_in']:.0f}", False, False, None),
-        ("NetEarn", lambda r: f"{r['net_earned']:.0f}", False, False,
-         "net_earned"),
+        ("NetEarn", lambda r: split(r, f"{r['net_earned']:.0f}"), False,
+         False, "net_earned"),
         ("Turns", lambda r: f"{r['turns']:.1f}", False, False, None),
-        ("Fill", lambda r: m(r["fill"]), False, False, None),
-        ("Drain", lambda r: m(r["drain"]), False, False, None),
+        ("Fill", lambda r: split(r, m(r["fill"])), False, False, None),
+        ("Drain", lambda r: split(r, m(r["drain"])), False, False, None),
         ("Refused", lambda r: m(r["refused_out"]), False, False, None),
         ("@Low", lambda r: f"{r['refused_low_pct']:.0f}", True, False, None),
         ("MinLoc", lambda r: m(r["min_local_sat"]), False, False, None),
@@ -1242,6 +1287,8 @@ def main():
             print(line)
     print()
 
+    any_split = any(r["split"] for r in rows)
+
     def legend(name, desc):
         first, *rest = textwrap.wrap(desc, width=101)
         print(f"{name:<9}{first}")
@@ -1294,17 +1341,25 @@ def main():
           "splice does not", False)],
         [("NetEarn", "forwarding fees less the rebalance spend, both as "
           "CLBOSS attributes them to the peer, sat over the window; the "
-          "clboss-forwarding-stats figure", False),
+          "clboss-forwarding-stats figure"
+          + ("; ~ = a peer with several channels, its figure split by "
+             "each channel's share of its forwarded volume"
+             if any_split else ""), False),
          ("Turns", "forwarded volume over capacity", False),
-         ("Fill", "rebalanced into our side by CLBOSS, M sat", False),
-         ("Drain", "rebalanced out of our side by CLBOSS, M sat", False),
+         ("Fill", "rebalanced into our side by CLBOSS, M sat"
+          + ("; ~ as for NetEarn" if any_split else ""), False),
+         ("Drain", "rebalanced out of our side by CLBOSS, M sat"
+          + ("; ~ as for NetEarn" if any_split else ""), False),
          ("Refused", "outbound volume refused, M sat; retries inflate it",
           False),
          ("@Low", "share of Refused that arrived in low hours, %: at 100 "
           "the dry side turned it away, at 0 the refusals are mid-range, "
           "the fast-cycling signature", True),
-         ("MinLoc", "lowest our side got, M sat: capital that never moved",
-          False),
+         ("MinLoc", "lowest our side got, M sat: capital that never moved"
+          + ("; for a peer with several channels whose samples are "
+             "the peer's sum, the least this channel is proven to have "
+             "held: the sum less the other channels' capacity"
+             if any_split else ""), False),
          ("Range", "highest minus lowest local share in the window, % of "
           "capacity", True)],
         [("Up", "connected now", False),
