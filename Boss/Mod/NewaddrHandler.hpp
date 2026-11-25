@@ -1,6 +1,7 @@
 #ifndef BOSS_MOD_NEWADDRHANDLER_HPP
 #define BOSS_MOD_NEWADDRHANDLER_HPP
 
+#include"Boss/Msg/RequestNewaddr.hpp"
 #include<vector>
 
 namespace Boss { namespace Mod { class Rpc; }}
@@ -18,10 +19,10 @@ class NewaddrHandler {
 private:
 	S::Bus& bus;
 	Boss::Mod::Rpc* rpc;
-	std::vector<void*> pending;
+	std::vector<Msg::RequestNewaddr> pending;
 
 	void start();
-	Ev::Io<void> newaddr(void*);
+	Ev::Io<void> newaddr(Msg::RequestNewaddr);
 
 public:
 	NewaddrHandler() =delete;

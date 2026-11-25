@@ -48,6 +48,13 @@ private:
 	/* Stalled-loop watchdog window; see check_stall.  Settable
 	 * for tests.  */
 	double stall_timeout_secs;
+	/* The round of each loop: the number of the item it is
+	 * on, counting a restart by check_stall as a new item.
+	 * Every request a loop sends carries its round, and the
+	 * answer carries it back; an answer from another round
+	 * belongs to a request the loop has given up on (#383).  */
+	std::uint64_t address_round;
+	std::uint64_t invoice_round;
 
 public:
 	Impl() =delete;
@@ -62,6 +69,8 @@ public:
 	      , getting_invoice(false)
 	      , getting_invoice_start(0.0)
 	      , stall_timeout_secs(1800.0)
+	      , address_round(0)
+	      , invoice_round(0)
 	      { start(); }
 
 	void set_stall_timeout_secs(double secs) {
@@ -90,6 +99,10 @@ private:
 			     >([this](Msg::ResponseNewaddr const& r) {
 			if (r.requester != this)
 				return Ev::lift();
+			if (r.round != address_round)
+				return drop_late("newaddr", r.round
+						, address_round
+						);
 			return Boss::concurrent(
 				on_response_newaddr(r.address)
 			);
@@ -98,6 +111,10 @@ private:
 			     >([this](Msg::ProvideSwapQuotation const& q) {
 			if (q.solicitor != this)
 				return Ev::lift();
+			if (q.round != invoice_round)
+				return drop_late("swap-quotation", q.round
+						, invoice_round
+						);
 			/* Not concurrent since the processing expects
 			 * synchronous response.  */
 			return on_provide_swap_quotation( q.fee, q.provider
@@ -108,6 +125,10 @@ private:
 			     >([this](Msg::SwapCreation const& s) {
 			if (s.solicitor != this)
 				return Ev::lift();
+			if (s.round != invoice_round)
+				return drop_late("swap-creation", s.round
+						, invoice_round
+						);
 			return Boss::concurrent(
 				on_swap_creation(s)
 			);
@@ -141,6 +162,24 @@ private:
 			 * synchronously.  */
 			return on_solicit_status();
 		});
+	}
+
+	/* An answer to a request of an earlier round: the loop
+	 * gave up waiting for it and asked again, and the answer
+	 * to that is the one it waits for.  An unused address or
+	 * an unpaid invoice is harmless.  */
+	Ev::Io<void> drop_late( char const* what
+			      , std::uint64_t round
+			      , std::uint64_t current
+			      ) {
+		return Boss::log( bus, Debug
+				, "SwapManager: dropping late %s "
+				  "response of round %llu, now in "
+				  "round %llu."
+				, what
+				, (unsigned long long) round
+				, (unsigned long long) current
+				);
 	}
 
 	/* On initialize.  */
@@ -322,6 +361,7 @@ private:
 		 * loop: a queue of several swaps progresses one
 		 * round trip at a time and must not read as stalled.  */
 		getting_address_start = Ev::now();
+		++address_round;
 		auto uuid = needs_address.front();
 		return Boss::log( bus, Debug
 				, "SwapManager: Swap %s getting address."
@@ -360,14 +400,17 @@ private:
 			}
 			tx.commit();
 
-			return bus.raise(Msg::RequestNewaddr{this});
+			return bus.raise(Msg::RequestNewaddr{
+				this, address_round
+			});
 		});
 	}
 	Ev::Io<void> on_response_newaddr(std::string n_address) {
-		/* A response landing after check_stall reset the loop
-		 * has no claim on the queue front; drop it -- an
-		 * unused address is harmless, and the restarted loop
-		 * requests its own.  */
+		/* A response landing after check_stall reset the loop,
+		 * and before the loop restarts in a new round, has no
+		 * claim on the queue front; drop it -- an unused
+		 * address is harmless, and the restarted loop requests
+		 * its own.  */
 		if (!getting_address || needs_address.empty())
 			return Boss::log( bus, Debug
 					, "SwapManager: dropping late "
@@ -463,8 +506,9 @@ private:
 		}
 		/* Per item, as in loop_needs_address.  */
 		getting_invoice_start = Ev::now();
+		auto round = ++invoice_round;
 		quotations.clear();
-		return db.transact().then([this](Sqlite3::Tx tx) {
+		return db.transact().then([this, round](Sqlite3::Tx tx) {
 			/* Get the amount of the swap.  */
 			auto uuid = needs_invoice.front();
 			auto fetch = tx.query(R"QRY(
@@ -484,9 +528,12 @@ private:
 			tx.commit();
 
 			return bus.raise(Msg::SolicitSwapQuotation{
-				amount, this
+				amount, this, round
 			});
-		}).then([this]() {
+		}).then([this, round]() {
+			/* Stale: checked again below.  */
+			if (round != invoice_round)
+				return Ev::lift();
 			auto uuid = needs_invoice.front();
 			return Boss::log( bus, Debug
 					, "SwapManager: Swap %s got %zu "
@@ -495,7 +542,15 @@ private:
 					, quotations.size()
 					, std::string(amount).c_str()
 					);
-		}).then([this]() {
+		}).then([this, round]() {
+			/* The quotations came back after check_stall
+			 * restarted the loop: the quotations and the
+			 * queue front are the new round's, and it
+			 * accepts a quotation of its own.  */
+			if (round != invoice_round)
+				return drop_late("swap-quotation", round
+						, invoice_round
+						);
 			/* Randomize quotations.  */
 			for (auto& q : quotations) {
 				auto dist = std::uniform_int_distribution<std::uint64_t>(
@@ -543,14 +598,16 @@ private:
 		auto const& quotation = quotations[quotations.size() - 1];
 		return bus.raise(Msg::AcceptSwapQuotation{
 			amount, address,
-			this, quotation.provider
+			this, quotation.provider,
+			invoice_round
 		});
 	}
 	/* On swap creation.  */
 	Ev::Io<void> on_swap_creation(Msg::SwapCreation const& s) {
 		/* Same staleness rule as newaddr responses: with no
-		 * live invoice round, this response is from a round
-		 * check_stall already abandoned.  */
+		 * live invoice loop, this response is from a round
+		 * check_stall already abandoned, and the loop has not
+		 * restarted in a new one yet.  */
 		if (!getting_invoice || needs_invoice.empty())
 			return Boss::log( bus, Debug
 					, "SwapManager: dropping late "

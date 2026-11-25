@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.4] - Unreleased
+
+### Fixed
+
+- A swap setup could be recorded under an answer the swap manager
+  had stopped waiting for.  When a newaddr call or a swap service's
+  answer takes more than 30 minutes, the manager asks again, and the
+  old answer, if it came while the new request was out, was taken
+  for the new one: a swap ran under a provider swap other than the
+  one it asked for, leaving that one unpaid; a late address could go
+  to the next swap in the queue; and a late failure dropped the
+  current quotation.  The funds were ours in every case; the
+  bookkeeping was not.  Each address request, quotation and swap
+  setup now carries the round that asked, its answer carries it back,
+  and an answer from an earlier round is dropped (#383).
+
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
 ### Upgrading from 0.17.2

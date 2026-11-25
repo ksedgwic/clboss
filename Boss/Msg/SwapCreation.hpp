@@ -31,6 +31,9 @@ struct SwapCreation {
 	void* solicitor;
 	/* Identify the swap provider that was asked.  */
 	void* provider;
+	/* The round of the `Boss::Msg::AcceptSwapQuotation`,
+	 * as given.  */
+	std::uint64_t round;
 };
 
 }}

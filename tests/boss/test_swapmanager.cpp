@@ -34,6 +34,7 @@
 #include<sstream>
 #include<unordered_map>
 #include<unordered_set>
+#include<vector>
 
 namespace {
 
@@ -55,10 +56,13 @@ class MockNewaddr {
 private:
 	std::queue<std::string> addresses;
 	bool swallow_next_flag = false;
+	bool hold_next_flag = false;
+	std::vector<Boss::Msg::RequestNewaddr> held;
+	S::Bus& bus;
 public:
-	MockNewaddr(S::Bus& bus) {
+	MockNewaddr(S::Bus& bus_) : bus(bus_) {
 		bus.subscribe<Boss::Msg::RequestNewaddr
-			     >([ this, &bus
+			     >([ this
 			       ](Boss::Msg::RequestNewaddr const& r) {
 			/* Simulate the newaddr chain dying mid-flight:
 			 * no response ever arrives.  */
@@ -66,11 +70,17 @@ public:
 				swallow_next_flag = false;
 				return Ev::lift();
 			}
+			/* Answered later, by answer_held.  */
+			if (hold_next_flag) {
+				hold_next_flag = false;
+				held.push_back(r);
+				return Ev::lift();
+			}
 			assert(!addresses.empty());
 			auto addr = addresses.front();
 			addresses.pop();
 			return bus.raise(Boss::Msg::ResponseNewaddr{
-				addr, r.requester
+				addr, r.requester, r.round
 			});
 		});
 	}
@@ -78,6 +88,16 @@ public:
 		addresses.emplace(std::move(addr));
 	}
 	void swallow_next() { swallow_next_flag = true; }
+	void hold_next() { hold_next_flag = true; }
+	/* Answer the i-th held request, as late as the test likes.  */
+	Ev::Io<void> answer_held(std::size_t i, std::string addr) {
+		assert(i < held.size());
+		auto r = held[i];
+		return bus.raise(Boss::Msg::ResponseNewaddr{
+			std::move(addr), r.requester, r.round
+		});
+	}
+	void clear_held() { held.clear(); }
 	bool empty() const { return addresses.empty(); }
 };
 struct MockProvider {};
@@ -113,7 +133,8 @@ public:
 					set[i],
 					s.solicitor,
 					providers[i].get(),
-					"MockSwapQuotation"
+					"MockSwapQuotation",
+					s.round
 				});
 			}
 			/* Send them.  */
@@ -144,15 +165,23 @@ public:
 private:
 	std::queue<Entry> entries;
 	std::set<std::string> invoices;
+	bool hold_next_flag = false;
+	std::vector<Boss::Msg::AcceptSwapQuotation> held;
+	S::Bus& bus;
 public:
-	MockSwapCreation(S::Bus& bus) {
+	MockSwapCreation(S::Bus& bus_) : bus(bus_) {
 		using Boss::Msg::AcceptSwapQuotation;
 		using Boss::Msg::PayInvoice;
 		using Boss::Msg::SwapCreation;
 		bus.subscribe<AcceptSwapQuotation
 			     >([ this
-			       , &bus
 			       ](AcceptSwapQuotation const& q) {
+			/* Answered later, by answer_held.  */
+			if (hold_next_flag) {
+				hold_next_flag = false;
+				held.push_back(q);
+				return Ev::lift();
+			}
 			assert(!entries.empty());
 			auto entry = std::move(entries.front());
 			entries.pop();
@@ -176,7 +205,7 @@ public:
 			return bus.raise(SwapCreation{
 				entry.success,
 				entry.invoice, entry.hash, entry.timeout,
-				q.solicitor, q.provider
+				q.solicitor, q.provider, q.round
 			});
 		});
 		bus.subscribe<PayInvoice
@@ -191,6 +220,25 @@ public:
 	void add(Entry e) {
 		entries.emplace(std::move(e));
 	}
+	void hold_next() { hold_next_flag = true; }
+	/* Answer the i-th held request.  Its invoice is expected to
+	 * be paid only if `expect_paid`; a PayInvoice of any other
+	 * fails the test.  */
+	Ev::Io<void> answer_held( std::size_t i, Entry e
+				, bool expect_paid
+				) {
+		assert(i < held.size());
+		auto q = held[i];
+		assert(q.onchain_address == e.address);
+		if (e.success && expect_paid)
+			invoices.insert(e.invoice);
+		return bus.raise(Boss::Msg::SwapCreation{
+			e.success,
+			e.invoice, e.hash, e.timeout,
+			q.solicitor, q.provider, q.round
+		});
+	}
+	void clear_held() { held.clear(); }
 	bool okay() const {
 		return entries.empty() && invoices.empty();
 	}
@@ -557,6 +605,166 @@ Ev::Io<void> test_timeout_after_payment() {
 	});
 }
 
+/* An answer to a request the watchdog gave up on, landing while the
+ * request that replaced it is in flight, belongs to no swap (#383).
+ * Two swaps queue for addresses; the first one's request hangs, the
+ * watchdog asks again, and the old answer arrives before the new one.
+ * The swap setups fail the test if a swap's address is not the one
+ * its own request got.  */
+Ev::Io<void> test_late_newaddr() {
+	auto const hash_first = Sha256::Hash("5555555555555555555555555555555555555555555555555555555555555555");
+	auto const hash_second = Sha256::Hash("6666666666666666666666666666666666666666666666666666666666666666");
+	Uuid first = Uuid::random();
+	Uuid second = Uuid::random();
+
+	return Ev::lift().then([first]() {
+		swapper.set_stall_timeout_secs(0.0);
+		addresses.clear_held();
+		/* The first swap's request hangs.  */
+		addresses.hold_next();
+		return requester.start_swap( first
+					   , Ln::Amount::btc(0.001)
+					   , Ln::Amount::btc(0.012)
+					   );
+	}).then([second]() {
+		/* The second one waits behind it.  */
+		return requester.start_swap( second
+					   , Ln::Amount::btc(0.001)
+					   , Ln::Amount::btc(0.012)
+					   );
+	}).then([]() {
+		return wait();
+	}).then([]() {
+		/* The watchdog asks again for the first swap.  That
+		 * request is held as well, so that the old answer
+		 * lands while it is in flight.  */
+		addresses.hold_next();
+		return bus.raise(Boss::Msg::Timer10Minutes{});
+	}).then([]() {
+		return wait();
+	}).then([hash_first, hash_second]() {
+		quotations.add({Ln::Amount::sat(100)});
+		swapsetups.add({ "address-first", true, "invoice-first"
+			       , hash_first, 30000
+			       });
+		quotations.add({Ln::Amount::sat(100)});
+		swapsetups.add({ "address-second", true, "invoice-second"
+			       , hash_second, 30000
+			       });
+		addresses.add("address-second");
+		/* The answer to the abandoned request.  */
+		return addresses.answer_held(0, "address-late");
+	}).then([]() {
+		return wait();
+	}).then([]() {
+		/* The answer to the current one.  */
+		return addresses.answer_held(1, "address-first");
+	}).then([]() {
+		return wait();
+	}).then([first, second]() {
+		assert(addresses.empty());
+		assert(quotations.empty());
+		assert(swapsetups.okay());
+		requester.expect_pending(first);
+		requester.expect_pending(second);
+		return onchain.listfunds({ { "address-first"
+					   , Ln::Amount::sat(12100)
+					   }
+					 , { "address-second"
+					   , Ln::Amount::sat(12100)
+					   }
+					 });
+	}).then([]() {
+		return wait();
+	}).then([first, second]() {
+		requester.expect_finished(first, true);
+		requester.expect_finished(second, true);
+		addresses.clear_held();
+		return Ev::lift();
+	});
+}
+
+/* The same for a swap setup: the watchdog gives up on the provider's
+ * answer and accepts a quotation again, and the old answer arrives
+ * first.  A late swap must not be paid or recorded, and a late
+ * failure must not drop the current round's quotation.  The swap is
+ * paid and completed under the current round's swap.  */
+Ev::Io<void> test_late_swap_creation(bool late_success) {
+	auto const address = std::string(late_success ? "address-late-ok"
+						       : "address-late-fail"
+					);
+	auto const hash_late = Sha256::Hash(late_success
+		? "7777777777777777777777777777777777777777777777777777777777777777"
+		: "8888888888888888888888888888888888888888888888888888888888888888"
+	);
+	auto const hash_now = Sha256::Hash(late_success
+		? "9999999999999999999999999999999999999999999999999999999999999999"
+		: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	);
+	auto const invoice_now = address + "-invoice";
+	Uuid uuid = Uuid::random();
+
+	return Ev::lift().then([uuid, address]() {
+		swapper.set_stall_timeout_secs(0.0);
+		swapsetups.clear_held();
+		addresses.add(address);
+		quotations.add({Ln::Amount::sat(100)});
+		/* The provider's answer hangs.  */
+		swapsetups.hold_next();
+		return requester.start_swap( uuid
+					   , Ln::Amount::btc(0.001)
+					   , Ln::Amount::btc(0.012)
+					   );
+	}).then([]() {
+		return wait();
+	}).then([]() {
+		/* The watchdog solicits and accepts again; that request
+		 * is held as well.  */
+		quotations.add({Ln::Amount::sat(100)});
+		swapsetups.hold_next();
+		return bus.raise(Boss::Msg::Timer10Minutes{});
+	}).then([]() {
+		return wait();
+	}).then([address, hash_late, late_success]() {
+		/* The answer to the abandoned request: never paid.  */
+		return swapsetups.answer_held( 0
+					     , { address, late_success
+					       , late_success ? "invoice-late"
+							      : ""
+					       , hash_late, 30000
+					       }
+					     , false
+					     );
+	}).then([]() {
+		return wait();
+	}).then([address, hash_now, invoice_now]() {
+		/* The answer to the current one: paid.  */
+		return swapsetups.answer_held( 1
+					     , { address, true, invoice_now
+					       , hash_now, 30000
+					       }
+					     , true
+					     );
+	}).then([]() {
+		return wait();
+	}).then([uuid, address]() {
+		assert(addresses.empty());
+		assert(quotations.empty());
+		assert(swapsetups.okay());
+		requester.expect_pending(uuid);
+		return onchain.listfunds({ { address
+					   , Ln::Amount::sat(12100)
+					   }
+					 });
+	}).then([]() {
+		return wait();
+	}).then([uuid]() {
+		requester.expect_finished(uuid, true);
+		swapsetups.clear_held();
+		return Ev::lift();
+	});
+}
+
 }
 
 /*-----------------------------------------------------------------------------
@@ -572,6 +780,12 @@ int main() {
 		return test_stall_recovery();
 	}).then([&]() {
 		return test_timeout_after_payment();
+	}).then([&]() {
+		return test_late_newaddr();
+	}).then([&]() {
+		return test_late_swap_creation(true);
+	}).then([&]() {
+		return test_late_swap_creation(false);
 	}).then([&]() {
 		return Ev::lift(0);
 	});

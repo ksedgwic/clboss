@@ -40,18 +40,20 @@ private:
 
 			auto solicitor = q.solicitor;
 			auto amt = q.offchain_amount;
+			auto round = q.round;
 
 			return Ev::lift().then([this, amt]() {
 				return service->get_quotation(amt);
 			}).then([ this
 				, solicitor
+				, round
 				](std::unique_ptr<Ln::Amount> fee) {
 				if (!fee)
 					return Ev::lift();
 
 				return bus.raise(Msg::ProvideSwapQuotation{
 					*fee, solicitor, this,
-					label
+					label, round
 				});
 			});
 		});
@@ -67,16 +69,17 @@ private:
 				return bus.raise(Msg::SwapCreation{
 					false,
 					"", Sha256::Hash(), 0,
-					q.solicitor, this
+					q.solicitor, this, q.round
 				});
 			}
 
 			auto amt = q.offchain_amount;
 			auto addr = q.onchain_address;
 			auto solicitor = q.solicitor;
+			auto round = q.round;
 			return Ev::lift().then([this, amt, addr]() {
 				return service->swap(amt, addr, *blockheight);
-			}).then([this, solicitor
+			}).then([this, solicitor, round
 				](Boltz::SwapInfo res) {
 				auto& invoice = res.invoice;
 				auto timeout = res.timeout;
@@ -88,7 +91,7 @@ private:
 					std::move(invoice),
 					std::move(hash),
 					timeout,
-					solicitor, this
+					solicitor, this, round
 				});
 			});
 		});
