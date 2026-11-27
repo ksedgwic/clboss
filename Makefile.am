@@ -640,6 +640,8 @@ TESTS = \
 	tests/boss/test_channel_create_destroy_monitor_missing_old_state \
 	tests/boss/test_channel_create_destroy_monitor_multichannel \
 	tests/boss/test_channel_create_destroy_monitor_shutting_down \
+	tests/boss/test_channel_create_destroy_monitor_splice \
+	tests/boss/test_channel_create_destroy_monitor_stale_listing \
 	tests/boss/test_channelcandidatepreinvestigator \
 	tests/boss/test_channelcreationdecider \
 	tests/boss/test_channelcreator_carpenter \

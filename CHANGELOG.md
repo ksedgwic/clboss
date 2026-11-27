@@ -48,6 +48,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   mishandles a `co_await` in the condition of an `if` when the
   function declares no local variable (GCC PR 106713).  The claim
   code now takes the result into a local first (#392).
+- A channel closed at the periodic check could be announced as a new
+  channel.  The channel listing of that check can be requested just
+  before the close and answered after it, still showing the channel
+  open, and the peer was taken as newly channeled until the next
+  listing ten minutes later.  With two channels to the peer, the
+  listing put the closing one back, so the close of the other one
+  announced no channel destruction.  A channel that a notification
+  saw start closing is now not taken as open from a listing again
+  (#396).
 
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 

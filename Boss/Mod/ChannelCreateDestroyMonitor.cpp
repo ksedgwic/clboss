@@ -71,6 +71,8 @@ void ChannelCreateDestroyMonitor::start() {
 	bus.subscribe<Msg::ListpeersResult
 		     >([this](Msg::ListpeersResult const& r) {
 		auto curr = std::map<Ln::NodeId, std::set<std::string>>();
+		/* Closing channels this listing still shows open.  */
+		auto stale = std::set<std::string>();
 		for (auto const& peer : r.cpeers) {
 			auto unidentified = std::size_t(0);
 			for (auto chan : peer.second.channels) {
@@ -93,11 +95,22 @@ void ChannelCreateDestroyMonitor::start() {
 					);
 					continue;
 				}
-				curr[peer.first].insert(
-					std::string(chan["channel_id"])
-				);
+				auto id = std::string(chan["channel_id"]);
+				/* The listing was requested before the
+				 * channel started closing (a close at the
+				 * same periodic check), and lightningd
+				 * answered with the state from before.  */
+				if (closing.count(id) != 0) {
+					stale.insert(std::move(id));
+					continue;
+				}
+				curr[peer.first].insert(std::move(id));
 			}
 		}
+		/* A channel this listing shows closing, or not at all,
+		 * needs no more guarding: lightningd answers later
+		 * listings with its closing state too.  */
+		closing = std::move(stale);
 
 		/* The current channeled peers.  */
 		auto curr_channeled = std::set<Ln::NodeId>();
@@ -261,6 +274,8 @@ void ChannelCreateDestroyMonitor::start() {
 			if (!leaving && open_state(new_state))
 				open_channels[n].insert(channel_id);
 			else {
+				if (!open_state(new_state))
+					closing.insert(channel_id);
 				auto oit = open_channels.find(n);
 				if (oit != open_channels.end()) {
 					oit->second.erase(channel_id);

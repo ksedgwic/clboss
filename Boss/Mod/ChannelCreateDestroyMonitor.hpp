@@ -26,6 +26,13 @@ private:
 	 * open states only destroys the peer's channeled status when
 	 * it was the peer's last one.  */
 	std::map<Ln::NodeId, std::set<std::string>> open_channels;
+	/* The channel ids a `channel_state_changed` notification
+	 * saw leave the open states.  A channel never comes back
+	 * from there, so a listing that still shows one of them
+	 * open was taken before the change, and is not believed
+	 * for it.  An id goes once a listing no longer shows the
+	 * channel open.  */
+	std::set<std::string> closing;
 
 	void start();
 
