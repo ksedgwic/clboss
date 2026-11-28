@@ -8,6 +8,7 @@
 #include"Boss/Msg/RequestDowser.hpp"
 #include"Boss/Msg/ResponseConnect.hpp"
 #include"Boss/Msg/ResponseDowser.hpp"
+#include"Boss/concurrent.hpp"
 #include"Boss/log.hpp"
 #include"Ev/Io.hpp"
 #include"Ln/Amount.hpp"
@@ -194,12 +195,19 @@ private:
 		cases.erase(it);
 
 		/* Hand the outcome of the single connect to every
-		 * waiting Case.  */
+		 * waiting Case, each on its own: a Case goes on to
+		 * its next candidate from here, and its connect runs
+		 * inline, so in sequence each Case would wait for the
+		 * rest of the one before it, and a throw in one would
+		 * drop the ones after it.  */
 		auto act = Ev::lift();
 		for (auto& c : to_answer) {
-			act += c->on_connect_response(r.success).then([c]() {
-				return Ev::lift();
-			});
+			act += Boss::concurrent(
+				c->on_connect_response(r.success
+				).then([c]() {
+					return Ev::lift();
+				})
+			);
 		}
 		return act;
 	}

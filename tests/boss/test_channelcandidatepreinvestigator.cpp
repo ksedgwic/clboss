@@ -6,15 +6,26 @@
 #include"Boss/Msg/ResponseConnect.hpp"
 #include"Ev/Io.hpp"
 #include"Ev/start.hpp"
+#include"Ev/yield.hpp"
 #include"Ln/NodeId.hpp"
 #include"S/Bus.hpp"
 #include<assert.h>
 #include<functional>
+#include<stdexcept>
 #include<string>
 #include<utility>
 #include<vector>
 
 namespace {
+
+/* Let the Cases a response was handed to run: each runs as a
+ * concurrent task.  */
+Ev::Io<void> settle() {
+	auto act = Ev::yield();
+	for (auto i = 0; i < 20; ++i)
+		act = std::move(act).then([]() { return Ev::yield(); });
+	return act;
+}
 
 /* A dummy Connector that DEFERS its responses.
  *
@@ -32,6 +43,12 @@ private:
 
 public:
 	size_t connects;
+	/* A connect to this node runs inline for a while, as the
+	 * real Connector's does, holding up whoever raised it.
+	 * `probe` is read at the end of it, into `probed`.  */
+	std::string slow_node;
+	std::function<bool()> probe;
+	bool probed = false;
 
 	explicit
 	DeferredConnector(S::Bus& bus_) : bus(bus_), pending() {
@@ -40,7 +57,17 @@ public:
 			     >([this](Boss::Msg::RequestConnect const& req) {
 			++connects;
 			pending.push_back(req.node);
-			return Ev::lift();
+			if (req.node != slow_node)
+				return Ev::lift();
+			auto act = Ev::yield();
+			for (auto i = 0; i < 10; ++i)
+				act = std::move(act).then([]() {
+					return Ev::yield();
+				});
+			return std::move(act).then([this]() {
+				probed = probe();
+				return Ev::lift();
+			});
 		});
 	}
 	DeferredConnector(DeferredConnector&&) =delete;
@@ -60,6 +87,8 @@ public:
 				});
 			}
 			return act;
+		}).then([]() {
+			return settle();
 		});
 	}
 };
@@ -67,11 +96,16 @@ public:
 class ProposalCollector {
 public:
 	std::vector<std::pair<std::string, std::string>> proposals;
+	/* A proposal for this patron throws, as a failing
+	 * subscriber would.  */
+	std::string throwing_patron;
 
 	explicit
 	ProposalCollector(S::Bus& bus) {
 		bus.subscribe<Boss::Msg::ProposeChannelCandidates
 			     >([this](Boss::Msg::ProposeChannelCandidates const& p) {
+				if (std::string(p.patron) == throwing_patron)
+					throw std::runtime_error("proposal failed");
 				proposals.emplace_back( std::string(p.proposal)
 						      , std::string(p.patron)
 						      );
@@ -127,6 +161,26 @@ auto const PATRON5 = std::string("02")
 auto const PATRON6 = std::string("02")
 	+ "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6"
 	+ "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6"
+	;
+auto const PATRON7 = std::string("02")
+	+ "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7"
+	+ "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7"
+	;
+auto const PATRON8 = std::string("02")
+	+ "d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8"
+	+ "d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8"
+	;
+auto const PATRON9 = std::string("02")
+	+ "d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9"
+	+ "d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9"
+	;
+auto const PATRON10 = std::string("02")
+	+ "dadadadadadadadadadadadadadadada"
+	+ "dadadadadadadadadadadadadadadada"
+	;
+auto const SLOW = std::string("02")
+	+ "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	+ "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	;
 
 }
@@ -267,6 +321,70 @@ int main() {
 	}).then([&]() {
 		assert(collector.count(HUB, PATRON6) == 2);
 		assert(collector.proposals.size() == 6);
+
+		/* A Case whose next connect is slow does not hold up
+		 * the other Cases waiting on the same node: PATRON9's
+		 * Case is answered first and moves on to SLOW, whose
+		 * connect runs inline; PATRON10's proposal must land
+		 * while it does.  */
+		connector.slow_node = SLOW;
+		connector.probe = [&collector]() {
+			return collector.count(HUB, PATRON10) == 1;
+		};
+		return preinvestigate(
+			{ Boss::Msg::ProposeChannelCandidates{
+				Ln::NodeId(HUB), Ln::NodeId(PATRON9)
+			}
+			, Boss::Msg::ProposeChannelCandidates{
+				Ln::NodeId(SLOW), Ln::NodeId(PATRON9)
+			} },
+			2
+		);
+	}).then([&]() {
+		return preinvestigate(
+			{ Boss::Msg::ProposeChannelCandidates{
+				Ln::NodeId(HUB), Ln::NodeId(PATRON10)
+			} },
+			1
+		);
+	}).then([&]() {
+		assert(connector.connects == 7);
+		return connector.flush(true);
+	}).then([&]() {
+		assert(connector.connects == 8);
+		assert(collector.count(HUB, PATRON9) == 1);
+		assert(collector.count(HUB, PATRON10) == 1);
+		assert(connector.probed);
+		connector.slow_node = "";
+		return connector.flush(true);
+	}).then([&]() {
+		assert(collector.count(SLOW, PATRON9) == 1);
+		assert(collector.proposals.size() == 9);
+
+		/* A throw in one Case does not drop the Cases after
+		 * it: PATRON7's proposal fails, PATRON8's still
+		 * surfaces.  */
+		collector.throwing_patron = PATRON7;
+		return preinvestigate(
+			{ Boss::Msg::ProposeChannelCandidates{
+				Ln::NodeId(HUB), Ln::NodeId(PATRON7)
+			} },
+			1
+		);
+	}).then([&]() {
+		return preinvestigate(
+			{ Boss::Msg::ProposeChannelCandidates{
+				Ln::NodeId(HUB), Ln::NodeId(PATRON8)
+			} },
+			1
+		);
+	}).then([&]() {
+		assert(connector.connects == 9);
+		return connector.flush(true);
+	}).then([&]() {
+		assert(collector.count(HUB, PATRON7) == 0);
+		assert(collector.count(HUB, PATRON8) == 1);
+		assert(collector.proposals.size() == 10);
 
 		return Ev::lift(0);
 	});

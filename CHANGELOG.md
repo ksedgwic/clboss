@@ -57,6 +57,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   announced no channel destruction.  A channel that a notification
   saw start closing is now not taken as open from a listing again
   (#396).
+- The channel candidate preinvestigation hands the outcome of one
+  connect to every batch waiting on the node, and did so one batch
+  after another: a batch moving on to its next candidate held up the
+  batches after it until its own next connect was done, and an error
+  in one dropped the rest.  Each batch now runs on its own.  A
+  follow-up from #341.
 
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
