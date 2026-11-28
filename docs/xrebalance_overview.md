@@ -214,7 +214,7 @@ enough at the default).
 
 - Core Lightning v25.09 or later is refused below; v26.04 or later
   is the tested floor.
-- The `xrebalance` plugin, v0.4.5 or later, loaded alongside
+- The `xrebalance` plugin, v0.4.11 or later, loaded alongside
   CLBOSS.  Without it CLBOSS runs everything else and logs a
   warning once an hour; `clboss-status` shows the plugin state.
 - Remove `clboss-max-rebalance-fee-ppm` from the configuration;
