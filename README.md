@@ -187,18 +187,19 @@ seconds for it fails and is logged as an error.
 
 Rebalancing runs through the external `xrebalance` plugin
 (<https://github.com/ksedgwic/xrebalance>), a separate Core Lightning
-plugin written in Rust.  CLBOSS needs **v0.4.5 or later**.  Without
-it CLBOSS starts and runs everything else, but no rebalancing
-happens: the first cycle that finds the plugin missing logs a
-warning (`UNUSUAL` in the `lightningd` log), the warning repeats
-once an hour while the plugin stays missing, and every cycle retries,
-so a plugin loaded later is picked up on the next cycle.  The
-remedies are to fix the plugin (path, build, version), or to set
-`clboss-rebalance-mode=off` if the pause is deliberate; CLBOSS never
-changes the mode on its own.  `clboss-status` shows the plugin's
-state under `xrebalancer`: `plugin` (`unknown` before the first
-cycle, `present`, or `absent`), the time of its last answer, the
-count of consecutive failed calls, and the last error.
+plugin written in Rust.  CLBOSS needs **v0.4.11 or later**.  v0.4.11
+has a security fix.  Without the plugin CLBOSS starts and runs
+everything else, but no rebalancing happens: the first cycle that
+finds the plugin missing logs a warning (`UNUSUAL` in the
+`lightningd` log), the warning repeats once an hour while the plugin
+stays missing, and every cycle retries, so a plugin loaded later is
+picked up on the next cycle.  The remedies are to fix the plugin
+(path, build, version), or to set `clboss-rebalance-mode=off` if the
+pause is deliberate; CLBOSS never changes the mode on its own.
+`clboss-status` shows the plugin's state under `xrebalancer`:
+`plugin` (`unknown` before the first cycle, `present`, or `absent`),
+the time of its last answer, the count of consecutive failed calls,
+and the last error.
 
 Build it with a [rustup](https://rustup.rs) toolchain:
 

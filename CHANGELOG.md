@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.4] - Unreleased
+
+### Upgrading from 0.17.3
+
+- Upgrade the `xrebalance` plugin to v0.4.11 or later.  v0.4.11 has
+  a security fix, and the README now names it as the minimum version.
+
 ## [0.17.3] - 2026-11-17: "Swapping in the Dark"
 
 ### Upgrading from 0.17.2
